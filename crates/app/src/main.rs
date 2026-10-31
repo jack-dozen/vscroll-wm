@@ -5,6 +5,8 @@
 //! Win+Shift+Arrow       -> pindah fokus
 //! Win+Enter             -> kembalikan window aktif ke penuh
 //! Win+Alt+Arrow         -> tukar posisi dengan window tetangga
+//! Win+Alt+F             -> float / tile window aktif
+//! Win+Alt+I             -> cetak info window aktif (class / exe / title) di console
 //! Win+Shift+Q           -> keluar dan kembalikan semua window (juga Ctrl+C)
 //! Ctrl+Alt+... (cadangan, aksi yang sama)
 //!
@@ -14,7 +16,11 @@
 //! Ctrl+Alt+Enter        -> kembalikan window aktif ke penuh (lebar + tinggi)
 //! Tutup dengan Ctrl+C di console.
 
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+mod rules;
 mod safety;
+mod tray;
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
@@ -22,12 +28,12 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use layout::{Dir, Rect, Strip, WindowId};
-use windows::core::BOOL;
-use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::core::{w, BOOL, PCWSTR};
+use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{
     DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
 };
-use windows::Win32::System::Threading::{GetCurrentProcessId, GetCurrentThreadId};
+use windows::Win32::System::Threading::{CreateMutexW, GetCurrentProcessId, GetCurrentThreadId};
 use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows::Win32::UI::HiDpi::{
     SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
@@ -44,6 +50,8 @@ const DIRS: [(VIRTUAL_KEY, Dir); 4] = [
 
 const HOTKEY_MAXIMIZE: i32 = 9;
 const HOTKEY_QUIT: i32 = 14;
+const HOTKEY_FLOAT: i32 = 15;
+const HOTKEY_INSPECT: i32 = 16;
 /// Pesan dari callback event Windows ke thread utama.
 const WM_WINEVENT: u32 = WM_APP + 3;
 /// Jeda (ms) mengumpulkan rentetan event sebelum menata ulang.
@@ -60,23 +68,31 @@ fn wid(h: HWND) -> WindowId {
     WindowId(h.0 as usize as u64)
 }
 
-unsafe fn manageable(hwnd: HWND) -> bool {
-    if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
-        return false;
+/// Kenapa window ini TIDAK ditata (None = boleh ditata).
+unsafe fn unmanaged_reason(hwnd: HWND) -> Option<&'static str> {
+    if !IsWindowVisible(hwnd).as_bool() {
+        return Some("tidak terlihat");
+    }
+    if IsIconic(hwnd).as_bool() {
+        return Some("sedang di-minimize");
     }
     let style = GetWindowLongPtrW(hwnd, GWL_STYLE) as u32;
     let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
     if style & WS_CAPTION.0 != WS_CAPTION.0 {
-        return false;
+        return Some("tidak punya title bar (WS_CAPTION)");
+    }
+    // tidak bisa di-resize (dialog, installer, utilitas kecil): biarkan mengambang
+    if style & WS_THICKFRAME.0 == 0 {
+        return Some("tidak bisa di-resize (tanpa WS_THICKFRAME)");
     }
     if ex & (WS_EX_TOOLWINDOW.0 | WS_EX_NOACTIVATE.0) != 0 {
-        return false;
+        return Some("tool window / tidak bisa diaktifkan");
     }
     if GetWindow(hwnd, GW_OWNER).map_or(false, |o| o != HWND::default()) {
-        return false; // dialog / popup milik window lain
+        return Some("dialog / popup milik window lain");
     }
     if GetWindowTextLengthW(hwnd) == 0 {
-        return false;
+        return Some("judul kosong");
     }
     let mut cloaked = 0u32;
     let _ = DwmGetWindowAttribute(
@@ -86,11 +102,18 @@ unsafe fn manageable(hwnd: HWND) -> bool {
         4,
     );
     if cloaked != 0 {
-        return false;
+        return Some("cloaked (desktop virtual lain / app UWP tersembunyi)");
     }
     let mut pid = 0u32;
     GetWindowThreadProcessId(hwnd, Some(&mut pid));
-    pid != GetCurrentProcessId()
+    if pid == GetCurrentProcessId() {
+        return Some("jendela app ini sendiri");
+    }
+    rules::ignored(hwnd)
+}
+
+unsafe fn manageable(hwnd: HWND) -> bool {
+    unmanaged_reason(hwnd).is_none()
 }
 
 unsafe extern "system" fn collect(hwnd: HWND, lparam: LPARAM) -> BOOL {
@@ -189,7 +212,7 @@ unsafe fn cancel_start_menu() {
 /// Low-level keyboard hook. Harus cepat: kerjanya cuma menelan tombol dan
 /// mengirim pesan ke thread utama, eksekusinya di message loop.
 unsafe extern "system" fn kb_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    if code == HC_ACTION as i32 {
+    if code == HC_ACTION as i32 && !tray::PAUSED.load(Ordering::Relaxed) {
         let k = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
         if k.flags.0 & LLKHF_INJECTED.0 == 0 {
             let m = wparam.0 as u32;
@@ -216,6 +239,10 @@ unsafe extern "system" fn kb_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> 
                     Some(HOTKEY_MAXIMIZE)
                 } else if vk == VK_Q.0 && shift {
                     Some(HOTKEY_QUIT)
+                } else if vk == VK_F.0 && alt {
+                    Some(HOTKEY_FLOAT)
+                } else if vk == VK_I.0 && alt {
+                    Some(HOTKEY_INSPECT)
                 } else {
                     None
                 };
@@ -319,6 +346,8 @@ struct App {
     /// Window yang masih ada tapi sedang tidak tampil (di-minimize, cloaked, dll).
     /// Slotnya tetap diingat di strip.
     hidden: HashSet<WindowId>,
+    /// Window yang sengaja dibiarkan mengambang (tidak ditata) lewat Win+Alt+F.
+    floating: HashMap<WindowId, HWND>,
     /// 0 = timer animasi tidak jalan (tidak ada beban saat idle).
     anim_timer: usize,
     anim_ms: f32,
@@ -345,6 +374,7 @@ impl App {
             actual: HashMap::new(),
             anim: HashMap::new(),
             hidden: HashSet::new(),
+            floating: HashMap::new(),
             anim_timer: 0,
             sync_timer: 0,
             recheck: false,
@@ -361,6 +391,7 @@ impl App {
         let _ = EnumWindows(Some(collect), LPARAM(&mut list as *mut Vec<HWND> as isize));
         let live: HashMap<WindowId, HWND> = list.iter().map(|&h| (wid(h), h)).collect();
         let mut changed = false;
+        self.floating.retain(|_, h| safety::alive(*h)); // yang ditutup tidak perlu diingat
 
         let gone: Vec<WindowId> =
             self.map.keys().filter(|k| !live.contains_key(k)).copied().collect();
@@ -389,6 +420,9 @@ impl App {
         let work = work_area();
         for &h in &list {
             let id = wid(h);
+            if self.floating.contains_key(&id) {
+                continue;
+            }
             if !self.map.contains_key(&id) {
                 safety::remember(h, work); // posisi asli, untuk dipulihkan saat keluar
                 self.map.insert(id, h);
@@ -528,6 +562,89 @@ impl App {
         }
     }
 
+    /// Jeda / lanjutkan (menu tray). Saat dijeda semua window dikembalikan ke
+    /// posisi asli dan hotkey diteruskan ke Windows.
+    unsafe fn toggle_pause(&mut self) {
+        let paused = !tray::PAUSED.load(Ordering::Relaxed);
+        tray::PAUSED.store(paused, Ordering::Relaxed);
+        tray::set_tip(if paused { "vscroll-wm (dijeda)" } else { "vscroll-wm" });
+        if paused {
+            self.finish_all_anims();
+            self.stop_sync_timer();
+            safety::restore_all();
+        } else {
+            self.sync();
+            self.apply();
+        }
+    }
+
+    /// Win+Alt+I: tampilkan class, exe, dan title window yang sedang aktif, plus
+    /// alasan ditata atau tidaknya. Berguna untuk menulis aturan di vscroll-wm.ignore.
+    unsafe fn inspect(&self) {
+        let h = GetForegroundWindow();
+        let id = wid(h);
+        let class = rules::class_name(h);
+        let title = rules::window_title(h);
+        let exe = rules::exe_name(h).unwrap_or_else(|| "(tidak terbaca)".into());
+        let status = if self.floating.contains_key(&id) {
+            "mengambang (Win+Alt+F)".to_string()
+        } else if self.map.contains_key(&id) {
+            "ditata".to_string()
+        } else {
+            match unmanaged_reason(h) {
+                Some(why) => format!("tidak ditata: {why}"),
+                None => "belum ditata (menunggu sinkronisasi)".to_string(),
+            }
+        };
+        let text = format!(
+            "judul : {title}\nclass : {class}\nexe   : {exe}\nstatus: {status}\n\nBaris untuk vscroll-wm.ignore:\n  class:{class}\n  exe:{exe}\n  title:{title}"
+        );
+        println!("---------- window aktif ----------\n{text}\n----------------------------------");
+        if !cfg!(debug_assertions) {
+            // Build release tidak punya console: tampilkan di kotak pesan, di thread
+            // terpisah supaya message loop tidak terblokir.
+            let wide: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+            std::thread::spawn(move || {
+                MessageBoxW(
+                    None,
+                    PCWSTR(wide.as_ptr()),
+                    w!("vscroll-wm: info window"),
+                    MB_OK | MB_ICONINFORMATION,
+                );
+            });
+        }
+    }
+
+    /// Win+Alt+F: window yang sedang di foreground dikeluarkan dari strip
+    /// (mengambang, bebas digeser/di-resize), atau dimasukkan kembali.
+    unsafe fn toggle_float(&mut self) {
+        let fg = GetForegroundWindow();
+        let id = wid(fg);
+        if self.floating.remove(&id).is_some() {
+            println!("tile: {}", title(fg)); // masuk strip lagi lewat sync berikutnya
+            return;
+        }
+        let Some(h) = self.map.remove(&id) else { return };
+        self.strip.remove_window(id);
+        self.hidden.remove(&id);
+        self.actual.remove(&id);
+        if let Some(a) = self.anim.remove(&id) {
+            // selesaikan gerakan dulu supaya berhenti di posisi akhirnya
+            let _ = SetWindowPos(
+                h,
+                None,
+                a.to.0 - a.inset.0,
+                a.to.1 - a.inset.1,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+        }
+        safety::forget(h); // tidak ikut dipindahkan saat app keluar
+        self.floating.insert(id, h);
+        println!("float: {}", title(h));
+    }
+
     /// Jadwalkan sync + apply dalam `ms` milidetik (digabung kalau sudah terjadwal).
     unsafe fn schedule_sync(&mut self, ms: u32) {
         if self.sync_timer == 0 {
@@ -638,11 +755,22 @@ impl App {
     }
 
     unsafe fn on_hotkey(&mut self, id: i32) {
+        if tray::PAUSED.load(Ordering::Relaxed) {
+            return;
+        }
         self.sync();
         match id {
             1..=4 => self.strip.snap(DIRS[(id - 1) as usize].1),
             5..=8 => self.strip.focus(DIRS[(id - 5) as usize].1),
             HOTKEY_MAXIMIZE => self.strip.maximize(),
+            HOTKEY_INSPECT => {
+                self.inspect();
+                return;
+            }
+            HOTKEY_FLOAT => {
+                self.toggle_float();
+                self.sync(); // window yang baru di-tile masuk strip
+            }
             10..=13 => self.strip.move_window(DIRS[(id - 10) as usize].1),
             _ => return,
         }
@@ -656,8 +784,21 @@ impl App {
     }
 }
 
+/// Cegah dua salinan berjalan bersamaan (mis. autostart + dijalankan manual):
+/// dua hook keyboard dan dua penata window akan saling berebut.
+unsafe fn single_instance() -> bool {
+    match CreateMutexW(None, true, w!("Local\\vscroll-wm-single-instance")) {
+        Ok(_handle) => GetLastError() != ERROR_ALREADY_EXISTS, // handle sengaja tidak ditutup
+        Err(_) => true,
+    }
+}
+
 fn main() {
     unsafe {
+        if !single_instance() {
+            eprintln!("vscroll-wm sudah berjalan.");
+            return;
+        }
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let mut app = App::new();
 
@@ -690,8 +831,31 @@ fn main() {
         {
             eprintln!("gagal daftar Ctrl+Alt+Shift+Q (dipakai app lain?)");
         }
+        if RegisterHotKey(
+            None,
+            HOTKEY_FLOAT,
+            MOD_CONTROL | MOD_ALT | MOD_NOREPEAT,
+            VK_F.0 as u32,
+        )
+        .is_err()
+        {
+            eprintln!("gagal daftar Ctrl+Alt+F (dipakai app lain?)");
+        }
+        if RegisterHotKey(
+            None,
+            HOTKEY_INSPECT,
+            MOD_CONTROL | MOD_ALT | MOD_NOREPEAT,
+            VK_I.0 as u32,
+        )
+        .is_err()
+        {
+            eprintln!("gagal daftar Ctrl+Alt+I (dipakai app lain?)");
+        }
         MAIN_THREAD.store(GetCurrentThreadId(), Ordering::Relaxed);
         safety::install(GetCurrentThreadId());
+        if !tray::create(GetCurrentThreadId()) {
+            eprintln!("gagal membuat ikon tray");
+        }
         let hook = match SetWindowsHookExW(WH_KEYBOARD_LL, Some(kb_hook), None, 0) {
             Ok(h) => Some(h),
             Err(e) => {
@@ -727,7 +891,7 @@ fn main() {
         let poll_ms = if event_hooks.is_empty() { 300 } else { 1000 };
         SetTimer(None, 1, poll_ms, None);
 
-        println!("vscroll-wm jalan. Win+Arrow = snap, +Shift = fokus, Win+Enter = penuh, Win+Alt = tukar posisi (cadangan: Ctrl+Alt+...). Win+Shift+Q atau Ctrl+C = keluar dan pulihkan semua window.");
+        println!("vscroll-wm jalan. Win+Arrow = snap, +Shift = fokus, Win+Enter = penuh, Win+Alt = tukar posisi, Win+Alt+F = float/tile, Win+Alt+I = info window (cadangan: Ctrl+Alt+...). Win+Shift+Q atau Ctrl+C = keluar dan pulihkan semua window.");
         if app.sync() {
             app.apply();
         }
@@ -743,26 +907,36 @@ fn main() {
                     }
                     app.on_hotkey(id);
                 }
+                tray::WM_TRAY_PAUSE => app.toggle_pause(),
                 WM_WINEVENT => {
-                    app.on_event(msg.wParam.0 as u32, HWND(msg.lParam.0 as *mut c_void));
+                    if !tray::PAUSED.load(Ordering::Relaxed) {
+                        app.on_event(msg.wParam.0 as u32, HWND(msg.lParam.0 as *mut c_void));
+                    }
                 }
                 WM_TIMER => {
                     let id = msg.wParam.0;
+                    let paused = tray::PAUSED.load(Ordering::Relaxed);
                     if app.anim_timer != 0 && id == app.anim_timer {
                         app.tick_anim();
                     } else if app.sync_timer != 0 && id == app.sync_timer {
                         app.stop_sync_timer();
-                        if app.sync() {
-                            app.apply();
+                        if !paused {
+                            if app.sync() {
+                                app.apply();
+                            }
+                            if std::mem::take(&mut app.recheck) {
+                                app.schedule_sync(RECHECK_MS);
+                            }
                         }
-                        if std::mem::take(&mut app.recheck) {
-                            app.schedule_sync(RECHECK_MS);
-                        }
-                    } else if app.sync() {
+                    } else if !paused && app.sync() {
                         app.apply(); // jaring pengaman
                     }
                 }
-                _ => {}
+                _ => {
+                    // pesan untuk window tray (menu, dll)
+                    let _ = TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
             }
         }
 
@@ -775,6 +949,7 @@ fn main() {
         if let Some(h) = hook {
             let _ = UnhookWindowsHookEx(h);
         }
+        tray::remove();
         safety::restore_all();
         safety::EXIT_DONE.store(true, Ordering::Relaxed);
         println!("semua window dikembalikan. sampai jumpa.");
