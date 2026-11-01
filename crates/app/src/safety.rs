@@ -10,6 +10,7 @@ use std::time::Duration;
 use layout::Rect;
 use windows::core::BOOL;
 use windows::Win32::Foundation::{HWND, LPARAM, RECT, WPARAM};
+use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_BORDER_COLOR};
 use windows::Win32::System::Console::SetConsoleCtrlHandler;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -18,6 +19,13 @@ pub const WM_QUIT_REQUEST: u32 = WM_APP + 2;
 
 /// Diset true oleh thread utama setelah semua window dipulihkan.
 pub static EXIT_DONE: AtomicBool = AtomicBool::new(false);
+
+/// Nilai DWM untuk "border bawaan" (DWMWA_COLOR_DEFAULT).
+pub const DWM_COLOR_DEFAULT: u32 = 0xFFFF_FFFF;
+
+/// True setelah app pernah mewarnai border; saat pemulihan, border semua window
+/// dikembalikan ke bawaan (termasuk saat crash).
+pub static BORDER_TOUCHED: AtomicBool = AtomicBool::new(false);
 
 static MAIN_THREAD: AtomicU32 = AtomicU32::new(0);
 
@@ -86,9 +94,22 @@ pub unsafe fn restore_all() {
         Ok(g) => g.clone(),
         Err(_) => return,
     };
+    let touched = BORDER_TOUCHED.load(Ordering::Relaxed);
     for s in list {
         let h = hwnd_of(s.hwnd);
-        if !alive(h) || IsIconic(h).as_bool() {
+        if !alive(h) {
+            continue;
+        }
+        if touched {
+            let color = DWM_COLOR_DEFAULT;
+            let _ = DwmSetWindowAttribute(
+                h,
+                DWMWA_BORDER_COLOR,
+                &color as *const u32 as *const c_void,
+                4,
+            );
+        }
+        if IsIconic(h).as_bool() {
             continue;
         }
         if s.zoomed {

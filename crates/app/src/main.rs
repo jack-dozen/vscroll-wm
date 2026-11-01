@@ -7,7 +7,9 @@
 //! Win+Alt+Arrow         -> tukar posisi dengan window tetangga
 //! Win+Alt+F             -> float / tile window aktif
 //! Win+Alt+I             -> cetak info window aktif (class / exe / title) di console
-//! Win+Shift+Q           -> keluar dan kembalikan semua window (juga Ctrl+C)
+//! Win+Q                 -> tutup window aktif
+//! Win+M                 -> minimize window aktif
+//! Win+Ctrl+Esc          -> keluar dan kembalikan semua window (juga Ctrl+C)
 //! Ctrl+Alt+... (cadangan, aksi yang sama)
 //!
 //! Aslinya:
@@ -18,6 +20,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod config;
 mod rules;
 mod safety;
 mod tray;
@@ -31,7 +34,8 @@ use layout::{Dir, Rect, Strip, WindowId};
 use windows::core::{w, BOOL, PCWSTR};
 use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{
-    DwmGetWindowAttribute, DWMWA_CLOAKED, DWMWA_EXTENDED_FRAME_BOUNDS,
+    DwmGetWindowAttribute, DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CLOAKED,
+    DWMWA_EXTENDED_FRAME_BOUNDS,
 };
 use windows::Win32::System::Threading::{CreateMutexW, GetCurrentProcessId, GetCurrentThreadId};
 use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
@@ -52,6 +56,8 @@ const HOTKEY_MAXIMIZE: i32 = 9;
 const HOTKEY_QUIT: i32 = 14;
 const HOTKEY_FLOAT: i32 = 15;
 const HOTKEY_INSPECT: i32 = 16;
+const HOTKEY_MINIMIZE: i32 = 17;
+const HOTKEY_CLOSE: i32 = 18;
 /// Pesan dari callback event Windows ke thread utama.
 const WM_WINEVENT: u32 = WM_APP + 3;
 /// Jeda (ms) mengumpulkan rentetan event sebelum menata ulang.
@@ -59,9 +65,7 @@ const EVENT_DEBOUNCE_MS: u32 = 40;
 /// Cek ulang setelah window baru ditata (sebagian app mengubah ukurannya sendiri
 /// beberapa saat setelah muncul).
 const RECHECK_MS: u32 = 250;
-/// Gap default (piksel fisik). Ubah tanpa kompilasi ulang lewat env VSCROLL_GAP.
-const DEFAULT_GAP: i32 = 16;
-/// Durasi animasi (ms). 0 = mati. Ubah lewat env VSCROLL_ANIM_MS.
+/// Durasi animasi bawaan (ms). Diubah lewat vscroll-wm.conf (anim_ms).
 const DEFAULT_ANIM_MS: f32 = 160.0;
 
 fn wid(h: HWND) -> WindowId {
@@ -170,6 +174,16 @@ unsafe fn place(hwnd: HWND, r: Rect) -> RECT {
     ext_bounds(hwnd)
 }
 
+unsafe fn set_border(h: HWND, color: u32) {
+    safety::BORDER_TOUCHED.store(true, Ordering::Relaxed);
+    let _ = DwmSetWindowAttribute(
+        h,
+        DWMWA_BORDER_COLOR,
+        &color as *const u32 as *const c_void,
+        4,
+    );
+}
+
 unsafe fn title(h: HWND) -> String {
     let mut buf = [0u16; 128];
     let n = GetWindowTextW(h, &mut buf);
@@ -226,7 +240,9 @@ unsafe extern "system" fn kb_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> 
             {
                 let shift = GetAsyncKeyState(VK_SHIFT.0 as i32) < 0;
                 let alt = GetAsyncKeyState(VK_MENU.0 as i32) < 0;
-                let action = if let Some(i) = arrow_index(vk) {
+                let ctrl = GetAsyncKeyState(VK_CONTROL.0 as i32) < 0;
+                // Win+Ctrl+Arrow dibiarkan lewat: itu pindah virtual desktop bawaan Windows
+                let action = if let Some(i) = arrow_index(vk).filter(|_| !ctrl) {
                     // Win+Alt: tukar posisi, Win+Shift: fokus, Win: snap
                     Some(if alt {
                         i + 10
@@ -237,8 +253,12 @@ unsafe extern "system" fn kb_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> 
                     })
                 } else if vk == VK_RETURN.0 {
                     Some(HOTKEY_MAXIMIZE)
-                } else if vk == VK_Q.0 && shift {
+                } else if vk == VK_ESCAPE.0 && ctrl {
                     Some(HOTKEY_QUIT)
+                } else if vk == VK_Q.0 && !shift && !alt && !ctrl {
+                    Some(HOTKEY_CLOSE)
+                } else if vk == VK_M.0 && !shift && !alt && !ctrl {
+                    Some(HOTKEY_MINIMIZE)
                 } else if vk == VK_F.0 && alt {
                     Some(HOTKEY_FLOAT)
                 } else if vk == VK_I.0 && alt {
@@ -351,6 +371,10 @@ struct App {
     /// 0 = timer animasi tidak jalan (tidak ada beban saat idle).
     anim_timer: usize,
     anim_ms: f32,
+    /// Warna border window fokus (COLORREF), dari konfigurasi.
+    focus_border: Option<u32>,
+    /// Window yang sedang diwarnai bordernya, supaya bisa dikembalikan.
+    border_applied: Option<(HWND, u32)>,
     /// Timer sekali jalan untuk menata ulang setelah event (0 = tidak ada).
     sync_timer: usize,
     /// Ada window baru: jadwalkan satu pengecekan ulang.
@@ -360,15 +384,7 @@ struct App {
 impl App {
     unsafe fn new() -> Self {
         Self {
-            strip: {
-                let mut s = Strip::new(work_area());
-                let gap = std::env::var("VSCROLL_GAP")
-                    .ok()
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(DEFAULT_GAP);
-                s.set_gap(gap);
-                s
-            },
+            strip: Strip::new(work_area()),
             map: HashMap::new(),
             last_fg: None,
             actual: HashMap::new(),
@@ -378,10 +394,9 @@ impl App {
             anim_timer: 0,
             sync_timer: 0,
             recheck: false,
-            anim_ms: std::env::var("VSCROLL_ANIM_MS")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(if animations_enabled() { DEFAULT_ANIM_MS } else { 0.0 }),
+            anim_ms: DEFAULT_ANIM_MS,
+            focus_border: None,
+            border_applied: None,
         }
     }
 
@@ -516,6 +531,7 @@ impl App {
             // 10 ms = minimum Windows; praktisnya berdetak tiap ~15,6 ms (~64 fps)
             self.anim_timer = SetTimer(None, 0, 10, None);
         }
+        self.refresh_border();
     }
 
     /// Pindahkan window yang ukurannya sudah benar ke `t`: dianimasikan kalau
@@ -562,6 +578,82 @@ impl App {
         }
     }
 
+    /// Warnai border window yang fokus (kalau focus_border diatur) dan kembalikan
+    /// border window yang sebelumnya.
+    unsafe fn refresh_border(&mut self) {
+        let want = self.focus_border.and_then(|c| {
+            self.strip
+                .focused()
+                .and_then(|f| self.map.get(&f).copied())
+                .map(|h| (h, c))
+        });
+        if want == self.border_applied {
+            return;
+        }
+        if let Some((old, _)) = self.border_applied.take() {
+            if want.map_or(true, |(h, _)| h != old) && safety::alive(old) {
+                set_border(old, safety::DWM_COLOR_DEFAULT);
+            }
+        }
+        if let Some((h, c)) = want {
+            set_border(h, c);
+            self.border_applied = Some((h, c));
+        }
+    }
+
+    /// Terapkan konfigurasi (gap, animasi, warna border).
+    unsafe fn apply_config(&mut self, cfg: &config::Config) {
+        self.strip.set_gap(cfg.gap);
+        self.focus_border = cfg.focus_border;
+        self.refresh_border();
+        self.anim_ms = cfg.anim_ms.unwrap_or(if animations_enabled() {
+            DEFAULT_ANIM_MS
+        } else {
+            0.0
+        });
+    }
+
+    /// Muat ulang file konfigurasi (menu tray). Aturan ignore butuh restart.
+    unsafe fn reload_config(&mut self) {
+        let cfg = config::load();
+        self.apply_config(&cfg);
+        self.apply();
+    }
+
+    /// Win+Q: tutup window aktif (setara Alt+F4). Hanya window yang kita kenal,
+    /// supaya desktop / taskbar tidak ikut terkirim perintah tutup.
+    unsafe fn close_active(&self) {
+        let fg = GetForegroundWindow();
+        let id = wid(fg);
+        if self.map.contains_key(&id) || self.floating.contains_key(&id) {
+            let _ = PostMessageW(Some(fg), WM_SYSCOMMAND, WPARAM(SC_CLOSE as usize), LPARAM(0));
+        }
+    }
+
+    /// Win+M: minimize window aktif saja. Fokus pindah ke tetangganya di strip,
+    /// bukan ke window pilihan Windows.
+    unsafe fn minimize_active(&mut self) {
+        let fg = GetForegroundWindow();
+        let id = wid(fg);
+        let tiled = self.map.contains_key(&id);
+        if !tiled && !self.floating.contains_key(&id) {
+            return;
+        }
+        if tiled {
+            self.strip.set_hidden(id, true); // fokus pindah ke tetangga
+            self.hidden.insert(id);
+            self.anim.remove(&id);
+        }
+        let _ = ShowWindow(fg, SW_MINIMIZE);
+        if tiled {
+            if let Some(h) = self.strip.focused().and_then(|f| self.map.get(&f).copied()) {
+                let _ = SetForegroundWindow(h);
+                self.last_fg = Some(wid(h));
+            }
+            self.apply();
+        }
+    }
+
     /// Jeda / lanjutkan (menu tray). Saat dijeda semua window dikembalikan ke
     /// posisi asli dan hotkey diteruskan ke Windows.
     unsafe fn toggle_pause(&mut self) {
@@ -571,7 +663,8 @@ impl App {
         if paused {
             self.finish_all_anims();
             self.stop_sync_timer();
-            safety::restore_all();
+            safety::restore_all(); // juga mengembalikan warna border
+            self.border_applied = None;
         } else {
             self.sync();
             self.apply();
@@ -767,6 +860,14 @@ impl App {
                 self.inspect();
                 return;
             }
+            HOTKEY_CLOSE => {
+                self.close_active();
+                return;
+            }
+            HOTKEY_MINIMIZE => {
+                self.minimize_active();
+                return;
+            }
             HOTKEY_FLOAT => {
                 self.toggle_float();
                 self.sync(); // window yang baru di-tile masuk strip
@@ -801,6 +902,7 @@ fn main() {
         }
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let mut app = App::new();
+        app.apply_config(&config::load());
 
         for (i, (vk, _)) in DIRS.iter().enumerate() {
             let base = MOD_CONTROL | MOD_ALT | MOD_NOREPEAT;
@@ -891,7 +993,7 @@ fn main() {
         let poll_ms = if event_hooks.is_empty() { 300 } else { 1000 };
         SetTimer(None, 1, poll_ms, None);
 
-        println!("vscroll-wm jalan. Win+Arrow = snap, +Shift = fokus, Win+Enter = penuh, Win+Alt = tukar posisi, Win+Alt+F = float/tile, Win+Alt+I = info window (cadangan: Ctrl+Alt+...). Win+Shift+Q atau Ctrl+C = keluar dan pulihkan semua window.");
+        println!("vscroll-wm jalan. Win+Arrow = snap, +Shift = fokus, Win+Enter = penuh, Win+Alt = tukar posisi, Win+Alt+F = float/tile, Win+Alt+I = info window, Win+Q = tutup, Win+M = minimize (cadangan: Ctrl+Alt+...). Win+Ctrl+Esc atau Ctrl+C = keluar dan pulihkan semua window.");
         if app.sync() {
             app.apply();
         }
@@ -908,6 +1010,7 @@ fn main() {
                     app.on_hotkey(id);
                 }
                 tray::WM_TRAY_PAUSE => app.toggle_pause(),
+                tray::WM_TRAY_RELOAD => app.reload_config(),
                 WM_WINEVENT => {
                     if !tray::PAUSED.load(Ordering::Relaxed) {
                         app.on_event(msg.wParam.0 as u32, HWND(msg.lParam.0 as *mut c_void));
