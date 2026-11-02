@@ -463,6 +463,8 @@ impl App {
                 changed = true;
             }
         }
+        // foreground bisa berubah tanpa mengubah layout (mis. setelah Win+Shift+Arrow)
+        self.refresh_border();
         changed || self.drifted()
     }
 
@@ -578,15 +580,19 @@ impl App {
         }
     }
 
-    /// Warnai border window yang fokus (kalau focus_border diatur) dan kembalikan
-    /// border window yang sebelumnya.
+    /// Warnai border window yang SEDANG foreground (kalau ditata dan focus_border
+    /// diatur), dan kembalikan border window sebelumnya.
+    ///
+    /// Sengaja berdasar foreground sebenarnya, bukan tujuan fokus di strip: warna
+    /// yang dipasang sebelum window selesai diaktifkan bisa hilang saat aktivasi.
     unsafe fn refresh_border(&mut self) {
-        let want = self.focus_border.and_then(|c| {
-            self.strip
-                .focused()
-                .and_then(|f| self.map.get(&f).copied())
-                .map(|h| (h, c))
-        });
+        let want = match self.focus_border {
+            Some(c) => {
+                let fg = GetForegroundWindow();
+                self.map.contains_key(&wid(fg)).then_some((fg, c))
+            }
+            None => None,
+        };
         if want == self.border_applied {
             return;
         }
