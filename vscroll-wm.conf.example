@@ -13,6 +13,13 @@ gap = 16
 # Warna border window yang fokus (Windows 11), format #RRGGBB. off = tidak diubah.
 # focus_border = #4FA8F5
 
+# --- Lebar lajur ---
+# Win+] menggeser pembagi ke kanan, Win+[ ke kiri, Win+\ mengembalikannya ke 50/50.
+# Lebar dimiliki lajur (kiri / kanan), jadi semua window di lajur itu ikut berubah, dan
+# pembagi disimpan per blok: window penuh lebar memisahkan blok di atas dan di bawahnya.
+# Langkah tiap tekan dalam piksel (10-400). Menahan tombol mengulang terus.
+resize_step = 80
+
 # --- Overview: panel peta strip, seperti Alt+Tab ---
 
 # Tombol pembuka bersama Win: tab (bawaan), space, grave, satu huruf/angka, atau off.

@@ -13,6 +13,7 @@
 //!   overview_label = title    isi label kotak: title (judul penuh), app (nama app
 //!                     saja), reverse ("judul - Vivaldi" jadi "Vivaldi - judul")
 //!   alias.code = VS Code      nama tampilan untuk mode `app` (nama exe tanpa .exe)
+//!   resize_step = 80          langkah Win+[ dan Win+] (piksel, 10-400)
 //!   overview_size = 70        ukuran panel overview, persen dari area kerja (30-100)
 //!   overview_key = tab        tombol overview bersama Win: tab, space, grave, satu
 //!                     huruf/angka (bukan q/m), atau off. Win+Alt+Space selalu aktif.
@@ -77,6 +78,8 @@ pub struct Config {
     pub overview_label: LabelMode,
     /// Nama tampilan untuk mode `app`: (nama exe tanpa .exe, huruf kecil) -> nama.
     pub aliases: Vec<(String, String)>,
+    /// Langkah pergeseran pembagi lajur per tekan Win+[ / Win+] (piksel).
+    pub resize_step: i32,
     /// Ukuran panel overview dalam persen area kerja.
     pub overview_size: i32,
     /// Kode virtual-key tombol overview (bersama Win). 0 = dimatikan.
@@ -94,6 +97,7 @@ impl Default for Config {
             overview_thumbnails: true,
             overview_label: LabelMode::Title,
             aliases: Vec::new(),
+            resize_step: 80,
             overview_size: 70,
             overview_key: 0x09, // Tab
             overview_colors: OverviewColors::default(),
@@ -146,6 +150,10 @@ impl Config {
                     _ => warnings.push(format!(
                         "baris {n}: overview_label harus title, app, atau reverse"
                     )),
+                },
+                "resize_step" => match value.parse::<i32>() {
+                    Ok(v) => cfg.resize_step = v.clamp(10, 400),
+                    Err(_) => warnings.push(format!("baris {n}: resize_step harus bilangan bulat")),
                 },
                 "overview_size" => match value.parse::<i32>() {
                     Ok(v) => cfg.overview_size = v.clamp(30, 100),
@@ -487,5 +495,17 @@ mod tests {
         assert_eq!(cfg.overview_size, 30);
         assert_eq!(w.len(), 2);
         assert_eq!(cfg.overview_colors, OverviewColors::default());
+    }
+
+    #[test]
+    fn resize_step_is_parsed_and_clamped() {
+        let (cfg, w) = Config::parse("resize_step = 120");
+        assert!(w.is_empty());
+        assert_eq!(cfg.resize_step, 120);
+        assert_eq!(Config::parse("resize_step = 1").0.resize_step, 10);
+        assert_eq!(Config::parse("resize_step = 9999").0.resize_step, 400);
+        assert_eq!(Config::default().resize_step, 80);
+        let (cfg, w) = Config::parse("resize_step = lebar");
+        assert_eq!((cfg.resize_step, w.len()), (80, 1));
     }
 }

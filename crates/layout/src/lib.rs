@@ -87,6 +87,9 @@ pub struct Item {
     pub height: Height,
     /// Lebar yang dipulihkan saat window muncul lagi (dipakai kalau `span` = Hidden).
     pub restore: Span,
+    /// Lebar lajur kiri dalam permil (500 = 50%). Berlaku untuk seluruh blok;
+    /// yang dipakai adalah nilai item lajur pertama di blok itu.
+    pub split: i32,
 }
 
 /// Hasil layout untuk satu window. `visible = false` berarti seluruhnya
@@ -122,6 +125,9 @@ pub struct Overview {
 struct Flow {
     id: WindowId,
     span: Span,
+    /// Posisi dan lebar horizontal di area konten.
+    x: i32,
+    w: i32,
     top: i32,
     h: i32,
 }
@@ -130,13 +136,8 @@ impl Flow {
     fn bottom(&self) -> i32 {
         self.top + self.h
     }
-    fn x_range(&self, w: i32) -> (i32, i32) {
-        match self.span {
-            Span::Full => (0, w),
-            Span::Left => (0, w / 2),
-            Span::Right => (w / 2, w),
-            Span::Hidden => (0, 0),
-        }
+    fn x_range(&self) -> (i32, i32) {
+        (self.x, self.x + self.w)
     }
 }
 
@@ -147,6 +148,8 @@ pub struct Strip {
     viewport: Rect,
     /// Tinggi minimum yang diukur dari window asli (app menolak dikecilkan).
     min_heights: HashMap<WindowId, i32>,
+    /// Lebar minimum yang diukur dari window asli (app menolak dipersempit).
+    min_widths: HashMap<WindowId, i32>,
     /// Jarak antar window dan ke tepi layar (piksel).
     gap: i32,
 }
@@ -159,6 +162,7 @@ impl Strip {
             scroll_y: 0,
             viewport,
             min_heights: HashMap::new(),
+            min_widths: HashMap::new(),
             gap: 0,
         }
     }
@@ -207,6 +211,124 @@ impl Strip {
         }
     }
 
+    /// Catat lebar minimum window. True kalau nilainya naik (layout berubah).
+    pub fn set_min_width(&mut self, id: WindowId, w: i32) -> bool {
+        let w = w.min((self.content().w - 2 * (self.gap / 2)).max(0));
+        let cur = self.min_widths.get(&id).copied().unwrap_or(0);
+        if w > cur {
+            self.min_widths.insert(id, w);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Batas blok (run) yang memuat posisi `i`: indeks pertama setelah window penuh
+    /// sebelumnya sampai window penuh berikutnya.
+    fn run_bounds(&self, i: usize) -> (usize, usize) {
+        let lo = self.items[..i]
+            .iter()
+            .rposition(|it| it.span == Span::Full)
+            .map_or(0, |p| p + 1);
+        let hi = self.items[i + 1..]
+            .iter()
+            .position(|it| it.span == Span::Full)
+            .map_or(self.items.len(), |p| i + 1 + p);
+        (lo, hi)
+    }
+
+    /// Rasio pembagi (permil) sebuah blok: nilai item lajur pertama di blok itu.
+    fn run_split(&self, left: &[usize], right: &[usize]) -> i32 {
+        let first = match (left.first(), right.first()) {
+            (Some(&a), Some(&b)) => Some(a.min(b)),
+            (Some(&a), None) => Some(a),
+            (None, Some(&b)) => Some(b),
+            (None, None) => None,
+        };
+        first.map_or(500, |k| self.items[k].split)
+    }
+
+    /// Lebar lajur kiri (piksel konten) untuk satu blok. Dibatasi 15%-85%, lalu oleh
+    /// lebar minimum window di tiap lajur yang berisi.
+    fn left_width(&self, cw: i32, split: i32, left: &[usize], right: &[usize]) -> i32 {
+        let gap = 2 * (self.gap / 2);
+        let lane_min = |idxs: &[usize]| {
+            idxs.iter()
+                .filter_map(|&k| self.min_widths.get(&self.items[k].id))
+                .max()
+                .map_or(0, |m| m + gap)
+        };
+        let mut lw = (cw as i64 * split as i64 / 1000) as i32;
+        lw = lw.clamp(cw * 15 / 100, cw * 85 / 100);
+        if !left.is_empty() {
+            lw = lw.max(lane_min(left));
+        }
+        if !right.is_empty() {
+            lw = lw.min(cw - lane_min(right));
+        }
+        lw.clamp(0, cw)
+    }
+
+    /// Item lajur (kiri/kanan, tidak tersembunyi) dalam satu blok.
+    fn lanes_in(&self, lo: usize, hi: usize) -> (Vec<usize>, Vec<usize>) {
+        let left = (lo..hi).filter(|&k| self.items[k].span == Span::Left).collect();
+        let right = (lo..hi).filter(|&k| self.items[k].span == Span::Right).collect();
+        (left, right)
+    }
+
+    /// Geser pembagi lajur pada blok window yang fokus: `delta_px` > 0 ke kanan,
+    /// < 0 ke kiri. Lebar dimiliki lajur, jadi semua window di lajur itu ikut.
+    /// False kalau tidak ada yang bergeser (window penuh lebar, atau sudah di batas).
+    pub fn adjust_split(&mut self, delta_px: i32) -> bool {
+        let Some(i) = self.focused.and_then(|f| self.index_of(f)) else { return false };
+        if !matches!(self.items[i].span, Span::Left | Span::Right) {
+            return false;
+        }
+        let (lo, hi) = self.run_bounds(i);
+        let (left, right) = self.lanes_in(lo, hi);
+        let cw = self.content().w;
+        let stored = self.run_split(&left, &right);
+        // mulai dari lebar SEBENARNYA (sudah termasuk batas app), bukan nilai tersimpan,
+        // supaya menekan terus di batas tidak menumpuk
+        let current = self.left_width(cw, stored, &left, &right);
+        let target = (current + delta_px).clamp(cw * 15 / 100, cw * 85 / 100);
+        let new_split = (target as i64 * 1000 / cw.max(1) as i64) as i32;
+        if new_split == stored {
+            return false;
+        }
+        // lajur yang menyempit diukur ulang: batas lamanya mungkin sudah tidak berlaku
+        let shrinking = if delta_px > 0 { &right } else { &left };
+        for &k in shrinking {
+            self.min_widths.remove(&self.items[k].id);
+        }
+        for k in lo..hi {
+            if self.items[k].span != Span::Full {
+                self.items[k].split = new_split;
+            }
+        }
+        true
+    }
+
+    /// Kembalikan pembagi blok window yang fokus ke 50/50.
+    pub fn reset_split(&mut self) -> bool {
+        let Some(i) = self.focused.and_then(|f| self.index_of(f)) else { return false };
+        if !matches!(self.items[i].span, Span::Left | Span::Right) {
+            return false;
+        }
+        let (lo, hi) = self.run_bounds(i);
+        let (left, right) = self.lanes_in(lo, hi);
+        let mut changed = self.run_split(&left, &right) != 500;
+        for &k in left.iter().chain(right.iter()) {
+            changed |= self.min_widths.remove(&self.items[k].id).is_some();
+        }
+        for k in lo..hi {
+            if self.items[k].span != Span::Full {
+                self.items[k].split = 500;
+            }
+        }
+        changed
+    }
+
     fn index_of(&self, id: WindowId) -> Option<usize> {
         self.items.iter().position(|it| it.id == id)
     }
@@ -231,7 +353,8 @@ impl Strip {
     /// 2x2 kuarter tetap sejajar baris demi baris, dan gap seragam.
     fn flow(&self) -> Vec<Flow> {
         let content_h = self.content().h;
-        let dummy = Flow { id: WindowId(0), span: Span::Full, top: 0, h: 0 };
+        let content_w = self.content().w;
+        let dummy = Flow { id: WindowId(0), span: Span::Full, x: 0, w: 0, top: 0, h: 0 };
         let mut out = vec![dummy; self.items.len()];
         let mut base = 0i32;
         let (mut left, mut right): (Vec<usize>, Vec<usize>) = (Vec::new(), Vec::new());
@@ -240,19 +363,19 @@ impl Strip {
                 Span::Left => left.push(i),
                 Span::Right => right.push(i),
                 Span::Hidden => {
-                    out[i] = Flow { id: it.id, span: Span::Hidden, top: base, h: 0 };
+                    out[i] = Flow { id: it.id, span: Span::Hidden, x: 0, w: 0, top: base, h: 0 };
                 }
                 Span::Full => {
-                    let top = self.place_run(&mut out, base, &left, &right, content_h);
+                    let top = self.place_run(&mut out, base, &left, &right, content_h, content_w);
                     left.clear();
                     right.clear();
                     let h = self.item_px(it);
-                    out[i] = Flow { id: it.id, span: Span::Full, top, h };
+                    out[i] = Flow { id: it.id, span: Span::Full, x: 0, w: content_w, top, h };
                     base = top + h;
                 }
             }
         }
-        self.place_run(&mut out, base, &left, &right, content_h);
+        self.place_run(&mut out, base, &left, &right, content_h, content_w);
         out
     }
 
@@ -264,6 +387,7 @@ impl Strip {
         left: &[usize],
         right: &[usize],
         content_h: i32,
+        content_w: i32,
     ) -> i32 {
         let mut hl: Vec<i32> = left.iter().map(|&k| self.item_px(&self.items[k])).collect();
         let mut hr: Vec<i32> = right.iter().map(|&k| self.item_px(&self.items[k])).collect();
@@ -300,14 +424,29 @@ impl Strip {
             }
         }
 
+        let lw = self.left_width(content_w, self.run_split(left, right), left, right);
         let mut yl = base;
         for (n, &k) in left.iter().enumerate() {
-            out[k] = Flow { id: self.items[k].id, span: Span::Left, top: yl, h: hl[n] };
+            out[k] = Flow {
+                id: self.items[k].id,
+                span: Span::Left,
+                x: 0,
+                w: lw,
+                top: yl,
+                h: hl[n],
+            };
             yl += hl[n];
         }
         let mut yr = base;
         for (n, &k) in right.iter().enumerate() {
-            out[k] = Flow { id: self.items[k].id, span: Span::Right, top: yr, h: hr[n] };
+            out[k] = Flow {
+                id: self.items[k].id,
+                span: Span::Right,
+                x: lw,
+                w: content_w - lw,
+                top: yr,
+                h: hr[n],
+            };
             yr += hr[n];
         }
         yl.max(yr)
@@ -334,7 +473,7 @@ impl Strip {
             });
         self.items.insert(
             at,
-            Item { id, span: Span::Full, height: Height::Full, restore: Span::Full },
+            Item { id, span: Span::Full, height: Height::Full, restore: Span::Full, split: 500 },
         );
         self.focused = Some(id);
         self.ensure_visible();
@@ -344,6 +483,7 @@ impl Strip {
         let Some(idx) = self.index_of(id) else { return };
         self.items.remove(idx);
         self.min_heights.remove(&id);
+        self.min_widths.remove(&id);
         if self.focused == Some(id) {
             self.focused = self.pick_focus(idx);
         }
@@ -471,6 +611,15 @@ impl Strip {
             .position(|it| it.span == Span::Full)
             .map_or(self.items.len(), |p| i + 1 + p);
 
+        // masuk ke blok yang sudah punya pembagi: pakai rasio blok itu
+        if let Some(r) = (run_start..run_end)
+            .filter(|&k| k != i && matches!(self.items[k].span, Span::Left | Span::Right))
+            .map(|k| self.items[k].split)
+            .next()
+        {
+            self.items[i].split = r;
+        }
+
         let x = (run_start..i)
             .rev()
             .find(|&j| self.items[j].span == target)
@@ -525,14 +674,13 @@ impl Strip {
     /// Tetangga terdekat dari `id` di arah `dir`, tanpa mengubah fokus.
     pub fn neighbor_of(&self, id: WindowId, dir: Dir) -> Option<WindowId> {
         let flow = self.flow();
-        let w = self.content().w;
         let f = flow.iter().find(|c| c.id == id)?;
-        let (fx0, fx1) = f.x_range(w);
+        let (fx0, fx1) = f.x_range();
         let (fy0, fy1) = (f.top, f.bottom());
 
         let mut best: Option<((bool, i32, i32, i32), WindowId)> = None;
         for c in flow.iter().filter(|c| c.id != id && c.span != Span::Hidden) {
-            let (cx0, cx1) = c.x_range(w);
+            let (cx0, cx1) = c.x_range();
             let (cy0, cy1) = (c.top, c.bottom());
             let h_ov = (fx1.min(cx1) - fx0.max(cx0)).max(0);
             let v_ov = (fy1.min(cy1) - fy0.max(cy0)).max(0);
@@ -604,12 +752,11 @@ impl Strip {
     /// kiri ke kanan, berputar. Dipakai untuk Tab di overview. None kalau hanya
     /// ada satu window atau `id` tidak dikenal / tersembunyi.
     pub fn cycle_from(&self, id: WindowId, forward: bool) -> Option<WindowId> {
-        let c = self.content();
         let mut order: Vec<(i32, i32, WindowId)> = self
             .flow()
             .iter()
             .filter(|f| f.span != Span::Hidden)
-            .map(|f| (f.top, f.x_range(c.w).0, f.id))
+            .map(|f| (f.top, f.x_range().0, f.id))
             .collect();
         order.sort_by_key(|&(top, x, _)| (top, x));
         let n = order.len();
@@ -629,7 +776,7 @@ impl Strip {
             .iter()
             .filter(|f| f.span != Span::Hidden)
             .map(|f| {
-                let (x0, x1) = f.x_range(c.w);
+                let (x0, x1) = f.x_range();
                 OverviewItem { id: f.id, rect: Rect { x: x0, y: f.top, w: x1 - x0, h: f.h } }
             })
             .collect();
@@ -646,17 +793,12 @@ impl Strip {
         let vp = self.viewport;
         let c = self.content();
         let g = self.gap / 2;
-        let half = c.w / 2;
         self.flow()
             .into_iter()
             .filter(|f| f.span != Span::Hidden)
             .map(|f| {
                 let top = c.y + f.top - self.scroll_y;
-                let (x, w) = match f.span {
-                    Span::Full | Span::Hidden => (c.x, c.w),
-                    Span::Left => (c.x, half),
-                    Span::Right => (c.x + half, c.w - half),
-                };
+                let (x, w) = (c.x + f.x, f.w);
                 Placement {
                     id: f.id,
                     rect: Rect {
@@ -1292,5 +1434,153 @@ mod tests {
         s.set_hidden(B, true);
         assert_eq!(s.cycle_from(A, true), Some(C));
         assert_eq!(s.cycle_from(B, true), None); // tersembunyi
+    }
+
+    fn two_half_lanes() -> Strip {
+        let mut s = strip();
+        s.add_window(A);
+        s.snap(Dir::Up);
+        s.snap(Dir::Left);
+        s.add_window(B);
+        s.snap(Dir::Up);
+        s.snap(Dir::Right);
+        s
+    }
+
+    #[test]
+    fn adjust_split_moves_the_lane_divider() {
+        let mut s = two_half_lanes();
+        s.set_focus(A);
+        assert!(s.adjust_split(96));
+        assert_eq!(r(&s, A), rect(0, 0, 1056, 540));
+        assert_eq!(r(&s, B), rect(1056, 0, 864, 540));
+        s.set_focus(B);
+        assert!(s.adjust_split(-192)); // dari 1056 ke 864
+        assert_eq!(r(&s, A).w, 864);
+        assert_eq!(r(&s, B), rect(864, 0, 1056, 540));
+    }
+
+    #[test]
+    fn divider_stops_at_the_global_limits_without_piling_up() {
+        let mut s = two_half_lanes();
+        s.set_focus(A);
+        assert!(s.adjust_split(500));
+        assert!(s.adjust_split(500));
+        assert_eq!(r(&s, A).w, 1632); // 85%
+        assert!(!s.adjust_split(500)); // sudah mentok
+        assert!(s.adjust_split(-96)); // dan langsung bisa balik
+        assert_eq!(r(&s, A).w, 1536);
+    }
+
+    #[test]
+    fn divider_belongs_to_the_lane_so_stacked_windows_follow() {
+        let mut s = strip();
+        s.add_window(A);
+        s.snap(Dir::Up);
+        s.snap(Dir::Left);
+        s.add_window(B);
+        s.snap(Dir::Up);
+        s.snap(Dir::Right);
+        s.add_window(C);
+        s.snap(Dir::Up);
+        s.snap(Dir::Left); // C di bawah A, lajur kiri
+        s.set_focus(A);
+        assert!(s.adjust_split(96));
+        assert_eq!(r(&s, A).w, 1056);
+        assert_eq!(r(&s, C).w, 1056);
+        assert_eq!(r(&s, B).w, 864);
+    }
+
+    #[test]
+    fn divider_is_stored_per_block() {
+        // blok 1: A B. Window penuh C. Blok 2: D X.
+        let mut s = strip();
+        s.add_window(A);
+        s.snap(Dir::Up);
+        s.snap(Dir::Left);
+        s.add_window(B);
+        s.snap(Dir::Up);
+        s.snap(Dir::Right);
+        s.add_window(C);
+        s.snap(Dir::Up);
+        s.add_window(D);
+        s.snap(Dir::Up);
+        s.snap(Dir::Left);
+        s.add_window(X);
+        s.snap(Dir::Up);
+        s.snap(Dir::Right);
+        s.set_focus(A);
+        assert!(s.adjust_split(96));
+        assert_eq!(r(&s, A).w, 1056);
+        assert_eq!((r(&s, D).w, r(&s, X).w), (960, 960)); // blok 2 tidak ikut
+        s.set_focus(D);
+        assert!(s.adjust_split(-96));
+        assert_eq!(r(&s, D).w, 864);
+        assert_eq!(r(&s, A).w, 1056); // blok 1 tidak ikut
+        assert_eq!(r(&s, C).w, 1920); // window penuh tidak punya pembagi
+    }
+
+    #[test]
+    fn full_width_window_has_no_divider() {
+        let mut s = strip();
+        s.add_window(A);
+        assert!(!s.adjust_split(96));
+        assert!(!s.reset_split());
+    }
+
+    #[test]
+    fn reset_returns_to_even_split() {
+        let mut s = two_half_lanes();
+        s.set_focus(A);
+        s.adjust_split(300);
+        assert!(r(&s, A).w > 960);
+        assert!(s.reset_split());
+        assert_eq!(r(&s, A).w, 960);
+        assert!(!s.reset_split()); // sudah 50/50
+    }
+
+    #[test]
+    fn app_minimum_width_pins_the_divider() {
+        let mut s = two_half_lanes();
+        s.set_focus(A);
+        assert!(s.set_min_width(B, 1000));
+        assert_eq!((r(&s, A).w, r(&s, B).w, r(&s, B).x), (920, 1000, 920));
+        assert!(s.adjust_split(100)); // lajur kanan diukur ulang
+        assert!(r(&s, B).w < 1000);
+        assert!(s.set_min_width(B, 1000)); // pengukuran ulang: app tetap menolak
+        assert_eq!(r(&s, A).w, 920);
+        assert!(!s.adjust_split(100)); // tidak bergeser dan tidak menumpuk
+    }
+
+    #[test]
+    fn min_width_is_capped_to_the_content_width() {
+        let mut s = two_half_lanes();
+        assert!(s.set_min_width(B, 99_999));
+        assert!(r(&s, B).w <= 1920);
+    }
+
+    #[test]
+    fn divider_shows_up_in_overview_and_neighbor_lookup() {
+        let mut s = two_half_lanes();
+        s.set_focus(A);
+        s.adjust_split(96);
+        let ov = s.overview();
+        let at = |id| ov.items.iter().find(|i| i.id == id).unwrap().rect;
+        assert_eq!(at(A), rect(0, 0, 1056, 540));
+        assert_eq!(at(B), rect(1056, 0, 864, 540));
+        assert_eq!(s.neighbor_of(A, Dir::Right), Some(B));
+        assert_eq!(s.neighbor_of(B, Dir::Left), Some(A));
+    }
+
+    #[test]
+    fn gap_between_unequal_lanes_stays_constant() {
+        let mut s = two_half_lanes();
+        s.set_gap(20);
+        s.set_focus(A);
+        s.adjust_split(96);
+        let (a, b) = (r(&s, A), r(&s, B));
+        assert_eq!(b.x - (a.x + a.w), 20);
+        assert_eq!(a.x, 20);
+        assert_eq!(1920 - (b.x + b.w), 20);
     }
 }

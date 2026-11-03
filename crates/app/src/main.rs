@@ -8,6 +8,8 @@
 //! Win+Alt+F             -> float / tile window aktif
 //! Win+Alt+I             -> cetak info window aktif (class / exe / title) di console
 //! Win+Tab / Win+Alt+Space -> overview: peta strip (tombol: overview_key)
+//! Win+] / Win+[         -> lebarkan / sempitkan lajur window aktif (geser pembagi)
+//! Win+\                 -> kembalikan pembagi lajur ke 50/50
 //! Win+Q                 -> tutup window aktif
 //! Win+M                 -> minimize window aktif
 //! Win+Ctrl+Esc          -> keluar dan kembalikan semua window (juga Ctrl+C)
@@ -61,6 +63,9 @@ const HOTKEY_INSPECT: i32 = 16;
 const HOTKEY_MINIMIZE: i32 = 17;
 const HOTKEY_CLOSE: i32 = 18;
 const HOTKEY_OVERVIEW: i32 = 19;
+const HOTKEY_SPLIT_RIGHT: i32 = 20;
+const HOTKEY_SPLIT_LEFT: i32 = 21;
+const HOTKEY_SPLIT_RESET: i32 = 22;
 /// Pesan dari callback event Windows ke thread utama.
 const WM_WINEVENT: u32 = WM_APP + 3;
 /// Jeda (ms) mengumpulkan rentetan event sebelum menata ulang.
@@ -334,6 +339,12 @@ unsafe extern "system" fn kb_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> 
                     Some(HOTKEY_CLOSE)
                 } else if vk == VK_M.0 && !shift && !alt && !ctrl {
                     Some(HOTKEY_MINIMIZE)
+                } else if vk == VK_OEM_6.0 && !shift && !alt && !ctrl {
+                    Some(HOTKEY_SPLIT_RIGHT)
+                } else if vk == VK_OEM_4.0 && !shift && !alt && !ctrl {
+                    Some(HOTKEY_SPLIT_LEFT)
+                } else if vk == VK_OEM_5.0 && !shift && !alt && !ctrl {
+                    Some(HOTKEY_SPLIT_RESET)
                 } else if vk != 0
                     && vk == OVERVIEW_VK.load(Ordering::Relaxed)
                     && !shift
@@ -609,12 +620,14 @@ impl App {
                 self.anim.remove(&p.id);
                 let mut a = place(h, t);
                 let mut got = a.bottom - a.top;
-                if got > t.h + 2 {
+                let mut got_w = a.right - a.left;
+                if got > t.h + 2 || got_w > t.w + 2 {
                     // Sebagian app (Electron/UWP) menerapkan ukuran dengan jeda;
                     // ukur ulang sebelum menyimpulkan ada tinggi minimum.
                     std::thread::sleep(Duration::from_millis(40));
                     a = ext_bounds(h);
                     got = a.bottom - a.top;
+                    got_w = a.right - a.left;
                 }
                 self.actual.insert(p.id, bounds(a));
                 if got > t.h + 2 && self.strip.set_min_height(p.id, got) {
@@ -623,6 +636,15 @@ impl App {
                         title(h),
                         got,
                         t.h
+                    );
+                    grew = true;
+                }
+                if got_w > t.w + 2 && self.strip.set_min_width(p.id, got_w) {
+                    eprintln!(
+                        "[min-width] \"{}\" menolak lebih sempit dari {} px (diminta {})",
+                        title(h),
+                        got_w,
+                        t.w
                     );
                     grew = true;
                 }
@@ -1079,6 +1101,16 @@ impl App {
             HOTKEY_OVERVIEW => {
                 self.toggle_overview();
                 return;
+            }
+            // pembagi lajur digeser; penataan ulang oleh apply() di bawah
+            HOTKEY_SPLIT_RIGHT => {
+                self.strip.adjust_split(self.cfg.resize_step);
+            }
+            HOTKEY_SPLIT_LEFT => {
+                self.strip.adjust_split(-self.cfg.resize_step);
+            }
+            HOTKEY_SPLIT_RESET => {
+                self.strip.reset_split();
             }
             HOTKEY_CLOSE => {
                 self.close_active();
