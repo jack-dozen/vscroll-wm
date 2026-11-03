@@ -98,6 +98,25 @@ pub struct Placement {
     pub visible: bool,
 }
 
+/// Satu window di peta overview (koordinat strip, tanpa scroll).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OverviewItem {
+    pub id: WindowId,
+    pub rect: Rect,
+}
+
+/// Peta seluruh strip untuk tampilan overview.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Overview {
+    pub items: Vec<OverviewItem>,
+    /// Lebar dan tinggi total strip.
+    pub width: i32,
+    pub height: i32,
+    /// Bagian strip yang sedang tampil di layar: mulai dari `view_y`, setinggi `view_h`.
+    pub view_y: i32,
+    pub view_h: i32,
+}
+
 /// Posisi window di koordinat strip (belum dikurangi scroll).
 #[derive(Debug, Clone, Copy)]
 struct Flow {
@@ -500,7 +519,11 @@ impl Strip {
 
     /// Window tetangga terdekat di arah `dir`, berdasarkan posisi di layar.
     fn neighbor(&self, dir: Dir) -> Option<WindowId> {
-        let id = self.focused?;
+        self.neighbor_of(self.focused?, dir)
+    }
+
+    /// Tetangga terdekat dari `id` di arah `dir`, tanpa mengubah fokus.
+    pub fn neighbor_of(&self, id: WindowId, dir: Dir) -> Option<WindowId> {
         let flow = self.flow();
         let w = self.content().w;
         let f = flow.iter().find(|c| c.id == id)?;
@@ -575,6 +598,48 @@ impl Strip {
             self.scroll_y = bottom - vh;
         }
         self.scroll_y = self.scroll_y.min(top).max(0);
+    }
+
+    /// Window berikutnya (atau sebelumnya) menurut urutan baca: atas ke bawah,
+    /// kiri ke kanan, berputar. Dipakai untuk Tab di overview. None kalau hanya
+    /// ada satu window atau `id` tidak dikenal / tersembunyi.
+    pub fn cycle_from(&self, id: WindowId, forward: bool) -> Option<WindowId> {
+        let c = self.content();
+        let mut order: Vec<(i32, i32, WindowId)> = self
+            .flow()
+            .iter()
+            .filter(|f| f.span != Span::Hidden)
+            .map(|f| (f.top, f.x_range(c.w).0, f.id))
+            .collect();
+        order.sort_by_key(|&(top, x, _)| (top, x));
+        let n = order.len();
+        let pos = order.iter().position(|&(_, _, w)| w == id)?;
+        if n < 2 {
+            return None;
+        }
+        let next = if forward { (pos + 1) % n } else { (pos + n - 1) % n };
+        Some(order[next].2)
+    }
+
+    /// Peta seluruh strip (termasuk bagian di luar layar) untuk overview.
+    pub fn overview(&self) -> Overview {
+        let c = self.content();
+        let items: Vec<OverviewItem> = self
+            .flow()
+            .iter()
+            .filter(|f| f.span != Span::Hidden)
+            .map(|f| {
+                let (x0, x1) = f.x_range(c.w);
+                OverviewItem { id: f.id, rect: Rect { x: x0, y: f.top, w: x1 - x0, h: f.h } }
+            })
+            .collect();
+        let height = items
+            .iter()
+            .map(|i| i.rect.y + i.rect.h)
+            .max()
+            .unwrap_or(0)
+            .max(c.h);
+        Overview { items, width: c.w, height, view_y: self.scroll_y, view_h: c.h }
     }
 
     pub fn layout(&self) -> Vec<Placement> {
@@ -1145,5 +1210,87 @@ mod tests {
         assert_eq!(s.focused(), Some(A)); // tidak ada tetangga terlihat
         s.set_focus(B); // diabaikan selama tersembunyi
         assert_eq!(s.focused(), Some(A));
+    }
+
+    #[test]
+    fn overview_describes_whole_strip_including_offscreen_part() {
+        let mut s = strip();
+        s.add_window(A);
+        s.snap(Dir::Up);
+        s.snap(Dir::Left);
+        s.add_window(B);
+        s.snap(Dir::Up);
+        s.snap(Dir::Right);
+        s.add_window(C);
+        s.snap(Dir::Up);
+        let ov = s.overview();
+        let at = |id| ov.items.iter().find(|i| i.id == id).unwrap().rect;
+        assert_eq!((ov.width, ov.height), (1920, 1080));
+        assert_eq!(at(A), rect(0, 0, 960, 540));
+        assert_eq!(at(B), rect(960, 0, 960, 540));
+        assert_eq!(at(C), rect(0, 540, 1920, 540));
+
+        s.add_window(D); // satu layar penuh lagi di bawah
+        let ov = s.overview();
+        assert_eq!(ov.height, 2160);
+        assert_eq!(ov.view_y, 1080); // yang tampil: D saja
+        assert_eq!(ov.view_h, 1080);
+    }
+
+    #[test]
+    fn overview_skips_hidden_windows() {
+        let mut s = strip();
+        s.add_window(A);
+        s.add_window(B);
+        s.set_hidden(B, true);
+        assert_eq!(s.overview().items.len(), 1);
+    }
+
+    #[test]
+    fn neighbor_of_does_not_change_focus() {
+        let mut s = strip();
+        s.add_window(A);
+        s.snap(Dir::Up);
+        s.snap(Dir::Left);
+        s.add_window(B);
+        s.snap(Dir::Up);
+        s.snap(Dir::Right);
+        assert_eq!(s.focused(), Some(B));
+        assert_eq!(s.neighbor_of(A, Dir::Right), Some(B));
+        assert_eq!(s.neighbor_of(B, Dir::Left), Some(A));
+        assert_eq!(s.neighbor_of(A, Dir::Up), None);
+        assert_eq!(s.focused(), Some(B));
+    }
+
+    #[test]
+    fn cycle_follows_reading_order_and_wraps() {
+        // A kiri atas, B kanan atas, C penuh di bawah
+        let mut s = strip();
+        s.add_window(A);
+        s.snap(Dir::Up);
+        s.snap(Dir::Left);
+        s.add_window(B);
+        s.snap(Dir::Up);
+        s.snap(Dir::Right);
+        s.add_window(C);
+        s.snap(Dir::Up);
+        assert_eq!(s.cycle_from(A, true), Some(B));
+        assert_eq!(s.cycle_from(B, true), Some(C));
+        assert_eq!(s.cycle_from(C, true), Some(A)); // berputar
+        assert_eq!(s.cycle_from(A, false), Some(C));
+        assert_eq!(s.cycle_from(C, false), Some(B));
+        assert_eq!(s.focused(), Some(C)); // fokus tidak berubah
+    }
+
+    #[test]
+    fn cycle_skips_hidden_and_needs_two_windows() {
+        let mut s = strip();
+        s.add_window(A);
+        assert_eq!(s.cycle_from(A, true), None);
+        s.add_window(B);
+        s.add_window(C);
+        s.set_hidden(B, true);
+        assert_eq!(s.cycle_from(A, true), Some(C));
+        assert_eq!(s.cycle_from(B, true), None); // tersembunyi
     }
 }

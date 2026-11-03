@@ -1,10 +1,58 @@
 # Konfigurasi vscroll-wm. Salin jadi "vscroll-wm.conf" di samping vscroll-wm.exe
 # (atau di folder tempat app dijalankan, atau tunjuk dengan env VSCROLL_CONFIG).
-# Baris yang diawali # adalah komentar. Terapkan lewat tray -> "Muat ulang konfigurasi".
+# Komentar hanya berlaku untuk baris yang diawali #.
+# Terapkan perubahan lewat tray -> "Muat ulang konfigurasi".
 
 # Jarak antar window dan ke tepi layar, dalam piksel fisik (0-200).
 gap = 16
 
-# Durasi animasi dalam milidetik. 0 = mati. Hapus baris ini untuk memakai bawaan
+# Durasi animasi dalam milidetik. 0 = mati. Hapus / beri # untuk memakai bawaan
 # (160 ms, otomatis mati kalau "Animation effects" Windows dimatikan).
 # anim_ms = 160
+
+# Warna border window yang fokus (Windows 11), format #RRGGBB. off = tidak diubah.
+# focus_border = #4FA8F5
+
+# --- Overview: panel peta strip, seperti Alt+Tab ---
+
+# Tombol pembuka bersama Win: tab (bawaan), space, grave, satu huruf/angka, atau off.
+# Tidak boleh q atau m (sudah dipakai: tutup / minimize). Win+Alt+Space selalu aktif.
+# Catatan: tab menggantikan Task View (Win+Tab); virtual desktop tetap lewat Win+Ctrl+Panah.
+#
+# Cara pakai gaya Alt+Tab: tahan Win, tekan tombol ini untuk membuka, lalu tekan lagi
+# untuk pindah ke window berikutnya (Shift = sebelumnya), atau pakai panah. Lepas Win
+# untuk loncat ke window yang dipilih. Kalau Win dilepas tanpa menggeser pilihan, panel
+# tetap terbuka (Enter memilih, Esc membatalkan). Selama panel terbuka, tiling dimatikan.
+overview_key = tab
+
+# Ukuran maksimum panel, persen dari area kerja (30-100).
+overview_size = 70
+
+# Petunjuk tombol di bagian bawah panel: on / off.
+overview_hint = on
+
+# Tampilan mini tiap window: on / off. Matikan kalau ada window yang tampil kosong.
+overview_thumbnails = on
+
+# Isi label kotak:
+#   title   = judul window apa adanya
+#   app     = nama app saja (dari nama exe), mis. "Vivaldi"
+#   reverse = bagian terakhir setelah " - " dipindah ke depan,
+#             mis. "Chat baru - Vivaldi" jadi "Vivaldi - Chat baru"
+overview_label = title
+
+# Nama tampilan untuk mode `app`: alias.<nama exe tanpa .exe> = Nama.
+# Beberapa nama umum sudah bawaan (Code -> VS Code, msedge -> Edge, dst).
+# alias.wezterm-gui = WezTerm
+
+# Warna overview, format #RRGGBB (nilai di bawah adalah bawaan):
+#   selected   = kursor: window yang akan dituju
+#   active     = window yang sedang aktif sekarang
+#   view       = bingkai bagian (baris) strip yang sedang tampil di layar
+#   background = latar panel
+#   box        = isi kotak window
+# overview_color_selected = #FFBE3C
+# overview_color_active = #4FA8F5
+# overview_color_view = #78C882
+# overview_color_background = #14161C
+# overview_color_box = #2D3240

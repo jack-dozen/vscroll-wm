@@ -7,6 +7,7 @@
 //! Win+Alt+Arrow         -> tukar posisi dengan window tetangga
 //! Win+Alt+F             -> float / tile window aktif
 //! Win+Alt+I             -> cetak info window aktif (class / exe / title) di console
+//! Win+Tab / Win+Alt+Space -> overview: peta strip (tombol: overview_key)
 //! Win+Q                 -> tutup window aktif
 //! Win+M                 -> minimize window aktif
 //! Win+Ctrl+Esc          -> keluar dan kembalikan semua window (juga Ctrl+C)
@@ -21,13 +22,14 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod config;
+mod overview;
 mod rules;
 mod safety;
 mod tray;
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use layout::{Dir, Rect, Strip, WindowId};
@@ -58,6 +60,7 @@ const HOTKEY_FLOAT: i32 = 15;
 const HOTKEY_INSPECT: i32 = 16;
 const HOTKEY_MINIMIZE: i32 = 17;
 const HOTKEY_CLOSE: i32 = 18;
+const HOTKEY_OVERVIEW: i32 = 19;
 /// Pesan dari callback event Windows ke thread utama.
 const WM_WINEVENT: u32 = WM_APP + 3;
 /// Jeda (ms) mengumpulkan rentetan event sebelum menata ulang.
@@ -199,6 +202,43 @@ fn bounds(r: RECT) -> Bounds {
 const WM_ACTION: u32 = WM_APP + 1;
 static MAIN_THREAD: AtomicU32 = AtomicU32::new(0);
 static WIN_DOWN: AtomicBool = AtomicBool::new(false);
+/// Tombol overview bersama Win (kode virtual-key; 0 = mati). Diatur dari konfigurasi.
+static OVERVIEW_VK: AtomicU16 = AtomicU16::new(0x09);
+/// Overview sedang terbuka: tiling dimatikan, Win+tombol hanya mengendalikan overview.
+static OV_OPEN: AtomicBool = AtomicBool::new(false);
+/// Pilihan sudah digeser sejak overview dibuka. Kalau Win dilepas dalam keadaan ini,
+/// overview langsung loncat ke window yang dipilih (gaya Alt+Tab).
+static OV_MOVED: AtomicBool = AtomicBool::new(false);
+
+/// Aksi tombol Win+... saat overview terbuka: (pesan, wParam, menggeser pilihan?).
+/// None = bukan tombol overview; dibiarkan lewat ke Windows (tiling tidak ikut jalan).
+fn overview_hook_action(
+    vk: u16,
+    shift: bool,
+    alt: bool,
+    ctrl: bool,
+    overview_vk: u16,
+) -> Option<(u32, usize, bool)> {
+    if vk == VK_ESCAPE.0 && ctrl {
+        return Some((WM_ACTION, HOTKEY_QUIT as usize, false)); // jalan keluar darurat
+    }
+    if let Some(i) = arrow_index(vk).filter(|_| !ctrl) {
+        return Some((overview::WM_OV_MOVE, i as usize, true));
+    }
+    if vk == VK_RETURN.0 {
+        return Some((overview::WM_OV_ACCEPT, 0, false));
+    }
+    if vk == VK_ESCAPE.0 {
+        return Some((overview::WM_OV_CANCEL, 0, false));
+    }
+    if overview_vk != 0 && vk == overview_vk && !alt && !ctrl {
+        return Some((overview::WM_OV_CYCLE, if shift { 0 } else { 1 }, true));
+    }
+    if vk == VK_SPACE.0 && alt {
+        return Some((WM_ACTION, HOTKEY_OVERVIEW as usize, false)); // tutup
+    }
+    None
+}
 
 fn arrow_index(vk: u16) -> Option<i32> {
     DIRS.iter().position(|(k, _)| k.0 == vk).map(|i| i as i32)
@@ -234,6 +274,18 @@ unsafe extern "system" fn kb_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> 
             let vk = k.vkCode as u16;
             if vk == VK_LWIN.0 || vk == VK_RWIN.0 {
                 WIN_DOWN.store(down, Ordering::Relaxed);
+                // Gaya Alt+Tab: Win dilepas setelah pilihan digeser = loncat ke window itu
+                if !down
+                    && OV_OPEN.load(Ordering::Relaxed)
+                    && OV_MOVED.swap(false, Ordering::Relaxed)
+                {
+                    let _ = PostThreadMessageW(
+                        MAIN_THREAD.load(Ordering::Relaxed),
+                        overview::WM_OV_ACCEPT,
+                        WPARAM(0),
+                        LPARAM(0),
+                    );
+                }
             } else if WIN_DOWN.load(Ordering::Relaxed)
                 && (GetAsyncKeyState(VK_LWIN.0 as i32) < 0
                     || GetAsyncKeyState(VK_RWIN.0 as i32) < 0)
@@ -241,6 +293,29 @@ unsafe extern "system" fn kb_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> 
                 let shift = GetAsyncKeyState(VK_SHIFT.0 as i32) < 0;
                 let alt = GetAsyncKeyState(VK_MENU.0 as i32) < 0;
                 let ctrl = GetAsyncKeyState(VK_CONTROL.0 as i32) < 0;
+                if OV_OPEN.load(Ordering::Relaxed) {
+                    // Overview terbuka: tiling mati. Panah menggeser pilihan, Tab berputar,
+                    // Enter / Esc memilih / membatalkan. Selain itu dibiarkan ke Windows.
+                    let ov_vk = OVERVIEW_VK.load(Ordering::Relaxed);
+                    return match overview_hook_action(vk, shift, alt, ctrl, ov_vk) {
+                        Some((msg, wp, moves)) => {
+                            if down {
+                                if moves {
+                                    OV_MOVED.store(true, Ordering::Relaxed);
+                                }
+                                let _ = PostThreadMessageW(
+                                    MAIN_THREAD.load(Ordering::Relaxed),
+                                    msg,
+                                    WPARAM(wp),
+                                    LPARAM(0),
+                                );
+                                cancel_start_menu();
+                            }
+                            LRESULT(1) // telan tombolnya
+                        }
+                        None => CallNextHookEx(None, code, wparam, lparam),
+                    };
+                }
                 // Win+Ctrl+Arrow dibiarkan lewat: itu pindah virtual desktop bawaan Windows
                 let action = if let Some(i) = arrow_index(vk).filter(|_| !ctrl) {
                     // Win+Alt: tukar posisi, Win+Shift: fokus, Win: snap
@@ -259,15 +334,30 @@ unsafe extern "system" fn kb_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> 
                     Some(HOTKEY_CLOSE)
                 } else if vk == VK_M.0 && !shift && !alt && !ctrl {
                     Some(HOTKEY_MINIMIZE)
+                } else if vk != 0
+                    && vk == OVERVIEW_VK.load(Ordering::Relaxed)
+                    && !shift
+                    && !alt
+                    && !ctrl
+                {
+                    Some(HOTKEY_OVERVIEW)
                 } else if vk == VK_F.0 && alt {
                     Some(HOTKEY_FLOAT)
                 } else if vk == VK_I.0 && alt {
                     Some(HOTKEY_INSPECT)
+                } else if vk == VK_SPACE.0 && alt {
+                    Some(HOTKEY_OVERVIEW)
                 } else {
                     None
                 };
                 if let Some(id) = action {
                     if down {
+                        if id == HOTKEY_OVERVIEW {
+                            // optimistis: tombol berikutnya (mis. Tab kedua) harus sudah
+                            // dianggap "overview terbuka" sebelum thread utama selesai membukanya
+                            OV_OPEN.store(true, Ordering::Relaxed);
+                            OV_MOVED.store(false, Ordering::Relaxed);
+                        }
                         let _ = PostThreadMessageW(
                             MAIN_THREAD.load(Ordering::Relaxed),
                             WM_ACTION,
@@ -355,6 +445,14 @@ unsafe fn animations_enabled() -> bool {
     r.is_err() || on.as_bool()
 }
 
+/// Overview yang sedang terbuka.
+struct OverviewSession {
+    /// Kursor overview (belum tentu window yang fokus).
+    selected: WindowId,
+    /// Window yang foreground sebelum overview dibuka, untuk dikembalikan saat batal.
+    prev_fg: HWND,
+}
+
 struct App {
     strip: Strip,
     map: HashMap<WindowId, HWND>,
@@ -375,6 +473,8 @@ struct App {
     focus_border: Option<u32>,
     /// Window yang sedang diwarnai bordernya, supaya bisa dikembalikan.
     border_applied: Option<(HWND, u32)>,
+    overview: Option<OverviewSession>,
+    cfg: config::Config,
     /// Timer sekali jalan untuk menata ulang setelah event (0 = tidak ada).
     sync_timer: usize,
     /// Ada window baru: jadwalkan satu pengecekan ulang.
@@ -397,6 +497,8 @@ impl App {
             anim_ms: DEFAULT_ANIM_MS,
             focus_border: None,
             border_applied: None,
+            overview: None,
+            cfg: config::Config::default(),
         }
     }
 
@@ -609,6 +711,8 @@ impl App {
 
     /// Terapkan konfigurasi (gap, animasi, warna border).
     unsafe fn apply_config(&mut self, cfg: &config::Config) {
+        self.cfg = cfg.clone();
+        OVERVIEW_VK.store(cfg.overview_key, Ordering::Relaxed);
         self.strip.set_gap(cfg.gap);
         self.focus_border = cfg.focus_border;
         self.refresh_border();
@@ -660,6 +764,111 @@ impl App {
         }
     }
 
+    /// Win+Alt+Space: buka / tutup overview.
+    unsafe fn toggle_overview(&mut self) {
+        if self.overview.is_some() {
+            self.close_overview(false);
+        } else {
+            self.open_overview();
+        }
+    }
+
+    unsafe fn open_overview(&mut self) {
+        if !self.try_open_overview() {
+            // gagal membuka: batalkan status "terbuka" yang mungkin sudah diset hook
+            OV_OPEN.store(false, Ordering::Relaxed);
+            OV_MOVED.store(false, Ordering::Relaxed);
+        }
+    }
+
+    unsafe fn try_open_overview(&mut self) -> bool {
+        if !overview::available() {
+            return false;
+        }
+        let Some(focused) = self.strip.focused() else { return false };
+        let data = self.strip.overview();
+        if data.items.is_empty() {
+            return false;
+        }
+        let work = work_area();
+        let mode = self.cfg.overview_label;
+        let titles: HashMap<u64, String> = data
+            .items
+            .iter()
+            .filter_map(|it| {
+                self.map.get(&it.id).map(|&h| {
+                    let t = title(h);
+                    let exe = if mode == config::LabelMode::App { rules::exe_name(h) } else { None };
+                    (it.id.0, config::label(mode, &t, exe.as_deref(), &self.cfg.aliases))
+                })
+            })
+            .collect();
+        let sources: HashMap<u64, isize> = data
+            .items
+            .iter()
+            .filter_map(|it| self.map.get(&it.id).map(|&h| (it.id.0, h.0 as isize)))
+            .collect();
+        let opts = overview::Options {
+            hint: self.cfg.overview_hint,
+            size_pct: self.cfg.overview_size,
+            colors: self.cfg.overview_colors,
+        };
+        let draw = overview::build(&data, &titles, &sources, focused.0, focused.0, work, &opts);
+        self.overview = Some(OverviewSession { selected: focused, prev_fg: GetForegroundWindow() });
+        overview::show(draw, self.cfg.overview_thumbnails);
+        OV_MOVED.store(false, Ordering::Relaxed);
+        OV_OPEN.store(true, Ordering::Relaxed);
+        true
+    }
+
+    /// Tab di overview: kursor ke window berikutnya / sebelumnya (urutan baca).
+    unsafe fn overview_cycle(&mut self, forward: bool) {
+        if let Some(s) = self.overview.as_mut() {
+            if let Some(n) = self.strip.cycle_from(s.selected, forward) {
+                s.selected = n;
+                overview::set_selected(n.0);
+            }
+        }
+    }
+
+    /// Panah di overview: geser kursor ke tetangga (window belum berpindah fokus).
+    unsafe fn overview_move(&mut self, dir_index: usize) {
+        let Some(dir) = DIRS.get(dir_index).map(|d| d.1) else { return };
+        if let Some(s) = self.overview.as_mut() {
+            if let Some(n) = self.strip.neighbor_of(s.selected, dir) {
+                s.selected = n;
+                overview::set_selected(n.0);
+            }
+        }
+    }
+
+    unsafe fn overview_pick(&mut self, id: u64) {
+        if let Some(s) = self.overview.as_mut() {
+            s.selected = WindowId(id);
+        }
+        self.close_overview(true);
+    }
+
+    /// Tutup overview. `accept` = loncat ke window yang dipilih; kalau tidak,
+    /// fokus dikembalikan ke window sebelumnya.
+    unsafe fn close_overview(&mut self, accept: bool) {
+        OV_OPEN.store(false, Ordering::Relaxed);
+        OV_MOVED.store(false, Ordering::Relaxed);
+        let Some(s) = self.overview.take() else { return };
+        overview::hide();
+        if accept {
+            self.strip.set_focus(s.selected);
+            self.apply();
+            if let Some(&h) = self.map.get(&s.selected) {
+                let _ = SetForegroundWindow(h);
+                self.last_fg = Some(wid(h));
+            }
+            self.schedule_sync(EVENT_DEBOUNCE_MS); // border dan penataan setelah aktivasi
+        } else if safety::alive(s.prev_fg) {
+            let _ = SetForegroundWindow(s.prev_fg);
+        }
+    }
+
     /// Jeda / lanjutkan (menu tray). Saat dijeda semua window dikembalikan ke
     /// posisi asli dan hotkey diteruskan ke Windows.
     unsafe fn toggle_pause(&mut self) {
@@ -667,6 +876,7 @@ impl App {
         tray::PAUSED.store(paused, Ordering::Relaxed);
         tray::set_tip(if paused { "vscroll-wm (dijeda)" } else { "vscroll-wm" });
         if paused {
+            self.close_overview(false);
             self.finish_all_anims();
             self.stop_sync_timer();
             safety::restore_all(); // juga mengembalikan warna border
@@ -866,6 +1076,10 @@ impl App {
                 self.inspect();
                 return;
             }
+            HOTKEY_OVERVIEW => {
+                self.toggle_overview();
+                return;
+            }
             HOTKEY_CLOSE => {
                 self.close_active();
                 return;
@@ -961,6 +1175,19 @@ fn main() {
         }
         MAIN_THREAD.store(GetCurrentThreadId(), Ordering::Relaxed);
         safety::install(GetCurrentThreadId());
+        if !overview::init(GetCurrentThreadId()) {
+            eprintln!("gagal membuat jendela overview");
+        }
+        if RegisterHotKey(
+            None,
+            HOTKEY_OVERVIEW,
+            MOD_CONTROL | MOD_ALT | MOD_NOREPEAT,
+            VK_SPACE.0 as u32,
+        )
+        .is_err()
+        {
+            eprintln!("gagal daftar Ctrl+Alt+Space (dipakai app lain?)");
+        }
         if !tray::create(GetCurrentThreadId()) {
             eprintln!("gagal membuat ikon tray");
         }
@@ -999,7 +1226,7 @@ fn main() {
         let poll_ms = if event_hooks.is_empty() { 300 } else { 1000 };
         SetTimer(None, 1, poll_ms, None);
 
-        println!("vscroll-wm jalan. Win+Arrow = snap, +Shift = fokus, Win+Enter = penuh, Win+Alt = tukar posisi, Win+Alt+F = float/tile, Win+Alt+I = info window, Win+Q = tutup, Win+M = minimize (cadangan: Ctrl+Alt+...). Win+Ctrl+Esc atau Ctrl+C = keluar dan pulihkan semua window.");
+        println!("vscroll-wm jalan. Win+Arrow = snap, +Shift = fokus, Win+Enter = penuh, Win+Alt = tukar posisi, Win+Alt+F = float/tile, Win+Alt+I = info window, Win+Q = tutup, Win+M = minimize, Win+<overview_key> / Win+Alt+Space = overview (cadangan: Ctrl+Alt+...). Win+Ctrl+Esc atau Ctrl+C = keluar dan pulihkan semua window.");
         if app.sync() {
             app.apply();
         }
@@ -1017,6 +1244,11 @@ fn main() {
                 }
                 tray::WM_TRAY_PAUSE => app.toggle_pause(),
                 tray::WM_TRAY_RELOAD => app.reload_config(),
+                overview::WM_OV_MOVE => app.overview_move(msg.wParam.0),
+                overview::WM_OV_CYCLE => app.overview_cycle(msg.wParam.0 != 0),
+                overview::WM_OV_ACCEPT => app.close_overview(true),
+                overview::WM_OV_CANCEL => app.close_overview(false),
+                overview::WM_OV_PICK => app.overview_pick(msg.wParam.0 as u64),
                 WM_WINEVENT => {
                     if !tray::PAUSED.load(Ordering::Relaxed) {
                         app.on_event(msg.wParam.0 as u32, HWND(msg.lParam.0 as *mut c_void));
@@ -1062,5 +1294,54 @@ fn main() {
         safety::restore_all();
         safety::EXIT_DONE.store(true, Ordering::Relaxed);
         println!("semua window dikembalikan. sampai jumpa.");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TAB: u16 = 0x09;
+
+    fn act(vk: u16, shift: bool, alt: bool, ctrl: bool) -> Option<(u32, usize, bool)> {
+        overview_hook_action(vk, shift, alt, ctrl, TAB)
+    }
+
+    #[test]
+    fn arrows_move_the_overview_cursor_instead_of_tiling() {
+        assert_eq!(act(VK_LEFT.0, false, false, false), Some((overview::WM_OV_MOVE, 0, true)));
+        assert_eq!(act(VK_RIGHT.0, false, false, false), Some((overview::WM_OV_MOVE, 1, true)));
+        assert_eq!(act(VK_UP.0, true, false, false), Some((overview::WM_OV_MOVE, 2, true)));
+        assert_eq!(act(VK_DOWN.0, false, true, false), Some((overview::WM_OV_MOVE, 3, true)));
+        // Win+Ctrl+Panah (virtual desktop bawaan) tidak disentuh
+        assert_eq!(act(VK_LEFT.0, false, false, true), None);
+    }
+
+    #[test]
+    fn tab_cycles_forward_and_shift_tab_backward() {
+        assert_eq!(act(TAB, false, false, false), Some((overview::WM_OV_CYCLE, 1, true)));
+        assert_eq!(act(TAB, true, false, false), Some((overview::WM_OV_CYCLE, 0, true)));
+        assert_eq!(overview_hook_action(TAB, false, false, false, 0), None); // overview_key off
+    }
+
+    #[test]
+    fn enter_escape_and_toggle_keys() {
+        assert_eq!(act(VK_RETURN.0, false, false, false), Some((overview::WM_OV_ACCEPT, 0, false)));
+        assert_eq!(act(VK_ESCAPE.0, false, false, false), Some((overview::WM_OV_CANCEL, 0, false)));
+        assert_eq!(
+            act(VK_SPACE.0, false, true, false),
+            Some((WM_ACTION, HOTKEY_OVERVIEW as usize, false))
+        );
+    }
+
+    #[test]
+    fn emergency_quit_still_works_and_other_wm_keys_pass_through() {
+        assert_eq!(
+            act(VK_ESCAPE.0, false, false, true),
+            Some((WM_ACTION, HOTKEY_QUIT as usize, false))
+        );
+        assert_eq!(act(VK_Q.0, false, false, false), None); // tutup window: mati
+        assert_eq!(act(VK_M.0, false, false, false), None); // minimize: mati
+        assert_eq!(act(VK_F.0, false, true, false), None); // float: mati
     }
 }
