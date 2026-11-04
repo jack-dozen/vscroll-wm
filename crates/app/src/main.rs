@@ -10,6 +10,7 @@
 //! Win+Tab / Win+Alt+Space -> overview: peta strip (tombol: overview_key)
 //! Win+] / Win+[         -> lebarkan / sempitkan lajur window aktif (geser pembagi)
 //! Win+\                 -> kembalikan pembagi lajur ke 50/50
+//! Win+/                 -> cheatsheet pintasan keyboard (tombol: cheatsheet_key)
 //! Win+Q                 -> tutup window aktif
 //! Win+M                 -> minimize window aktif
 //! Win+Ctrl+Esc          -> keluar dan kembalikan semua window (juga Ctrl+C)
@@ -23,6 +24,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod cheatsheet;
 mod config;
 mod overview;
 mod rules;
@@ -66,6 +68,7 @@ const HOTKEY_OVERVIEW: i32 = 19;
 const HOTKEY_SPLIT_RIGHT: i32 = 20;
 const HOTKEY_SPLIT_LEFT: i32 = 21;
 const HOTKEY_SPLIT_RESET: i32 = 22;
+const HOTKEY_CHEATSHEET: i32 = 23;
 /// Pesan dari callback event Windows ke thread utama.
 const WM_WINEVENT: u32 = WM_APP + 3;
 /// Jeda (ms) mengumpulkan rentetan event sebelum menata ulang.
@@ -209,11 +212,22 @@ static MAIN_THREAD: AtomicU32 = AtomicU32::new(0);
 static WIN_DOWN: AtomicBool = AtomicBool::new(false);
 /// Tombol overview bersama Win (kode virtual-key; 0 = mati). Diatur dari konfigurasi.
 static OVERVIEW_VK: AtomicU16 = AtomicU16::new(0x09);
+/// Tombol cheatsheet bersama Win (0 = mati). Diatur dari konfigurasi.
+static CHEAT_VK: AtomicU16 = AtomicU16::new(0xBF);
+/// Tombol pintasan yang sedang ditahan, untuk mengenali event berulang (auto-repeat).
+static HELD_VK: AtomicU16 = AtomicU16::new(0);
 /// Overview sedang terbuka: tiling dimatikan, Win+tombol hanya mengendalikan overview.
 static OV_OPEN: AtomicBool = AtomicBool::new(false);
 /// Pilihan sudah digeser sejak overview dibuka. Kalau Win dilepas dalam keadaan ini,
 /// overview langsung loncat ke window yang dipilih (gaya Alt+Tab).
 static OV_MOVED: AtomicBool = AtomicBool::new(false);
+
+/// Pintasan yang boleh berulang saat tombolnya ditahan: yang menggeser atau mengubah
+/// ukuran. Sisanya (tutup, minimize, float, overview, cheatsheet, keluar, ...) hanya
+/// sekali per tekan, supaya menahan Win+Q tidak menutup window berturut-turut.
+fn repeat_allowed(id: i32) -> bool {
+    matches!(id, 1..=8 | 10..=13 | HOTKEY_SPLIT_RIGHT | HOTKEY_SPLIT_LEFT)
+}
 
 /// Aksi tombol Win+... saat overview terbuka: (pesan, wParam, menggeser pilihan?).
 /// None = bukan tombol overview; dibiarkan lewat ke Windows (tiling tidak ikut jalan).
@@ -277,8 +291,14 @@ unsafe extern "system" fn kb_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> 
             let m = wparam.0 as u32;
             let down = m == WM_KEYDOWN || m == WM_SYSKEYDOWN;
             let vk = k.vkCode as u16;
+            if !down && HELD_VK.load(Ordering::Relaxed) == vk {
+                HELD_VK.store(0, Ordering::Relaxed);
+            }
             if vk == VK_LWIN.0 || vk == VK_RWIN.0 {
                 WIN_DOWN.store(down, Ordering::Relaxed);
+                if !down {
+                    HELD_VK.store(0, Ordering::Relaxed);
+                }
                 // Gaya Alt+Tab: Win dilepas setelah pilihan digeser = loncat ke window itu
                 if !down
                     && OV_OPEN.load(Ordering::Relaxed)
@@ -305,6 +325,10 @@ unsafe extern "system" fn kb_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> 
                     return match overview_hook_action(vk, shift, alt, ctrl, ov_vk) {
                         Some((msg, wp, moves)) => {
                             if down {
+                                let repeat = HELD_VK.swap(vk, Ordering::Relaxed) == vk;
+                                if repeat && msg == WM_ACTION {
+                                    return LRESULT(1); // toggle / keluar: sekali per tekan
+                                }
                                 if moves {
                                     OV_MOVED.store(true, Ordering::Relaxed);
                                 }
@@ -352,6 +376,13 @@ unsafe extern "system" fn kb_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> 
                     && !ctrl
                 {
                     Some(HOTKEY_OVERVIEW)
+                } else if vk != 0
+                    && vk == CHEAT_VK.load(Ordering::Relaxed)
+                    && !shift
+                    && !alt
+                    && !ctrl
+                {
+                    Some(HOTKEY_CHEATSHEET)
                 } else if vk == VK_F.0 && alt {
                     Some(HOTKEY_FLOAT)
                 } else if vk == VK_I.0 && alt {
@@ -363,6 +394,10 @@ unsafe extern "system" fn kb_hook(code: i32, wparam: WPARAM, lparam: LPARAM) -> 
                 };
                 if let Some(id) = action {
                     if down {
+                        let repeat = HELD_VK.swap(vk, Ordering::Relaxed) == vk;
+                        if repeat && !repeat_allowed(id) {
+                            return LRESULT(1); // tombol ditahan: abaikan pengulangan
+                        }
                         if id == HOTKEY_OVERVIEW {
                             // optimistis: tombol berikutnya (mis. Tab kedua) harus sudah
                             // dianggap "overview terbuka" sebelum thread utama selesai membukanya
@@ -735,6 +770,7 @@ impl App {
     unsafe fn apply_config(&mut self, cfg: &config::Config) {
         self.cfg = cfg.clone();
         OVERVIEW_VK.store(cfg.overview_key, Ordering::Relaxed);
+        CHEAT_VK.store(cfg.cheatsheet_key, Ordering::Relaxed);
         self.strip.set_gap(cfg.gap);
         self.focus_border = cfg.focus_border;
         self.refresh_border();
@@ -899,6 +935,7 @@ impl App {
         tray::set_tip(if paused { "vscroll-wm (dijeda)" } else { "vscroll-wm" });
         if paused {
             self.close_overview(false);
+            cheatsheet::hide();
             self.finish_all_anims();
             self.stop_sync_timer();
             safety::restore_all(); // juga mengembalikan warna border
@@ -1112,6 +1149,10 @@ impl App {
             HOTKEY_SPLIT_RESET => {
                 self.strip.reset_split();
             }
+            HOTKEY_CHEATSHEET => {
+                cheatsheet::toggle(work_area(), &self.cfg);
+                return;
+            }
             HOTKEY_CLOSE => {
                 self.close_active();
                 return;
@@ -1210,6 +1251,9 @@ fn main() {
         if !overview::init(GetCurrentThreadId()) {
             eprintln!("gagal membuat jendela overview");
         }
+        if !cheatsheet::init() {
+            eprintln!("gagal membuat jendela cheatsheet");
+        }
         if RegisterHotKey(
             None,
             HOTKEY_OVERVIEW,
@@ -1258,7 +1302,7 @@ fn main() {
         let poll_ms = if event_hooks.is_empty() { 300 } else { 1000 };
         SetTimer(None, 1, poll_ms, None);
 
-        println!("vscroll-wm jalan. Win+Arrow = snap, +Shift = fokus, Win+Enter = penuh, Win+Alt = tukar posisi, Win+Alt+F = float/tile, Win+Alt+I = info window, Win+Q = tutup, Win+M = minimize, Win+<overview_key> / Win+Alt+Space = overview (cadangan: Ctrl+Alt+...). Win+Ctrl+Esc atau Ctrl+C = keluar dan pulihkan semua window.");
+        println!("vscroll-wm jalan. Win+Arrow = snap, +Shift = fokus, Win+Enter = penuh, Win+Alt = tukar posisi, Win+Alt+F = float/tile, Win+Alt+I = info window, Win+Q = tutup, Win+M = minimize, Win+<overview_key> / Win+Alt+Space = overview, Win+<cheatsheet_key> = daftar pintasan (cadangan: Ctrl+Alt+...). Win+Ctrl+Esc atau Ctrl+C = keluar dan pulihkan semua window.");
         if app.sync() {
             app.apply();
         }
@@ -1276,6 +1320,7 @@ fn main() {
                 }
                 tray::WM_TRAY_PAUSE => app.toggle_pause(),
                 tray::WM_TRAY_RELOAD => app.reload_config(),
+                tray::WM_TRAY_HELP => cheatsheet::toggle(work_area(), &app.cfg),
                 overview::WM_OV_MOVE => app.overview_move(msg.wParam.0),
                 overview::WM_OV_CYCLE => app.overview_cycle(msg.wParam.0 != 0),
                 overview::WM_OV_ACCEPT => app.close_overview(true),
@@ -1375,5 +1420,30 @@ mod tests {
         assert_eq!(act(VK_Q.0, false, false, false), None); // tutup window: mati
         assert_eq!(act(VK_M.0, false, false, false), None); // minimize: mati
         assert_eq!(act(VK_F.0, false, true, false), None); // float: mati
+    }
+
+    #[test]
+    fn only_movement_and_resize_shortcuts_repeat_when_held() {
+        for id in 1..=8 {
+            assert!(repeat_allowed(id), "{id}");
+        }
+        for id in 10..=13 {
+            assert!(repeat_allowed(id), "{id}");
+        }
+        assert!(repeat_allowed(HOTKEY_SPLIT_RIGHT) && repeat_allowed(HOTKEY_SPLIT_LEFT));
+        // sekali per tekan: tutup, minimize, float, overview, cheatsheet, keluar, dll.
+        for id in [
+            HOTKEY_CLOSE,
+            HOTKEY_MINIMIZE,
+            HOTKEY_FLOAT,
+            HOTKEY_OVERVIEW,
+            HOTKEY_CHEATSHEET,
+            HOTKEY_QUIT,
+            HOTKEY_MAXIMIZE,
+            HOTKEY_INSPECT,
+            HOTKEY_SPLIT_RESET,
+        ] {
+            assert!(!repeat_allowed(id), "{id}");
+        }
     }
 }

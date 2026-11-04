@@ -20,6 +20,8 @@ const WM_TRAY: u32 = WM_APP + 4;
 pub const WM_TRAY_PAUSE: u32 = WM_APP + 5;
 /// Dikirim ke thread utama: muat ulang file konfigurasi.
 pub const WM_TRAY_RELOAD: u32 = WM_APP + 6;
+/// Dikirim ke thread utama: buka / tutup cheatsheet.
+pub const WM_TRAY_HELP: u32 = WM_APP + 12;
 
 /// True = app dijeda: window dikembalikan ke posisi asli dan semua hotkey
 /// diteruskan ke Windows seperti biasa.
@@ -34,6 +36,7 @@ const ID_PAUSE: usize = 1;
 const ID_AUTOSTART: usize = 2;
 const ID_QUIT: usize = 3;
 const ID_RELOAD: usize = 4;
+const ID_HELP: usize = 5;
 
 const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
 const RUN_VALUE: &str = "vscroll-wm";
@@ -149,11 +152,13 @@ unsafe fn show_menu(hwnd: HWND) {
     let paused = PAUSED.load(Ordering::Relaxed);
     let pause_txt = wide(if paused { "Lanjutkan" } else { "Jeda" });
     let reload_txt = wide("Muat ulang konfigurasi");
+    let help_txt = wide("Pintasan keyboard");
     let auto_txt = wide("Jalankan saat login");
     let quit_txt = wide("Keluar (pulihkan window)");
 
     let _ = AppendMenuW(menu, MF_STRING, ID_PAUSE, PCWSTR(pause_txt.as_ptr()));
     let _ = AppendMenuW(menu, MF_STRING, ID_RELOAD, PCWSTR(reload_txt.as_ptr()));
+    let _ = AppendMenuW(menu, MF_STRING, ID_HELP, PCWSTR(help_txt.as_ptr()));
     let auto_flags = if autostart_enabled() { MF_STRING | MF_CHECKED } else { MF_STRING };
     let _ = AppendMenuW(menu, auto_flags, ID_AUTOSTART, PCWSTR(auto_txt.as_ptr()));
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
@@ -170,6 +175,7 @@ unsafe fn show_menu(hwnd: HWND) {
     match cmd.0 as usize {
         ID_PAUSE => post_main(WM_TRAY_PAUSE),
         ID_RELOAD => post_main(WM_TRAY_RELOAD),
+        ID_HELP => post_main(WM_TRAY_HELP),
         ID_AUTOSTART => {
             let _ = set_autostart(!autostart_enabled());
         }

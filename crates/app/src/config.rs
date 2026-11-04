@@ -13,6 +13,8 @@
 //!   overview_label = title    isi label kotak: title (judul penuh), app (nama app
 //!                     saja), reverse ("judul - Vivaldi" jadi "Vivaldi - judul")
 //!   alias.code = VS Code      nama tampilan untuk mode `app` (nama exe tanpa .exe)
+//!   cheatsheet_key = slash    tombol cheatsheet bersama Win: slash (/), f1-f12, tab,
+//!                     space, grave, satu huruf/angka, atau off. Beda dari overview_key.
 //!   resize_step = 80          langkah Win+[ dan Win+] (piksel, 10-400)
 //!   overview_size = 70        ukuran panel overview, persen dari area kerja (30-100)
 //!   overview_key = tab        tombol overview bersama Win: tab, space, grave, satu
@@ -80,6 +82,8 @@ pub struct Config {
     pub aliases: Vec<(String, String)>,
     /// Langkah pergeseran pembagi lajur per tekan Win+[ / Win+] (piksel).
     pub resize_step: i32,
+    /// Kode virtual-key tombol cheatsheet (bersama Win). 0 = dimatikan.
+    pub cheatsheet_key: u16,
     /// Ukuran panel overview dalam persen area kerja.
     pub overview_size: i32,
     /// Kode virtual-key tombol overview (bersama Win). 0 = dimatikan.
@@ -98,6 +102,7 @@ impl Default for Config {
             overview_label: LabelMode::Title,
             aliases: Vec::new(),
             resize_step: 80,
+            cheatsheet_key: 0xBF, // /
             overview_size: 70,
             overview_key: 0x09, // Tab
             overview_colors: OverviewColors::default(),
@@ -159,6 +164,12 @@ impl Config {
                     Ok(v) => cfg.overview_size = v.clamp(30, 100),
                     Err(_) => warnings.push(format!("baris {n}: overview_size harus bilangan bulat")),
                 },
+                "cheatsheet_key" => match parse_key(value) {
+                    Some(k) => cfg.cheatsheet_key = k,
+                    None => warnings.push(format!(
+                        "baris {n}: cheatsheet_key harus slash, f1-f12, tab, space, grave, off, atau satu huruf/angka (bukan q/m)"
+                    )),
+                },
                 "overview_key" => match parse_key(value) {
                     Some(k) => cfg.overview_key = k,
                     None => warnings.push(format!(
@@ -191,6 +202,10 @@ impl Config {
                 }
                 _ => warnings.push(format!("baris {n}: kunci tidak dikenal '{key}'")),
             }
+        }
+        if cfg.cheatsheet_key != 0 && cfg.cheatsheet_key == cfg.overview_key {
+            warnings.push("cheatsheet_key sama dengan overview_key: cheatsheet dimatikan".to_string());
+            cfg.cheatsheet_key = 0;
         }
         (cfg, warnings)
     }
@@ -226,7 +241,14 @@ fn parse_key(v: &str) -> Option<u16> {
     let code: u16 = match v.as_str() {
         "off" | "none" => return Some(0),
         "tab" => 0x09,
+        "slash" => 0xBF,
         "space" => 0x20,
+        s if s.len() >= 2
+            && s.starts_with('f')
+            && s[1..].parse::<u16>().map_or(false, |n| (1..=12).contains(&n)) =>
+        {
+            0x6F + s[1..].parse::<u16>().unwrap_or(1)
+        }
         "grave" | "backtick" | "`" => 0xC0,
         s if s.len() == 1 && s.chars().all(|ch| ch.is_ascii_alphanumeric()) => {
             s.to_ascii_uppercase().as_bytes()[0] as u16
@@ -507,5 +529,19 @@ mod tests {
         assert_eq!(Config::default().resize_step, 80);
         let (cfg, w) = Config::parse("resize_step = lebar");
         assert_eq!((cfg.resize_step, w.len()), (80, 1));
+    }
+
+    #[test]
+    fn cheatsheet_key_parsing_and_conflict_with_overview_key() {
+        assert_eq!(Config::default().cheatsheet_key, 0xBF);
+        assert_eq!(Config::parse("cheatsheet_key = f1").0.cheatsheet_key, 0x70);
+        assert_eq!(Config::parse("cheatsheet_key = F12").0.cheatsheet_key, 0x7B);
+        assert_eq!(Config::parse("cheatsheet_key = h").0.cheatsheet_key, 0x48);
+        assert_eq!(Config::parse("cheatsheet_key = off").0.cheatsheet_key, 0);
+        assert_eq!(parse_key("f13"), None);
+        assert_eq!(parse_key("f"), Some(0x46)); // huruf F, bukan F-key
+        let (cfg, w) = Config::parse("overview_key = z\ncheatsheet_key = z\n");
+        assert_eq!(cfg.cheatsheet_key, 0); // bentrok: cheatsheet mengalah
+        assert_eq!(w.len(), 1);
     }
 }

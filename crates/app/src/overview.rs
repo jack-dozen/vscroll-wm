@@ -102,7 +102,7 @@ fn mix(c: u32, toward: u32, pct: u32) -> u32 {
 }
 
 /// Terang gelapnya warna, 0-255.
-fn luminance(c: u32) -> u32 {
+pub(crate) fn luminance(c: u32) -> u32 {
     let (r, g, b) = channels(c);
     (r * 299 + g * 587 + b * 114) / 1000
 }

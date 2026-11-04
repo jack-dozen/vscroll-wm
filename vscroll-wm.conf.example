@@ -20,6 +20,12 @@ gap = 16
 # Langkah tiap tekan dalam piksel (10-400). Menahan tombol mengulang terus.
 resize_step = 80
 
+# --- Cheatsheet: daftar pintasan keyboard ---
+# Tombol pembuka bersama Win: slash (bawaan, tombol /), f1-f12, tab, space, grave,
+# satu huruf/angka, atau off. Tidak boleh sama dengan overview_key. Bisa juga dibuka
+# dari menu tray ("Pintasan keyboard"). Tutup dengan tombol apa saja atau klik.
+cheatsheet_key = slash
+
 # --- Overview: panel peta strip, seperti Alt+Tab ---
 
 # Tombol pembuka bersama Win: tab (bawaan), space, grave, satu huruf/angka, atau off.
