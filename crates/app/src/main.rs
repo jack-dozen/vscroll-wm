@@ -37,8 +37,8 @@ use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use layout::{Dir, Rect, Strip, WindowId};
-use windows::core::{w, BOOL, PCWSTR};
-use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, RECT, WPARAM};
+use windows::core::{w, BOOL, HRESULT, PCWSTR};
+use windows::Win32::Foundation::{ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{
     DwmGetWindowAttribute, DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CLOAKED,
     DWMWA_EXTENDED_FRAME_BOUNDS,
@@ -163,8 +163,9 @@ unsafe fn ext_bounds(hwnd: HWND) -> RECT {
 
 /// Pindahkan window dengan kompensasi invisible border Windows 10/11.
 /// Mengembalikan batas frame yang terlihat SETELAH dipindah (bisa beda dari
-/// yang diminta kalau app punya ukuran minimum).
-unsafe fn place(hwnd: HWND, r: Rect) -> RECT {
+/// yang diminta kalau app punya ukuran minimum), dan apakah Windows menolak
+/// (ACCESS_DENIED: jendela berjalan dengan hak lebih tinggi, mis. administrator).
+unsafe fn place(hwnd: HWND, r: Rect) -> (RECT, bool) {
     if IsZoomed(hwnd).as_bool() {
         let _ = ShowWindow(hwnd, SW_RESTORE);
     }
@@ -173,7 +174,7 @@ unsafe fn place(hwnd: HWND, r: Rect) -> RECT {
     let ext = ext_bounds(hwnd);
     let (l, t) = (ext.left - win.left, ext.top - win.top);
     let (rr, b) = (win.right - ext.right, win.bottom - ext.bottom);
-    let _ = SetWindowPos(
+    let result = SetWindowPos(
         hwnd,
         None,
         r.x - l,
@@ -182,7 +183,8 @@ unsafe fn place(hwnd: HWND, r: Rect) -> RECT {
         r.h + t + b,
         SWP_NOZORDER | SWP_NOACTIVATE,
     );
-    ext_bounds(hwnd)
+    let denied = result.is_err_and(|e| e.code() == HRESULT::from_win32(ERROR_ACCESS_DENIED.0));
+    (ext_bounds(hwnd), denied)
 }
 
 unsafe fn set_border(h: HWND, color: u32) {
@@ -512,6 +514,8 @@ struct App {
     hidden: HashSet<WindowId>,
     /// Window yang sengaja dibiarkan mengambang (tidak ditata) lewat Win+Alt+F.
     floating: HashMap<WindowId, HWND>,
+    /// Window yang menolak dikendalikan (hak akses lebih tinggi). Dibiarkan mengambang.
+    blocked: HashMap<WindowId, HWND>,
     /// 0 = timer animasi tidak jalan (tidak ada beban saat idle).
     anim_timer: usize,
     anim_ms: f32,
@@ -537,6 +541,7 @@ impl App {
             anim: HashMap::new(),
             hidden: HashSet::new(),
             floating: HashMap::new(),
+            blocked: HashMap::new(),
             anim_timer: 0,
             sync_timer: 0,
             recheck: false,
@@ -555,6 +560,7 @@ impl App {
         let live: HashMap<WindowId, HWND> = list.iter().map(|&h| (wid(h), h)).collect();
         let mut changed = false;
         self.floating.retain(|_, h| safety::alive(*h)); // yang ditutup tidak perlu diingat
+        self.blocked.retain(|_, h| safety::alive(*h));
 
         let gone: Vec<WindowId> =
             self.map.keys().filter(|k| !live.contains_key(k)).copied().collect();
@@ -583,7 +589,7 @@ impl App {
         let work = work_area();
         for &h in &list {
             let id = wid(h);
-            if self.floating.contains_key(&id) {
+            if self.floating.contains_key(&id) || self.blocked.contains_key(&id) {
                 continue;
             }
             if !self.map.contains_key(&id) {
@@ -653,7 +659,12 @@ impl App {
                 }
                 // ukuran berubah -> langsung ke ukuran akhir, tanpa animasi
                 self.anim.remove(&p.id);
-                let mut a = place(h, t);
+                let (mut a, denied) = place(h, t);
+                if denied {
+                    self.mark_blocked(p.id, h);
+                    grew = true; // hitung ulang layout tanpa window ini
+                    continue;
+                }
                 let mut got = a.bottom - a.top;
                 let mut got_w = a.right - a.left;
                 if got > t.h + 2 || got_w > t.w + 2 {
@@ -956,6 +967,10 @@ impl App {
         let exe = rules::exe_name(h).unwrap_or_else(|| "(tidak terbaca)".into());
         let status = if self.floating.contains_key(&id) {
             "mengambang (Win+Alt+F)".to_string()
+        } else if self.blocked.contains_key(&id) {
+            "tidak bisa dikendalikan: kemungkinan berjalan sebagai administrator \
+             (jalankan vscroll-wm sebagai administrator juga)"
+                .to_string()
         } else if self.map.contains_key(&id) {
             "ditata".to_string()
         } else {
@@ -981,6 +996,23 @@ impl App {
                 );
             });
         }
+    }
+
+    /// Window menolak dipindahkan karena hak aksesnya lebih tinggi dari kita (biasanya
+    /// berjalan sebagai administrator; UIPI). Keluarkan dari strip supaya tidak
+    /// memegang slot kosong yang tidak pernah bisa diisi.
+    unsafe fn mark_blocked(&mut self, id: WindowId, h: HWND) {
+        self.strip.remove_window(id);
+        self.map.remove(&id);
+        self.hidden.remove(&id);
+        self.actual.remove(&id);
+        self.anim.remove(&id);
+        safety::forget(h);
+        self.blocked.insert(id, h);
+        eprintln!(
+            "[akses ditolak] \"{}\" tidak bisa dikendalikan (kemungkinan berjalan sebagai administrator)",
+            title(h)
+        );
     }
 
     /// Win+Alt+F: window yang sedang di foreground dikeluarkan dari strip
