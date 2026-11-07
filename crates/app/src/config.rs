@@ -204,7 +204,8 @@ impl Config {
             }
         }
         if cfg.cheatsheet_key != 0 && cfg.cheatsheet_key == cfg.overview_key {
-            warnings.push("cheatsheet_key sama dengan overview_key: cheatsheet dimatikan".to_string());
+            warnings
+                .push("cheatsheet_key sama dengan overview_key: cheatsheet dimatikan".to_string());
             cfg.cheatsheet_key = 0;
         }
         (cfg, warnings)
@@ -245,7 +246,9 @@ fn parse_key(v: &str) -> Option<u16> {
         "space" => 0x20,
         s if s.len() >= 2
             && s.starts_with('f')
-            && s[1..].parse::<u16>().map_or(false, |n| (1..=12).contains(&n)) =>
+            && s[1..]
+                .parse::<u16>()
+                .map_or(false, |n| (1..=12).contains(&n)) =>
         {
             0x6F + s[1..].parse::<u16>().unwrap_or(1)
         }
@@ -377,10 +380,16 @@ pub fn load() -> Config {
             Err(e) => eprintln!("gagal membaca {}: {e}", path.display()),
         }
     }
-    if let Some(v) = std::env::var("VSCROLL_GAP").ok().and_then(|v| v.parse::<i32>().ok()) {
+    if let Some(v) = std::env::var("VSCROLL_GAP")
+        .ok()
+        .and_then(|v| v.parse::<i32>().ok())
+    {
         cfg.gap = v.clamp(0, 200);
     }
-    if let Some(v) = std::env::var("VSCROLL_ANIM_MS").ok().and_then(|v| v.parse::<f32>().ok()) {
+    if let Some(v) = std::env::var("VSCROLL_ANIM_MS")
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+    {
         if v.is_finite() {
             cfg.anim_ms = Some(v.clamp(0.0, 1000.0));
         }
@@ -448,13 +457,17 @@ mod tests {
         assert_eq!(cfg.overview_label, LabelMode::Reverse);
         assert_eq!(
             cfg.aliases,
-            vec![("code".to_string(), "Kode".to_string()), ("foo".to_string(), "Fu".to_string())]
+            vec![
+                ("code".to_string(), "Kode".to_string()),
+                ("foo".to_string(), "Fu".to_string())
+            ]
         );
     }
 
     #[test]
     fn bad_overview_values_warn() {
-        let (cfg, w) = Config::parse("overview_hint = mungkin\noverview_label = hias\nalias. = x\n");
+        let (cfg, w) =
+            Config::parse("overview_hint = mungkin\noverview_label = hias\nalias. = x\n");
         assert_eq!(w.len(), 3);
         assert!(cfg.overview_hint);
         assert_eq!(cfg.overview_label, LabelMode::Title);
@@ -467,19 +480,36 @@ mod tests {
             label(LabelMode::Reverse, "Percakapan baru - Vivaldi", None, &al),
             "Vivaldi - Percakapan baru"
         );
-        assert_eq!(label(LabelMode::Reverse, "a - b - Vivaldi", None, &al), "Vivaldi - a - b");
-        assert_eq!(label(LabelMode::Reverse, "Tanpa pemisah", None, &al), "Tanpa pemisah");
-        assert_eq!(label(LabelMode::Reverse, "Judul — Edge", None, &al), "Edge — Judul");
+        assert_eq!(
+            label(LabelMode::Reverse, "a - b - Vivaldi", None, &al),
+            "Vivaldi - a - b"
+        );
+        assert_eq!(
+            label(LabelMode::Reverse, "Tanpa pemisah", None, &al),
+            "Tanpa pemisah"
+        );
+        assert_eq!(
+            label(LabelMode::Reverse, "Judul — Edge", None, &al),
+            "Edge — Judul"
+        );
     }
 
     #[test]
     fn app_label_uses_exe_name_and_falls_back_to_title() {
         let al = vec![("vivaldi".to_string(), "Viv".to_string())];
-        assert_eq!(label(LabelMode::App, "x - Vivaldi", Some("vivaldi.exe"), &al), "Viv");
+        assert_eq!(
+            label(LabelMode::App, "x - Vivaldi", Some("vivaldi.exe"), &al),
+            "Viv"
+        );
         assert_eq!(label(LabelMode::App, "x", Some("code.exe"), &[]), "VS Code");
         assert_eq!(label(LabelMode::App, "x", Some("foo.exe"), &[]), "Foo");
         assert_eq!(
-            label(LabelMode::App, "Kalkulator", Some("applicationframehost.exe"), &[]),
+            label(
+                LabelMode::App,
+                "Kalkulator",
+                Some("applicationframehost.exe"),
+                &[]
+            ),
             "Kalkulator"
         );
         assert_eq!(label(LabelMode::App, "judul", None, &[]), "judul");
@@ -513,7 +543,9 @@ mod tests {
 
     #[test]
     fn overview_size_is_clamped_and_bad_colors_warn() {
-        let (cfg, w) = Config::parse("overview_size = 5\noverview_color_box = biru\noverview_color_active = off\n");
+        let (cfg, w) = Config::parse(
+            "overview_size = 5\noverview_color_box = biru\noverview_color_active = off\n",
+        );
         assert_eq!(cfg.overview_size, 30);
         assert_eq!(w.len(), 2);
         assert_eq!(cfg.overview_colors, OverviewColors::default());

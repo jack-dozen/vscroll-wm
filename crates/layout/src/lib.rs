@@ -271,8 +271,12 @@ impl Strip {
 
     /// Item lajur (kiri/kanan, tidak tersembunyi) dalam satu blok.
     fn lanes_in(&self, lo: usize, hi: usize) -> (Vec<usize>, Vec<usize>) {
-        let left = (lo..hi).filter(|&k| self.items[k].span == Span::Left).collect();
-        let right = (lo..hi).filter(|&k| self.items[k].span == Span::Right).collect();
+        let left = (lo..hi)
+            .filter(|&k| self.items[k].span == Span::Left)
+            .collect();
+        let right = (lo..hi)
+            .filter(|&k| self.items[k].span == Span::Right)
+            .collect();
         (left, right)
     }
 
@@ -280,7 +284,9 @@ impl Strip {
     /// < 0 ke kiri. Lebar dimiliki lajur, jadi semua window di lajur itu ikut.
     /// False kalau tidak ada yang bergeser (window penuh lebar, atau sudah di batas).
     pub fn adjust_split(&mut self, delta_px: i32) -> bool {
-        let Some(i) = self.focused.and_then(|f| self.index_of(f)) else { return false };
+        let Some(i) = self.focused.and_then(|f| self.index_of(f)) else {
+            return false;
+        };
         if !matches!(self.items[i].span, Span::Left | Span::Right) {
             return false;
         }
@@ -311,7 +317,9 @@ impl Strip {
 
     /// Kembalikan pembagi blok window yang fokus ke 50/50.
     pub fn reset_split(&mut self) -> bool {
-        let Some(i) = self.focused.and_then(|f| self.index_of(f)) else { return false };
+        let Some(i) = self.focused.and_then(|f| self.index_of(f)) else {
+            return false;
+        };
         if !matches!(self.items[i].span, Span::Left | Span::Right) {
             return false;
         }
@@ -354,7 +362,14 @@ impl Strip {
     fn flow(&self) -> Vec<Flow> {
         let content_h = self.content().h;
         let content_w = self.content().w;
-        let dummy = Flow { id: WindowId(0), span: Span::Full, x: 0, w: 0, top: 0, h: 0 };
+        let dummy = Flow {
+            id: WindowId(0),
+            span: Span::Full,
+            x: 0,
+            w: 0,
+            top: 0,
+            h: 0,
+        };
         let mut out = vec![dummy; self.items.len()];
         let mut base = 0i32;
         let (mut left, mut right): (Vec<usize>, Vec<usize>) = (Vec::new(), Vec::new());
@@ -363,14 +378,28 @@ impl Strip {
                 Span::Left => left.push(i),
                 Span::Right => right.push(i),
                 Span::Hidden => {
-                    out[i] = Flow { id: it.id, span: Span::Hidden, x: 0, w: 0, top: base, h: 0 };
+                    out[i] = Flow {
+                        id: it.id,
+                        span: Span::Hidden,
+                        x: 0,
+                        w: 0,
+                        top: base,
+                        h: 0,
+                    };
                 }
                 Span::Full => {
                     let top = self.place_run(&mut out, base, &left, &right, content_h, content_w);
                     left.clear();
                     right.clear();
                     let h = self.item_px(it);
-                    out[i] = Flow { id: it.id, span: Span::Full, x: 0, w: content_w, top, h };
+                    out[i] = Flow {
+                        id: it.id,
+                        span: Span::Full,
+                        x: 0,
+                        w: content_w,
+                        top,
+                        h,
+                    };
                     base = top + h;
                 }
             }
@@ -390,7 +419,10 @@ impl Strip {
         content_w: i32,
     ) -> i32 {
         let mut hl: Vec<i32> = left.iter().map(|&k| self.item_px(&self.items[k])).collect();
-        let mut hr: Vec<i32> = right.iter().map(|&k| self.item_px(&self.items[k])).collect();
+        let mut hr: Vec<i32> = right
+            .iter()
+            .map(|&k| self.item_px(&self.items[k]))
+            .collect();
 
         let nominal = |k: usize| self.items[k].height.pixels(content_h);
         let cum = |idxs: &[usize]| -> Vec<i32> {
@@ -473,7 +505,13 @@ impl Strip {
             });
         self.items.insert(
             at,
-            Item { id, span: Span::Full, height: Height::Full, restore: Span::Full, split: 500 },
+            Item {
+                id,
+                span: Span::Full,
+                height: Height::Full,
+                restore: Span::Full,
+                split: 500,
+            },
         );
         self.focused = Some(id);
         self.ensure_visible();
@@ -494,14 +532,20 @@ impl Strip {
     fn pick_focus(&self, idx: usize) -> Option<WindowId> {
         (idx..self.items.len())
             .find(|&k| self.items[k].span != Span::Hidden)
-            .or_else(|| (0..idx.min(self.items.len())).rev().find(|&k| self.items[k].span != Span::Hidden))
+            .or_else(|| {
+                (0..idx.min(self.items.len()))
+                    .rev()
+                    .find(|&k| self.items[k].span != Span::Hidden)
+            })
             .map(|k| self.items[k].id)
     }
 
     /// Sembunyikan / tampilkan window tanpa kehilangan slotnya. Dipakai saat
     /// window di-minimize atau muncul lagi. True kalau ada perubahan.
     pub fn set_hidden(&mut self, id: WindowId, hide: bool) -> bool {
-        let Some(i) = self.index_of(id) else { return false };
+        let Some(i) = self.index_of(id) else {
+            return false;
+        };
         if hide {
             if self.items[i].span == Span::Hidden {
                 return false;
@@ -525,7 +569,10 @@ impl Strip {
     }
 
     pub fn set_focus(&mut self, id: WindowId) {
-        if self.index_of(id).map_or(false, |i| self.items[i].span != Span::Hidden) {
+        if self
+            .index_of(id)
+            .map_or(false, |i| self.items[i].span != Span::Hidden)
+        {
             self.focused = Some(id);
             self.ensure_visible();
         }
@@ -715,7 +762,9 @@ impl Strip {
     pub fn move_window(&mut self, dir: Dir) {
         let Some(id) = self.focused else { return };
         let Some(n) = self.neighbor(dir) else { return };
-        let (Some(a), Some(b)) = (self.index_of(id), self.index_of(n)) else { return };
+        let (Some(a), Some(b)) = (self.index_of(id), self.index_of(n)) else {
+            return;
+        };
         let (sa, sb) = (self.items[a].span, self.items[b].span);
         if sa != Span::Full && sb != Span::Full && sa != sb {
             self.items[a].span = sb;
@@ -732,10 +781,7 @@ impl Strip {
         let content = flow.iter().map(|f| f.bottom()).max().unwrap_or(0);
         self.scroll_y = self.scroll_y.min((content - vh).max(0));
 
-        let Some(f) = self
-            .focused
-            .and_then(|id| flow.iter().find(|f| f.id == id))
-        else {
+        let Some(f) = self.focused.and_then(|id| flow.iter().find(|f| f.id == id)) else {
             self.scroll_y = 0;
             return;
         };
@@ -764,7 +810,11 @@ impl Strip {
         if n < 2 {
             return None;
         }
-        let next = if forward { (pos + 1) % n } else { (pos + n - 1) % n };
+        let next = if forward {
+            (pos + 1) % n
+        } else {
+            (pos + n - 1) % n
+        };
         Some(order[next].2)
     }
 
@@ -777,7 +827,15 @@ impl Strip {
             .filter(|f| f.span != Span::Hidden)
             .map(|f| {
                 let (x0, x1) = f.x_range();
-                OverviewItem { id: f.id, rect: Rect { x: x0, y: f.top, w: x1 - x0, h: f.h } }
+                OverviewItem {
+                    id: f.id,
+                    rect: Rect {
+                        x: x0,
+                        y: f.top,
+                        w: x1 - x0,
+                        h: f.h,
+                    },
+                }
             })
             .collect();
         let height = items
@@ -786,7 +844,13 @@ impl Strip {
             .max()
             .unwrap_or(0)
             .max(c.h);
-        Overview { items, width: c.w, height, view_y: self.scroll_y, view_h: c.h }
+        Overview {
+            items,
+            width: c.w,
+            height,
+            view_y: self.scroll_y,
+            view_h: c.h,
+        }
     }
 
     pub fn layout(&self) -> Vec<Placement> {
@@ -825,7 +889,12 @@ mod tests {
     const D: WindowId = WindowId(5);
 
     fn strip() -> Strip {
-        Strip::new(Rect { x: 0, y: 0, w: 1920, h: 1080 })
+        Strip::new(Rect {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1080,
+        })
     }
 
     fn r(s: &Strip, id: WindowId) -> Rect {

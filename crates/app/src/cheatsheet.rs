@@ -14,9 +14,9 @@ use windows::core::w;
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateFontIndirectW, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint,
-    FillRect, InvalidateRect, SelectObject, SetBkMode, SetTextColor, DT_END_ELLIPSIS, DT_LEFT,
-    DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, HGDIOBJ, LOGFONTW, PAINTSTRUCT, TRANSPARENT,
+    BeginPaint, CreateFontIndirectW, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect,
+    InvalidateRect, SelectObject, SetBkMode, SetTextColor, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX,
+    DT_SINGLELINE, DT_VCENTER, HGDIOBJ, LOGFONTW, PAINTSTRUCT, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -97,7 +97,10 @@ pub fn groups(cfg: &Config) -> Vec<Group> {
                 row("Win + Enter", "kembali penuh (lebar + tinggi)"),
             ],
         },
-        Group { title: "Berpindah".to_string(), rows: moving },
+        Group {
+            title: "Berpindah".to_string(),
+            rows: moving,
+        },
         Group {
             title: "Window".to_string(),
             rows: vec![
@@ -175,7 +178,8 @@ pub fn compute(groups: &[Group], work: Rect) -> Sheet {
     let col_w = KEYS_W + DESC_W;
     let max_w = work.w * 92 / 100;
     let max_h = work.h * 92 / 100;
-    let by_width = ((max_w - 2 * PAD + COL_GAP) / (col_w + COL_GAP)).clamp(1, groups.len().max(1) as i32);
+    let by_width =
+        ((max_w - 2 * PAD + COL_GAP) / (col_w + COL_GAP)).clamp(1, groups.len().max(1) as i32);
 
     let mut columns = by_width;
     for n in by_width.min(2)..=by_width {
@@ -201,7 +205,12 @@ pub fn compute(groups: &[Group], work: Rect) -> Sheet {
     let mut cells = vec![Cell {
         kind: CellKind::Title,
         text: TITLE_TEXT.to_string(),
-        rect: RECT { left: PAD, top: 14, right: panel_w - PAD, bottom: TITLE_H - 6 },
+        rect: RECT {
+            left: PAD,
+            top: 14,
+            right: panel_w - PAD,
+            bottom: TITLE_H - 6,
+        },
     }];
     for (c, idxs) in members.iter().enumerate() {
         let x0 = PAD + c as i32 * (col_w + COL_GAP);
@@ -211,24 +220,44 @@ pub fn compute(groups: &[Group], work: Rect) -> Sheet {
             cells.push(Cell {
                 kind: CellKind::Header,
                 text: g.title.clone(),
-                rect: RECT { left: x0, top: y, right: x0 + col_w, bottom: y + HEADER_H - 8 },
+                rect: RECT {
+                    left: x0,
+                    top: y,
+                    right: x0 + col_w,
+                    bottom: y + HEADER_H - 8,
+                },
             });
             cells.push(Cell {
                 kind: CellKind::Rule,
                 text: String::new(),
-                rect: RECT { left: x0, top: y + HEADER_H - 8, right: x0 + col_w, bottom: y + HEADER_H - 6 },
+                rect: RECT {
+                    left: x0,
+                    top: y + HEADER_H - 8,
+                    right: x0 + col_w,
+                    bottom: y + HEADER_H - 6,
+                },
             });
             y += HEADER_H;
             for (keys, desc) in &g.rows {
                 cells.push(Cell {
                     kind: CellKind::Keys,
                     text: keys.clone(),
-                    rect: RECT { left: x0, top: y, right: x0 + KEYS_W - 12, bottom: y + ROW_H },
+                    rect: RECT {
+                        left: x0,
+                        top: y,
+                        right: x0 + KEYS_W - 12,
+                        bottom: y + ROW_H,
+                    },
                 });
                 cells.push(Cell {
                     kind: CellKind::Desc,
                     text: desc.clone(),
-                    rect: RECT { left: x0 + KEYS_W, top: y, right: x0 + col_w, bottom: y + ROW_H },
+                    rect: RECT {
+                        left: x0 + KEYS_W,
+                        top: y,
+                        right: x0 + col_w,
+                        bottom: y + ROW_H,
+                    },
                 });
                 y += ROW_H;
             }
@@ -245,7 +274,11 @@ pub fn compute(groups: &[Group], work: Rect) -> Sheet {
             bottom: TITLE_H + body_h + FOOTER_H,
         },
     });
-    Sheet { panel, columns, cells }
+    Sheet {
+        panel,
+        columns,
+        cells,
+    }
 }
 
 // ------------------------------------------------------------------- jendela
@@ -306,8 +339,16 @@ unsafe fn paint(hwnd: HWND) {
             SetBkMode(hdc, TRANSPARENT);
 
             let dark_bg = luminance(colors.background) <= 150;
-            let text = if dark_bg { rgb(232, 235, 243) } else { rgb(25, 28, 36) };
-            let dim = if dark_bg { rgb(140, 148, 166) } else { rgb(100, 106, 120) };
+            let text = if dark_bg {
+                rgb(232, 235, 243)
+            } else {
+                rgb(25, 28, 36)
+            };
+            let dim = if dark_bg {
+                rgb(140, 148, 166)
+            } else {
+                rgb(100, 106, 120)
+            };
             let font = |a: &AtomicIsize| HGDIOBJ(a.load(Ordering::Relaxed) as *mut _);
 
             for cell in &sheet.cells {
@@ -317,11 +358,21 @@ unsafe fn paint(hwnd: HWND) {
                 }
                 let (f, color, flags) = match cell.kind {
                     CellKind::Title => (&FONT_TITLE, text, DT_LEFT | DT_VCENTER | DT_SINGLELINE),
-                    CellKind::Header => (&FONT_BOLD, colors.view, DT_LEFT | DT_VCENTER | DT_SINGLELINE),
-                    CellKind::Keys => (&FONT_BOLD, colors.active, DT_LEFT | DT_VCENTER | DT_SINGLELINE),
-                    CellKind::Desc => {
-                        (&FONT_NORMAL, text, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS)
-                    }
+                    CellKind::Header => (
+                        &FONT_BOLD,
+                        colors.view,
+                        DT_LEFT | DT_VCENTER | DT_SINGLELINE,
+                    ),
+                    CellKind::Keys => (
+                        &FONT_BOLD,
+                        colors.active,
+                        DT_LEFT | DT_VCENTER | DT_SINGLELINE,
+                    ),
+                    CellKind::Desc => (
+                        &FONT_NORMAL,
+                        text,
+                        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
+                    ),
                     _ => (&FONT_NORMAL, dim, DT_LEFT | DT_VCENTER | DT_SINGLELINE),
                 };
                 SelectObject(hdc, font(f));
@@ -374,7 +425,9 @@ unsafe extern "system" fn cs_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 
 /// Buat jendela cheatsheet (tersembunyi) sekali di awal.
 pub unsafe fn init() -> bool {
-    let Ok(hmod) = GetModuleHandleW(None) else { return false };
+    let Ok(hmod) = GetModuleHandleW(None) else {
+        return false;
+    };
     let hinst = HINSTANCE(hmod.0);
     let class = w!("VScrollWmCheatsheet");
     let wc = WNDCLASSW {
@@ -450,7 +503,12 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    const WORK: Rect = Rect { x: 0, y: 0, w: 1920, h: 1080 };
+    const WORK: Rect = Rect {
+        x: 0,
+        y: 0,
+        w: 1920,
+        h: 1080,
+    };
 
     fn all_rows(cfg: &Config) -> Vec<(String, String)> {
         groups(cfg).into_iter().flat_map(|g| g.rows).collect()
@@ -474,7 +532,9 @@ mod tests {
         let rows = all_rows(&cfg);
         assert!(rows.iter().any(|(k, _)| k == "Win + Z"));
         assert!(rows.iter().any(|(_, d)| d.contains("120")));
-        assert!(rows.iter().any(|(k, d)| k == "Win + /" && d.contains("cheatsheet")));
+        assert!(rows
+            .iter()
+            .any(|(k, d)| k == "Win + /" && d.contains("cheatsheet")));
     }
 
     #[test]
@@ -483,9 +543,14 @@ mod tests {
         cfg.overview_key = 0;
         cfg.cheatsheet_key = 0;
         let rows = all_rows(&cfg);
-        let alt_space = rows.iter().filter(|(k, _)| k == "Win + Alt + Space").count();
+        let alt_space = rows
+            .iter()
+            .filter(|(k, _)| k == "Win + Alt + Space")
+            .count();
         assert_eq!(alt_space, 1); // tidak dobel
-        assert!(rows.iter().any(|(k, d)| k == "menu tray" && d.contains("cheatsheet")));
+        assert!(rows
+            .iter()
+            .any(|(k, d)| k == "menu tray" && d.contains("cheatsheet")));
     }
 
     #[test]
@@ -509,7 +574,15 @@ mod tests {
     #[test]
     fn narrow_screens_fall_back_to_one_column() {
         let groups = groups(&Config::default());
-        let s = compute(&groups, Rect { x: 0, y: 0, w: 1280, h: 1024 });
+        let s = compute(
+            &groups,
+            Rect {
+                x: 0,
+                y: 0,
+                w: 1280,
+                h: 1024,
+            },
+        );
         assert_eq!(s.columns, 1);
     }
 
@@ -519,7 +592,11 @@ mod tests {
         let s = compute(&groups, WORK);
         for c in &s.cells {
             assert!(c.rect.left >= 0 && c.rect.top >= 0, "{:?}", c.kind);
-            assert!(c.rect.right <= s.panel.w && c.rect.bottom <= s.panel.h, "{:?}", c.kind);
+            assert!(
+                c.rect.right <= s.panel.w && c.rect.bottom <= s.panel.h,
+                "{:?}",
+                c.kind
+            );
             assert!(c.rect.right > c.rect.left && c.rect.bottom > c.rect.top);
         }
         let rows = groups.iter().map(|g| g.rows.len()).sum::<usize>();
@@ -532,8 +609,16 @@ mod tests {
     fn key_and_description_cells_of_a_row_do_not_overlap() {
         let groups = groups(&Config::default());
         let s = compute(&groups, WORK);
-        let keys: Vec<&Cell> = s.cells.iter().filter(|c| c.kind == CellKind::Keys).collect();
-        let descs: Vec<&Cell> = s.cells.iter().filter(|c| c.kind == CellKind::Desc).collect();
+        let keys: Vec<&Cell> = s
+            .cells
+            .iter()
+            .filter(|c| c.kind == CellKind::Keys)
+            .collect();
+        let descs: Vec<&Cell> = s
+            .cells
+            .iter()
+            .filter(|c| c.kind == CellKind::Desc)
+            .collect();
         for (k, d) in keys.iter().zip(descs.iter()) {
             assert!(k.rect.right <= d.rect.left);
             assert_eq!(k.rect.top, d.rect.top);

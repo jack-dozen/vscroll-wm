@@ -63,13 +63,19 @@ pub fn autostart_enabled() -> bool {
 
 pub fn set_autostart(on: bool) -> bool {
     let out = if on {
-        let Ok(exe) = std::env::current_exe() else { return false };
+        let Ok(exe) = std::env::current_exe() else {
+            return false;
+        };
         let value = format!("\"{}\"", exe.display());
         reg()
-            .args(["add", RUN_KEY, "/v", RUN_VALUE, "/t", "REG_SZ", "/d", &value, "/f"])
+            .args([
+                "add", RUN_KEY, "/v", RUN_VALUE, "/t", "REG_SZ", "/d", &value, "/f",
+            ])
             .output()
     } else {
-        reg().args(["delete", RUN_KEY, "/v", RUN_VALUE, "/f"]).output()
+        reg()
+            .args(["delete", RUN_KEY, "/v", RUN_VALUE, "/f"])
+            .output()
     };
     out.map_or(false, |o| o.status.success())
 }
@@ -89,7 +95,11 @@ unsafe fn make_icon() -> Option<HICON> {
             let pane = in_rect(x, y, 3, 15, 3, 15)
                 || in_rect(x, y, 3, 15, 17, 29)
                 || in_rect(x, y, 17, 29, 3, 29);
-            let (b, g, r) = if pane { (0xF5, 0xA8, 0x4F) } else { (0x30, 0x26, 0x20) };
+            let (b, g, r) = if pane {
+                (0xF5, 0xA8, 0x4F)
+            } else {
+                (0x30, 0x26, 0x20)
+            };
             let i = (y * N + x) * 4;
             xor[i] = b;
             xor[i + 1] = g;
@@ -144,7 +154,12 @@ pub unsafe fn remove() {
 // --------------------------------------------------------------------- menu
 
 unsafe fn post_main(msg: u32) {
-    let _ = PostThreadMessageW(MAIN_THREAD.load(Ordering::Relaxed), msg, WPARAM(0), LPARAM(0));
+    let _ = PostThreadMessageW(
+        MAIN_THREAD.load(Ordering::Relaxed),
+        msg,
+        WPARAM(0),
+        LPARAM(0),
+    );
 }
 
 unsafe fn show_menu(hwnd: HWND) {
@@ -159,7 +174,11 @@ unsafe fn show_menu(hwnd: HWND) {
     let _ = AppendMenuW(menu, MF_STRING, ID_PAUSE, PCWSTR(pause_txt.as_ptr()));
     let _ = AppendMenuW(menu, MF_STRING, ID_RELOAD, PCWSTR(reload_txt.as_ptr()));
     let _ = AppendMenuW(menu, MF_STRING, ID_HELP, PCWSTR(help_txt.as_ptr()));
-    let auto_flags = if autostart_enabled() { MF_STRING | MF_CHECKED } else { MF_STRING };
+    let auto_flags = if autostart_enabled() {
+        MF_STRING | MF_CHECKED
+    } else {
+        MF_STRING
+    };
     let _ = AppendMenuW(menu, auto_flags, ID_AUTOSTART, PCWSTR(auto_txt.as_ptr()));
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
     let _ = AppendMenuW(menu, MF_STRING, ID_QUIT, PCWSTR(quit_txt.as_ptr()));
@@ -168,7 +187,15 @@ unsafe fn show_menu(hwnd: HWND) {
     let _ = GetCursorPos(&mut pt);
     // wajib supaya menu tertutup saat user mengklik di tempat lain
     let _ = SetForegroundWindow(hwnd);
-    let cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, Some(0), hwnd, None);
+    let cmd = TrackPopupMenu(
+        menu,
+        TPM_RETURNCMD | TPM_RIGHTBUTTON,
+        pt.x,
+        pt.y,
+        Some(0),
+        hwnd,
+        None,
+    );
     let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
     let _ = DestroyMenu(menu);
 
@@ -209,7 +236,9 @@ unsafe extern "system" fn tray_proc(
 /// Harus dipanggil dari thread yang menjalankan message loop.
 pub unsafe fn create(main_thread: u32) -> bool {
     MAIN_THREAD.store(main_thread, Ordering::Relaxed);
-    let Ok(hmod) = GetModuleHandleW(None) else { return false };
+    let Ok(hmod) = GetModuleHandleW(None) else {
+        return false;
+    };
     let hinst = HINSTANCE(hmod.0);
     let class = w!("VScrollWmTray");
 
@@ -240,7 +269,10 @@ pub unsafe fn create(main_thread: u32) -> bool {
         return false;
     };
     TRAY_HWND.store(hwnd.0 as isize, Ordering::Relaxed);
-    TASKBAR_CREATED.store(RegisterWindowMessageW(w!("TaskbarCreated")), Ordering::Relaxed);
+    TASKBAR_CREATED.store(
+        RegisterWindowMessageW(w!("TaskbarCreated")),
+        Ordering::Relaxed,
+    );
 
     let icon = make_icon().unwrap_or_else(|| LoadIconW(None, IDI_APPLICATION).unwrap_or_default());
     ICON.store(icon.0 as isize, Ordering::Relaxed);

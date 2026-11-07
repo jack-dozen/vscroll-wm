@@ -20,9 +20,9 @@ use windows::Win32::Graphics::Dwm::{
     DWM_THUMBNAIL_PROPERTIES, DWM_TNP_OPACITY, DWM_TNP_RECTDESTINATION, DWM_TNP_VISIBLE,
 };
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateFontIndirectW, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint,
-    FillRect, InvalidateRect, SelectObject, SetBkMode, SetTextColor, DT_CENTER, DT_END_ELLIPSIS,
-    DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, HGDIOBJ, LOGFONTW, PAINTSTRUCT, TRANSPARENT,
+    BeginPaint, CreateFontIndirectW, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect,
+    InvalidateRect, SelectObject, SetBkMode, SetTextColor, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT,
+    DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, HGDIOBJ, LOGFONTW, PAINTSTRUCT, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -153,7 +153,12 @@ pub fn build(
             let b = oy + sc(it.rect.y + it.rect.h) - MARGIN;
             DrawItem {
                 id: it.id.0,
-                rect: RECT { left: l, top: t, right: r.max(l + 4), bottom: b.max(t + 4) },
+                rect: RECT {
+                    left: l,
+                    top: t,
+                    right: r.max(l + 4),
+                    bottom: b.max(t + 4),
+                },
                 title: titles.get(&it.id.0).cloned().unwrap_or_default(),
                 source: sources.get(&it.id.0).copied().unwrap_or(0),
                 label_band: None,
@@ -161,7 +166,12 @@ pub fn build(
         })
         .collect();
     let vt = oy + sc(ov.view_y);
-    let view = RECT { left: ox, top: vt, right: ox + map_w, bottom: vt + sc(ov.view_h) };
+    let view = RECT {
+        left: ox,
+        top: vt,
+        right: ox + map_w,
+        bottom: vt + sc(ov.view_h),
+    };
     Draw {
         panel,
         items,
@@ -184,7 +194,12 @@ fn fit(area: RECT, sw: i32, sh: i32) -> RECT {
     let h = ((sh as f32 * scale) as i32).max(1);
     let l = area.left + (aw - w) / 2;
     let t = area.top + (ah - h) / 2;
-    RECT { left: l, top: t, right: l + w, bottom: t + h }
+    RECT {
+        left: l,
+        top: t,
+        right: l + w,
+        bottom: t + h,
+    }
 }
 
 /// Pasang thumbnail DWM untuk tiap kotak yang cukup besar. Kotak yang dapat
@@ -246,7 +261,12 @@ unsafe fn unregister_thumbs() {
 }
 
 unsafe fn post(msg: u32, wparam: usize) {
-    let _ = PostThreadMessageW(MAIN_THREAD.load(Ordering::Relaxed), msg, WPARAM(wparam), LPARAM(0));
+    let _ = PostThreadMessageW(
+        MAIN_THREAD.load(Ordering::Relaxed),
+        msg,
+        WPARAM(wparam),
+        LPARAM(0),
+    );
 }
 
 unsafe fn paint(hwnd: HWND) {
@@ -256,7 +276,9 @@ unsafe fn paint(hwnd: HWND) {
     let _ = GetClientRect(hwnd, &mut client);
 
     if let Ok(guard) = DRAW.lock() {
-        let colors = guard.as_ref().map_or_else(OverviewColors::default, |d| d.colors);
+        let colors = guard
+            .as_ref()
+            .map_or_else(OverviewColors::default, |d| d.colors);
         let brush = |c: u32| CreateSolidBrush(COLORREF(c));
         let bg = brush(colors.background);
         let fill = brush(colors.box_fill);
@@ -314,7 +336,11 @@ unsafe fn paint(hwnd: HWND) {
                                 hdc,
                                 &mut text,
                                 &mut tr,
-                                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+                                DT_LEFT
+                                    | DT_VCENTER
+                                    | DT_SINGLELINE
+                                    | DT_END_ELLIPSIS
+                                    | DT_NOPREFIX,
                             );
                         }
                         // tanpa thumbnail: label di tengah kotak
@@ -344,10 +370,30 @@ unsafe fn paint(hwnd: HWND) {
             let v = d.view;
             let t = 3;
             for edge_rect in [
-                RECT { left: v.left, top: v.top, right: v.right, bottom: v.top + t },
-                RECT { left: v.left, top: v.bottom - t, right: v.right, bottom: v.bottom },
-                RECT { left: v.left, top: v.top, right: v.left + t, bottom: v.bottom },
-                RECT { left: v.right - t, top: v.top, right: v.right, bottom: v.bottom },
+                RECT {
+                    left: v.left,
+                    top: v.top,
+                    right: v.right,
+                    bottom: v.top + t,
+                },
+                RECT {
+                    left: v.left,
+                    top: v.bottom - t,
+                    right: v.right,
+                    bottom: v.bottom,
+                },
+                RECT {
+                    left: v.left,
+                    top: v.top,
+                    right: v.left + t,
+                    bottom: v.bottom,
+                },
+                RECT {
+                    left: v.right - t,
+                    top: v.top,
+                    right: v.right,
+                    bottom: v.bottom,
+                },
             ] {
                 FillRect(hdc, &edge_rect, frame);
             }
@@ -452,7 +498,9 @@ unsafe extern "system" fn ov_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 /// berlapis (layered): thumbnail DWM tidak tampil benar di jendela berlapis.
 pub unsafe fn init(main_thread: u32) -> bool {
     MAIN_THREAD.store(main_thread, Ordering::Relaxed);
-    let Ok(hmod) = GetModuleHandleW(None) else { return false };
+    let Ok(hmod) = GetModuleHandleW(None) else {
+        return false;
+    };
     let hinst = HINSTANCE(hmod.0);
     let class = w!("VScrollWmOverview");
     let wc = WNDCLASSW {
@@ -519,7 +567,11 @@ pub unsafe fn show(mut draw: Draw, thumbnails: bool) {
     }
     let h = hwnd();
     unregister_thumbs(); // jaga-jaga kalau sisa dari tampilan sebelumnya
-    let handles = if thumbnails { register_thumbs(h, &mut draw) } else { Vec::new() };
+    let handles = if thumbnails {
+        register_thumbs(h, &mut draw)
+    } else {
+        Vec::new()
+    };
     if let Ok(mut t) = THUMBS.lock() {
         *t = handles;
     }
@@ -560,7 +612,10 @@ mod tests {
     use layout::{OverviewItem, WindowId};
 
     fn ov() -> Overview {
-        let item = |id, x, y, w, h| OverviewItem { id: WindowId(id), rect: Rect { x, y, w, h } };
+        let item = |id, x, y, w, h| OverviewItem {
+            id: WindowId(id),
+            rect: Rect { x, y, w, h },
+        };
         Overview {
             items: vec![
                 item(1, 0, 0, 960, 540),
@@ -574,10 +629,19 @@ mod tests {
         }
     }
 
-    const WORK: Rect = Rect { x: 0, y: 0, w: 1920, h: 1080 };
+    const WORK: Rect = Rect {
+        x: 0,
+        y: 0,
+        w: 1920,
+        h: 1080,
+    };
 
     fn opts(hint: bool, size_pct: i32) -> Options {
-        Options { hint, size_pct, colors: OverviewColors::default() }
+        Options {
+            hint,
+            size_pct,
+            colors: OverviewColors::default(),
+        }
     }
 
     fn build_with(o: &Options) -> Draw {
@@ -625,9 +689,25 @@ mod tests {
     fn narrow_strip_still_leaves_room_for_the_hint_text() {
         let mut o = ov();
         o.height = 8000; // strip sangat tinggi -> peta sangat sempit
-        let d = build(&o, &HashMap::new(), &HashMap::new(), 1, 1, WORK, &opts(true, 70));
+        let d = build(
+            &o,
+            &HashMap::new(),
+            &HashMap::new(),
+            1,
+            1,
+            WORK,
+            &opts(true, 70),
+        );
         assert!(d.panel.w >= MIN_PANEL_W_WITH_HINT);
-        let d2 = build(&o, &HashMap::new(), &HashMap::new(), 1, 1, WORK, &opts(false, 70));
+        let d2 = build(
+            &o,
+            &HashMap::new(),
+            &HashMap::new(),
+            1,
+            1,
+            WORK,
+            &opts(false, 70),
+        );
         assert!(d2.panel.w < MIN_PANEL_W_WITH_HINT);
     }
 
@@ -653,7 +733,15 @@ mod tests {
         let mut o = ov();
         o.height = 2160; // dua layar tinggi; yang tampil: layar bawah
         o.view_y = 1080;
-        let d = build(&o, &HashMap::new(), &HashMap::new(), 1, 1, WORK, &opts(true, 70));
+        let d = build(
+            &o,
+            &HashMap::new(),
+            &HashMap::new(),
+            1,
+            1,
+            WORK,
+            &opts(true, 70),
+        );
         assert!(d.view.bottom > d.view.top);
         assert!(d.view.bottom <= d.panel.h);
         assert!(d.view.top > d.items[0].rect.top); // bingkai tidak di puncak peta
@@ -661,7 +749,12 @@ mod tests {
 
     #[test]
     fn fit_keeps_aspect_ratio_and_stays_inside() {
-        let area = RECT { left: 100, top: 100, right: 500, bottom: 300 }; // 400x200
+        let area = RECT {
+            left: 100,
+            top: 100,
+            right: 500,
+            bottom: 300,
+        }; // 400x200
         let r = fit(area, 1920, 1080);
         let (w, h) = (r.right - r.left, r.bottom - r.top);
         assert!(r.left >= area.left && r.right <= area.right);
@@ -672,7 +765,12 @@ mod tests {
 
     #[test]
     fn fit_falls_back_to_the_area_for_unknown_source_size() {
-        let area = RECT { left: 0, top: 0, right: 100, bottom: 50 };
+        let area = RECT {
+            left: 0,
+            top: 0,
+            right: 100,
+            bottom: 50,
+        };
         let r = fit(area, 0, 0);
         assert_eq!((r.left, r.top, r.right, r.bottom), (0, 0, 100, 50));
     }

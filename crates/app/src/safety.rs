@@ -61,7 +61,12 @@ fn rescue(r: RECT, work: Rect) -> RECT {
     let (nw, nh) = (w.min(work.w), h.min(work.h));
     let x = work.x + (work.w - nw) / 2;
     let y = work.y + (work.h - nh) / 2;
-    RECT { left: x, top: y, right: x + nw, bottom: y + nh }
+    RECT {
+        left: x,
+        top: y,
+        right: x + nw,
+        bottom: y + nh,
+    }
 }
 
 /// Simpan posisi asli window. Hanya sekali per window, jadi window yang
@@ -76,7 +81,11 @@ pub unsafe fn remember(h: HWND, work: Rect) {
     if GetWindowRect(h, &mut r).is_err() {
         return;
     }
-    list.push(Saved { hwnd: key, rect: rescue(r, work), zoomed: IsZoomed(h).as_bool() });
+    list.push(Saved {
+        hwnd: key,
+        rect: rescue(r, work),
+        zoomed: IsZoomed(h).as_bool(),
+    });
 }
 
 /// Lupakan window yang sudah ditutup.
@@ -167,17 +176,30 @@ pub unsafe fn install(main_thread: u32) {
 mod tests {
     use super::*;
 
-    const WORK: Rect = Rect { x: 0, y: 0, w: 1920, h: 1080 };
+    const WORK: Rect = Rect {
+        x: 0,
+        y: 0,
+        w: 1920,
+        h: 1080,
+    };
 
     fn rc(l: i32, t: i32, r: i32, b: i32) -> RECT {
-        RECT { left: l, top: t, right: r, bottom: b }
+        RECT {
+            left: l,
+            top: t,
+            right: r,
+            bottom: b,
+        }
     }
 
     #[test]
     fn visible_window_is_kept() {
         let r = rc(100, 100, 900, 700);
         let out = rescue(r, WORK);
-        assert_eq!((out.left, out.top, out.right, out.bottom), (100, 100, 900, 700));
+        assert_eq!(
+            (out.left, out.top, out.right, out.bottom),
+            (100, 100, 900, 700)
+        );
     }
 
     #[test]

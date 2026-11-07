@@ -53,7 +53,9 @@ impl Rules {
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            let Some((kind, value)) = line.split_once(':') else { continue };
+            let Some((kind, value)) = line.split_once(':') else {
+                continue;
+            };
             let value = value.trim().to_lowercase();
             if value.is_empty() {
                 continue;
@@ -124,7 +126,8 @@ pub unsafe fn exe_name(h: HWND) -> Option<String> {
     let proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
     let mut buf = [0u16; 520];
     let mut len = buf.len() as u32;
-    let ok = QueryFullProcessImageNameW(proc, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len);
+    let ok =
+        QueryFullProcessImageNameW(proc, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len);
     let _ = CloseHandle(proc);
     ok.ok()?;
     let full = String::from_utf16_lossy(&buf[..len as usize]);
@@ -135,7 +138,10 @@ pub unsafe fn exe_name(h: HWND) -> Option<String> {
 pub unsafe fn ignored(h: HWND) -> Option<&'static str> {
     let rules = rules();
     let class = class_name(h);
-    if BUILTIN_CLASSES.iter().any(|c| c.eq_ignore_ascii_case(&class)) {
+    if BUILTIN_CLASSES
+        .iter()
+        .any(|c| c.eq_ignore_ascii_case(&class))
+    {
         return Some("kelas bawaan (shell / sistem / dialog standar)");
     }
     let class = class.to_lowercase();
