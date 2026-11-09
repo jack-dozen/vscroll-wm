@@ -16,6 +16,8 @@
 //!   cheatsheet_key = slash    tombol cheatsheet bersama Win: slash (/), f1-f12, tab,
 //!                     space, grave, satu huruf/angka, atau off. Beda dari overview_key.
 //!   resize_step = 80          langkah Win+[ dan Win+] (piksel, 10-400)
+//!   height_mode = preset      Win+↑/↓: preset (1/3, 1/2, penuh) atau step (per langkah)
+//!   height_step = 80          langkah Win+↑/↓ di mode step (piksel, 10-400)
 //!   overview_size = 70        ukuran panel overview, persen dari area kerja (30-100)
 //!   overview_key = tab        tombol overview bersama Win: tab, space, grave, satu
 //!                     huruf/angka (bukan q/m), atau off. Win+Alt+Space selalu aktif.
@@ -68,6 +70,15 @@ pub enum LabelMode {
     Reverse,
 }
 
+/// Cara Win+↑/↓ mengubah tinggi window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeightMode {
+    /// Lompat antar preset 1/3, 1/2, penuh.
+    Preset,
+    /// Geser `height_step` piksel per tekan.
+    Step,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     pub gap: i32,
@@ -82,6 +93,8 @@ pub struct Config {
     pub aliases: Vec<(String, String)>,
     /// Langkah pergeseran pembagi lajur per tekan Win+[ / Win+] (piksel).
     pub resize_step: i32,
+    pub height_mode: HeightMode,
+    pub height_step: i32,
     /// Kode virtual-key tombol cheatsheet (bersama Win). 0 = dimatikan.
     pub cheatsheet_key: u16,
     /// Ukuran panel overview dalam persen area kerja.
@@ -102,6 +115,8 @@ impl Default for Config {
             overview_label: LabelMode::Title,
             aliases: Vec::new(),
             resize_step: 80,
+            height_mode: HeightMode::Preset,
+            height_step: 80,
             cheatsheet_key: 0xBF, // /
             overview_size: 70,
             overview_key: 0x09, // Tab
@@ -159,6 +174,15 @@ impl Config {
                 "resize_step" => match value.parse::<i32>() {
                     Ok(v) => cfg.resize_step = v.clamp(10, 400),
                     Err(_) => warnings.push(format!("baris {n}: resize_step harus bilangan bulat")),
+                },
+                "height_mode" => match value.to_lowercase().as_str() {
+                    "preset" => cfg.height_mode = HeightMode::Preset,
+                    "step" => cfg.height_mode = HeightMode::Step,
+                    _ => warnings.push(format!("baris {n}: height_mode harus preset atau step")),
+                },
+                "height_step" => match value.parse::<i32>() {
+                    Ok(v) => cfg.height_step = v.clamp(10, 400),
+                    Err(_) => warnings.push(format!("baris {n}: height_step harus bilangan bulat")),
                 },
                 "overview_size" => match value.parse::<i32>() {
                     Ok(v) => cfg.overview_size = v.clamp(30, 100),
@@ -575,5 +599,18 @@ mod tests {
         let (cfg, w) = Config::parse("overview_key = z\ncheatsheet_key = z\n");
         assert_eq!(cfg.cheatsheet_key, 0); // bentrok: cheatsheet mengalah
         assert_eq!(w.len(), 1);
+    }
+
+    #[test]
+    fn height_mode_and_step_are_parsed() {
+        let d = Config::default();
+        assert_eq!((d.height_mode, d.height_step), (HeightMode::Preset, 80));
+        let (cfg, w) = Config::parse("height_mode = Step\nheight_step = 120");
+        assert!(w.is_empty());
+        assert_eq!((cfg.height_mode, cfg.height_step), (HeightMode::Step, 120));
+        assert_eq!(Config::parse("height_step = 1").0.height_step, 10);
+        assert_eq!(Config::parse("height_step = 9999").0.height_step, 400);
+        let (cfg, w) = Config::parse("height_mode = pixel");
+        assert_eq!((cfg.height_mode, w.len()), (HeightMode::Preset, 1));
     }
 }

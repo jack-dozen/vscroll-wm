@@ -24,7 +24,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::config::{rgb, Config, OverviewColors};
+use crate::config::{rgb, Config, HeightMode, OverviewColors};
 use crate::overview::luminance;
 
 const TITLE_TEXT: &str = "Pintasan keyboard";
@@ -83,11 +83,20 @@ pub fn groups(cfg: &Config) -> Vec<Group> {
         "menu tray".to_string()
     };
 
+    let height_row = if cfg.height_mode == HeightMode::Step {
+        (
+            "Win + ↑ / ↓".to_string(),
+            format!("tinggi lebih pendek / lebih tinggi (±{} px)", cfg.height_step),
+        )
+    } else {
+        row("Win + ↑ / ↓", "tinggi lebih pendek / lebih tinggi")
+    };
+
     vec![
         Group {
             title: "Susunan window".to_string(),
             rows: vec![
-                row("Win + ↑ / ↓", "tinggi lebih pendek / lebih tinggi"),
+                height_row,
                 row("Win + ← / →", "masuk lajur kiri / kanan"),
                 (
                     "Win + ] / [".to_string(),
@@ -623,5 +632,18 @@ mod tests {
             assert!(k.rect.right <= d.rect.left);
             assert_eq!(k.rect.top, d.rect.top);
         }
+    }
+
+    #[test]
+    fn height_row_follows_the_mode() {
+        let mut cfg = Config::default();
+        cfg.height_mode = HeightMode::Step;
+        cfg.height_step = 120;
+        assert!(all_rows(&cfg)
+            .iter()
+            .any(|(k, d)| k == "Win + ↑ / ↓" && d.contains("120")));
+        assert!(!all_rows(&Config::default())
+            .iter()
+            .any(|(k, d)| k == "Win + ↑ / ↓" && d.contains("px")));
     }
 }

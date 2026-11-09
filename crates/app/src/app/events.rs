@@ -17,6 +17,7 @@ use crate::consts::{
 };
 use crate::winutil::{manageable, wid, work_area};
 use crate::{cheatsheet, tray};
+use crate::config::HeightMode;
 
 impl App {
     /// Jadwalkan sync + apply dalam `ms` milidetik (digabung kalau sudah terjadwal).
@@ -60,6 +61,11 @@ impl App {
         }
         self.sync();
         match id {
+            // mode step: Win+↑/↓ menggeser tinggi per langkah, bukan lompat preset
+            3 | 4 if self.cfg.height_mode == HeightMode::Step => {
+                let step = self.cfg.height_step;
+                self.strip.adjust_height(if id == 3 { -step } else { step });
+            }
             1..=4 => self.strip.snap(DIRS[(id - 1) as usize].1),
             5..=8 => self.strip.focus(DIRS[(id - 5) as usize].1),
             HOTKEY_MAXIMIZE => self.strip.maximize(),
