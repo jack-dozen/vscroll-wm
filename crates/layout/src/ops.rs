@@ -376,13 +376,17 @@ impl Strip {
     }
 
     /// Kembalikan window yang fokus jadi penuh (lebar + tinggi), di bawah
-    /// window-window yang ada di sampingnya.
+    /// window-window yang ada di sampingnya, dan reset rasio lajurnya ke 1/2.
     pub fn maximize(&mut self) {
         let Some(id) = self.focused else { return };
         let Some(i) = self.index_of(id) else { return };
         self.make_full(i);
         if let Some(k) = self.index_of(id) {
             self.items[k].height = Height::Full;
+            // keadaan awal: rasio lajur yang pernah diatur tidak ikut terbawa saat window
+            // ini nanti masuk lajur lagi (Win+Kiri/Kanan jadi 1/2). Kalau ia masuk ke
+            // blok yang sudah punya pembagi, `snap_side` tetap memakai rasio blok itu.
+            self.items[k].split = 500;
         }
         self.ensure_visible();
     }

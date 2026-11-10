@@ -139,6 +139,32 @@ fn maximize_restores_full_size() {
 }
 
 #[test]
+fn maximize_resets_the_lane_ratio_so_snapping_again_gives_half() {
+    let mut s = strip();
+    s.add_window(A);
+    s.snap(Dir::Left);
+    assert!(s.adjust_split(96));
+    assert_eq!(r(&s, A).w, 1056); // pembagi sudah digeser dari 1/2
+    s.maximize();
+    assert_eq!(r(&s, A), rect(0, 0, 1920, 1080)); // kembali semula
+    s.snap(Dir::Left);
+    assert_eq!(r(&s, A).w, 960); // 1/2 lagi, bukan rasio lama
+}
+
+#[test]
+fn rejoining_a_block_after_maximize_still_follows_that_blocks_ratio() {
+    let mut s = two_half_lanes();
+    s.set_focus(A);
+    assert!(s.adjust_split(96)); // blok A+B: kiri 1056, kanan 864
+    s.set_focus(B);
+    s.maximize();
+    assert_eq!(r(&s, B).w, 1920);
+    s.snap(Dir::Right); // masuk lagi ke blok yang punya pembagi: ikut rasionya
+    assert_eq!(r(&s, B).w, 864);
+    assert_eq!(r(&s, A).w, 1056);
+}
+
+#[test]
 fn min_height_stretches_aligned_neighbor_to_keep_edges_even() {
     // A dan B sama-sama setengah tinggi, berdampingan. B punya minimum 600:
     // A diregangkan ke 600 supaya dasar keduanya rata.
