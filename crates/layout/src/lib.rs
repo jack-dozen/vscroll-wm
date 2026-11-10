@@ -14,5 +14,7 @@ mod ops;
 #[cfg(test)]
 mod tests;
 mod types;
+mod workspaces;
 
 pub use types::*;
+pub use workspaces::Workspaces;

@@ -26,7 +26,7 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, VK_DOWN, VK_ESCAPE, VK_LEFT, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_TAB, VK_UP,
+    GetKeyState, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_LEFT, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_TAB, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -40,6 +40,8 @@ pub const WM_OV_CANCEL: u32 = WM_APP + 9;
 pub const WM_OV_PICK: u32 = WM_APP + 10;
 /// wParam = 1 window berikutnya, 0 sebelumnya (urutan baca).
 pub const WM_OV_CYCLE: u32 = WM_APP + 11;
+/// wParam = 0 workspace sebelumnya, 1 berikutnya, n >= 2 workspace nomor n - 2 (mulai 0).
+pub const WM_OV_WS: u32 = WM_APP + 13;
 
 /// Pengaturan tampilan panel.
 pub struct Options {
@@ -60,13 +62,26 @@ pub struct DrawItem {
     pub label_band: Option<RECT>,
 }
 
+/// Satu workspace di panel.
+pub struct DrawColumn {
+    /// Nomor untuk label (mulai 1).
+    pub number: usize,
+    pub rect: RECT,
+    /// Workspace yang sedang aktif.
+    pub active: bool,
+    /// Bingkai bagian strip yang sedang tampil di layar untuk workspace ini.
+    pub view: RECT,
+}
+
 pub struct Draw {
     /// Posisi dan ukuran panel di layar (terpusat di area kerja).
     pub panel: Rect,
     /// Semua koordinat di bawah relatif terhadap sudut kiri atas panel.
     pub items: Vec<DrawItem>,
-    /// Bingkai bagian strip yang sedang tampil di layar.
-    pub view: RECT,
+    /// Satu kolom per workspace yang terlihat, dari kiri ke kanan.
+    pub columns: Vec<DrawColumn>,
+    /// Lebih dari satu workspace: kolom diberi nomor dan petunjuk menyebut workspace.
+    pub multi: bool,
     pub selected: u64,
     /// Window yang sedang aktif sekarang.
     pub focused: u64,
@@ -88,6 +103,15 @@ const PAD: i32 = 20;
 const HINT_H: i32 = 44;
 /// Lebar minimum panel supaya teks petunjuk tidak terpotong.
 const MIN_PANEL_W_WITH_HINT: i32 = 460;
+/// Petunjuk dengan keterangan workspace lebih panjang.
+const MIN_PANEL_W_WITH_HINT_WS: i32 = 600;
+/// Jarak antar kolom workspace dan tinggi baris nomor di atasnya (piksel layar).
+const COL_GAP: i32 = 16;
+const COL_LABEL_H: i32 = 26;
+/// Kolom workspace yang terlihat sekaligus; sisanya digulir mengikuti kursor.
+pub const MAX_VISIBLE: usize = 5;
+/// Lebar (dan skala) kolom yang bukan kolom kursor, persen dari kolom kursor.
+const SIDE_PCT: i32 = 60;
 
 fn channels(c: u32) -> (u32, u32, u32) {
     (c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF)
@@ -107,10 +131,46 @@ pub(crate) fn luminance(c: u32) -> u32 {
     (r * 299 + g * 587 + b * 114) / 1000
 }
 
+/// Data panel: peta tiap workspace yang berisi window dan bagian mana yang terlihat.
+pub struct Model {
+    /// (nomor workspace mulai 0, petanya), urut dari kiri.
+    pub maps: Vec<(usize, Overview)>,
+    /// Kolom terlihat: `maps[first .. first + visible]`. Jumlahnya tetap selama overview
+    /// terbuka, jadi ukuran panel tidak berubah saat kursor pindah workspace.
+    pub first: usize,
+    pub visible: usize,
+    /// Indeks di `maps` kolom tempat kursor berada; digambar paling besar.
+    pub big: usize,
+    /// Nomor workspace yang aktif (disorot).
+    pub active_ws: usize,
+}
+
+/// Kolom yang terlihat untuk `columns` kolom dengan kursor di `big`: `(first, visible)`.
+/// Kolom kursor ditaruh di tengah jendela kalau memungkinkan; tidak ada slot kosong.
+pub fn window_for(columns: usize, big: usize) -> (usize, usize) {
+    let visible = columns.min(MAX_VISIBLE);
+    let first = big.saturating_sub(visible / 2).min(columns - visible);
+    (first, visible)
+}
+
+/// `first` baru supaya kolom `sel` terlihat: digeser seperlunya, tidak bergerak kalau
+/// kolomnya sudah terlihat.
+pub fn scroll(first: usize, visible: usize, sel: usize) -> usize {
+    if sel < first {
+        sel
+    } else if sel >= first + visible {
+        sel + 1 - visible
+    } else {
+        first
+    }
+}
+
 /// Ubah data layout jadi panel siap gambar. `work` adalah area kerja layar;
-/// panel dipusatkan di sana dan tidak melebihi `size_pct` persennya.
+/// panel dipusatkan di sana dan tidak melebihi `size_pct` persennya. Kolom kursor
+/// (`model.big`) paling besar, kolom lain `SIDE_PCT` persennya, semua rata atas dan
+/// tanpa ruang kosong; skala tidak bergantung pada kolom mana yang besar.
 pub fn build(
-    ov: &Overview,
+    model: &Model,
     titles: &HashMap<u64, String>,
     sources: &HashMap<u64, isize>,
     selected: u64,
@@ -122,16 +182,31 @@ pub fn build(
     let max_w = work.w * pct / 100;
     let max_h = work.h * pct / 100;
     let hint_h = if opts.hint { HINT_H } else { 0 };
+    let multi = model.maps.len() > 1;
+    let label_h = if multi { COL_LABEL_H } else { 0 };
+    let k = model.visible.max(1) as i32;
+    let gap = if k > 1 { COL_GAP } else { 0 };
+    let side = SIDE_PCT as f32 / 100.0;
     let avail_w = (max_w - 2 * PAD).max(1);
-    let avail_h = (max_h - 2 * PAD - hint_h).max(1);
+    let avail_h = (max_h - 2 * PAD - hint_h - label_h).max(1);
 
-    let (sw, sh) = (ov.width.max(1) as f32, ov.height.max(1) as f32);
-    let scale = (avail_w as f32 / sw).min(avail_h as f32 / sh);
-    let (map_w, map_h) = ((sw * scale) as i32, (sh * scale) as i32);
+    let sw = model.maps.iter().map(|(_, o)| o.width).max().unwrap_or(1).max(1) as f32;
+    let sh = model.maps.iter().map(|(_, o)| o.height).max().unwrap_or(1).max(1) as f32;
+    let units = sw * (1.0 + side * (k - 1) as f32);
+    let cols_w = (avail_w - gap * (k - 1)).max(k) as f32;
+    let scale = (cols_w / units).min(avail_h as f32 / sh);
+    let (big_w, side_w) = ((sw * scale) as i32, (sw * scale * side) as i32);
+    let (map_w, map_h) = (big_w + (k - 1) * (side_w + gap), (sh * scale) as i32);
 
-    let min_w = if opts.hint { MIN_PANEL_W_WITH_HINT } else { 0 };
+    let min_w = if !opts.hint {
+        0
+    } else if multi {
+        MIN_PANEL_W_WITH_HINT_WS
+    } else {
+        MIN_PANEL_W_WITH_HINT
+    };
     let panel_w = (map_w + 2 * PAD).max(min_w);
-    let panel_h = map_h + 2 * PAD + hint_h;
+    let panel_h = map_h + 2 * PAD + hint_h + label_h;
     let panel = Rect {
         x: work.x + (work.w - panel_w) / 2,
         y: work.y + (work.h - panel_h) / 2,
@@ -139,19 +214,23 @@ pub fn build(
         h: panel_h,
     };
 
-    let ox = (panel_w - map_w) / 2;
-    let oy = PAD;
-    let sc = |v: i32| (v as f32 * scale).round() as i32;
-
-    let items = ov
-        .items
-        .iter()
-        .map(|it| {
-            let l = ox + sc(it.rect.x) + MARGIN;
-            let t = oy + sc(it.rect.y) + MARGIN;
-            let r = ox + sc(it.rect.x + it.rect.w) - MARGIN;
-            let b = oy + sc(it.rect.y + it.rect.h) - MARGIN;
-            DrawItem {
+    let top = PAD + label_h;
+    let mut cx = (panel_w - map_w) / 2;
+    let mut items = Vec::new();
+    let mut columns = Vec::new();
+    let end = (model.first + model.visible).min(model.maps.len());
+    for i in model.first.min(end)..end {
+        let (ws, ov) = &model.maps[i];
+        let is_big = i == model.big;
+        let cs = if is_big { scale } else { scale * side };
+        let col_w = if is_big { big_w } else { side_w };
+        let sc = |v: i32| (v as f32 * cs).round() as i32;
+        for it in &ov.items {
+            let l = cx + sc(it.rect.x) + MARGIN;
+            let t = top + sc(it.rect.y) + MARGIN;
+            let r = cx + sc(it.rect.x + it.rect.w) - MARGIN;
+            let b = top + sc(it.rect.y + it.rect.h) - MARGIN;
+            items.push(DrawItem {
                 id: it.id.0,
                 rect: RECT {
                     left: l,
@@ -162,20 +241,32 @@ pub fn build(
                 title: titles.get(&it.id.0).cloned().unwrap_or_default(),
                 source: sources.get(&it.id.0).copied().unwrap_or(0),
                 label_band: None,
-            }
-        })
-        .collect();
-    let vt = oy + sc(ov.view_y);
-    let view = RECT {
-        left: ox,
-        top: vt,
-        right: ox + map_w,
-        bottom: vt + sc(ov.view_h),
-    };
+            });
+        }
+        let vt = top + sc(ov.view_y);
+        columns.push(DrawColumn {
+            number: ws + 1,
+            rect: RECT {
+                left: cx,
+                top,
+                right: cx + col_w,
+                bottom: top + sc(ov.height),
+            },
+            active: *ws == model.active_ws,
+            view: RECT {
+                left: cx,
+                top: vt,
+                right: cx + col_w,
+                bottom: vt + sc(ov.view_h),
+            },
+        });
+        cx += col_w + gap;
+    }
     Draw {
         panel,
         items,
-        view,
+        columns,
+        multi,
         selected,
         focused,
         hint: opts.hint,
@@ -287,6 +378,8 @@ unsafe fn paint(hwnd: HWND) {
         let edge_active = brush(colors.active);
         let edge_sel = brush(colors.selected);
         let frame = brush(colors.view);
+        let col_bg = brush(mix(colors.background, 0xFF_FFFF, 5));
+        let col_bg_active = brush(mix(colors.background, 0xFF_FFFF, 11));
 
         FillRect(hdc, &client, bg);
         let font = FONT.load(Ordering::Relaxed);
@@ -302,6 +395,32 @@ unsafe fn paint(hwnd: HWND) {
                 rgb(235, 238, 245)
             };
             SetTextColor(hdc, COLORREF(text_color));
+            // kolom workspace: latar tipis + nomor di atasnya (hanya kalau ada > 1 workspace)
+            if d.multi {
+                let dim = if luminance(colors.background) > 150 {
+                    rgb(90, 96, 110)
+                } else {
+                    rgb(150, 158, 175)
+                };
+                for c in &d.columns {
+                    FillRect(hdc, &c.rect, if c.active { col_bg_active } else { col_bg });
+                    let mut label: Vec<u16> = c.number.to_string().encode_utf16().collect();
+                    let mut lr = RECT {
+                        left: c.rect.left,
+                        top: c.rect.top - COL_LABEL_H,
+                        right: c.rect.right,
+                        bottom: c.rect.top,
+                    };
+                    SetTextColor(hdc, COLORREF(if c.active { colors.active } else { dim }));
+                    DrawTextW(
+                        hdc,
+                        &mut label,
+                        &mut lr,
+                        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+                    );
+                }
+                SetTextColor(hdc, COLORREF(text_color));
+            }
             for it in &d.items {
                 let selected = it.id == d.selected;
                 let active = it.id == d.focused;
@@ -366,36 +485,39 @@ unsafe fn paint(hwnd: HWND) {
                 }
             }
 
-            // bingkai bagian (baris) yang sedang tampil di layar
-            let v = d.view;
-            let t = 3;
-            for edge_rect in [
-                RECT {
-                    left: v.left,
-                    top: v.top,
-                    right: v.right,
-                    bottom: v.top + t,
-                },
-                RECT {
-                    left: v.left,
-                    top: v.bottom - t,
-                    right: v.right,
-                    bottom: v.bottom,
-                },
-                RECT {
-                    left: v.left,
-                    top: v.top,
-                    right: v.left + t,
-                    bottom: v.bottom,
-                },
-                RECT {
-                    left: v.right - t,
-                    top: v.top,
-                    right: v.right,
-                    bottom: v.bottom,
-                },
-            ] {
-                FillRect(hdc, &edge_rect, frame);
+            // bingkai bagian (baris) yang sedang tampil di layar, per workspace
+            for c in &d.columns {
+                let v = c.view;
+                let t = 3;
+                let brush = if c.active { frame } else { edge };
+                for edge_rect in [
+                    RECT {
+                        left: v.left,
+                        top: v.top,
+                        right: v.right,
+                        bottom: v.top + t,
+                    },
+                    RECT {
+                        left: v.left,
+                        top: v.bottom - t,
+                        right: v.right,
+                        bottom: v.bottom,
+                    },
+                    RECT {
+                        left: v.left,
+                        top: v.top,
+                        right: v.left + t,
+                        bottom: v.bottom,
+                    },
+                    RECT {
+                        left: v.right - t,
+                        top: v.top,
+                        right: v.right,
+                        bottom: v.bottom,
+                    },
+                ] {
+                    FillRect(hdc, &edge_rect, brush);
+                }
             }
 
             if d.hint {
@@ -405,9 +527,12 @@ unsafe fn paint(hwnd: HWND) {
                     rgb(150, 158, 175)
                 };
                 SetTextColor(hdc, COLORREF(hint_color));
-                let mut hint: Vec<u16> = "←↑↓→ pilih  ·  Enter loncat  ·  Esc batal"
-                    .encode_utf16()
-                    .collect();
+                let hint_text = if d.multi {
+                    "←↑↓→ pilih (←→ di tepi = workspace lain)  ·  Enter loncat  ·  Esc batal"
+                } else {
+                    "←↑↓→ pilih  ·  Enter loncat  ·  Esc batal"
+                };
+                let mut hint: Vec<u16> = hint_text.encode_utf16().collect();
                 let mut hr = RECT {
                     left: client.left,
                     top: client.bottom - HINT_H,
@@ -423,7 +548,17 @@ unsafe fn paint(hwnd: HWND) {
             }
         }
 
-        for b in [bg, fill, fill_sel, edge, edge_active, edge_sel, frame] {
+        for b in [
+            bg,
+            fill,
+            fill_sel,
+            edge,
+            edge_active,
+            edge_sel,
+            frame,
+            col_bg,
+            col_bg_active,
+        ] {
             let _ = DeleteObject(HGDIOBJ(b.0));
         }
     }
@@ -439,7 +574,14 @@ unsafe extern "system" fn ov_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_ERASEBKGND => LRESULT(1),
         WM_KEYDOWN => {
             let vk = wparam.0 as u16;
-            if vk == VK_LEFT.0 {
+            let ctrl = GetKeyState(VK_CONTROL.0 as i32) < 0;
+            if ctrl && vk == VK_LEFT.0 {
+                post(WM_OV_WS, 0);
+            } else if ctrl && vk == VK_RIGHT.0 {
+                post(WM_OV_WS, 1);
+            } else if (0x31..=0x39).contains(&vk) {
+                post(WM_OV_WS, 2 + (vk - 0x31) as usize); // tombol 1..9 = workspace n
+            } else if vk == VK_LEFT.0 {
                 post(WM_OV_MOVE, 0);
             } else if vk == VK_RIGHT.0 {
                 post(WM_OV_MOVE, 1);
@@ -644,8 +786,30 @@ mod tests {
         }
     }
 
+    fn single(o: &Overview) -> Model {
+        Model {
+            maps: vec![(0, o.clone())],
+            first: 0,
+            visible: 1,
+            big: 0,
+            active_ws: 0,
+        }
+    }
+
+    /// `n` workspace berisi peta yang sama; kursor dan workspace aktif di `big`.
+    fn model(n: usize, big: usize) -> Model {
+        let (first, visible) = window_for(n, big);
+        Model {
+            maps: (0..n).map(|i| (i, ov())).collect(),
+            first,
+            visible,
+            big,
+            active_ws: big,
+        }
+    }
+
     fn build_with(o: &Options) -> Draw {
-        build(&ov(), &HashMap::new(), &HashMap::new(), 1, 1, WORK, o)
+        build(&single(&ov()), &HashMap::new(), &HashMap::new(), 1, 1, WORK, o)
     }
 
     #[test]
@@ -690,7 +854,7 @@ mod tests {
         let mut o = ov();
         o.height = 8000; // strip sangat tinggi -> peta sangat sempit
         let d = build(
-            &o,
+            &single(&o),
             &HashMap::new(),
             &HashMap::new(),
             1,
@@ -700,7 +864,7 @@ mod tests {
         );
         assert!(d.panel.w >= MIN_PANEL_W_WITH_HINT);
         let d2 = build(
-            &o,
+            &single(&o),
             &HashMap::new(),
             &HashMap::new(),
             1,
@@ -719,7 +883,7 @@ mod tests {
         sources.insert(2u64, 1234isize);
         let mut o = opts(true, 70);
         o.colors.selected = rgb(1, 2, 3);
-        let d = build(&ov(), &titles, &sources, 2, 3, WORK, &o);
+        let d = build(&single(&ov()), &titles, &sources, 2, 3, WORK, &o);
         assert_eq!(d.items[1].title, "Claude");
         assert_eq!(d.items[1].source, 1234);
         assert_eq!(d.items[0].title, "");
@@ -734,7 +898,7 @@ mod tests {
         o.height = 2160; // dua layar tinggi; yang tampil: layar bawah
         o.view_y = 1080;
         let d = build(
-            &o,
+            &single(&o),
             &HashMap::new(),
             &HashMap::new(),
             1,
@@ -742,9 +906,10 @@ mod tests {
             WORK,
             &opts(true, 70),
         );
-        assert!(d.view.bottom > d.view.top);
-        assert!(d.view.bottom <= d.panel.h);
-        assert!(d.view.top > d.items[0].rect.top); // bingkai tidak di puncak peta
+        let view = d.columns[0].view;
+        assert!(view.bottom > view.top);
+        assert!(view.bottom <= d.panel.h);
+        assert!(view.top > d.items[0].rect.top); // bingkai tidak di puncak peta
     }
 
     #[test]
@@ -783,5 +948,138 @@ mod tests {
         let lighter = mix(rgb(40, 40, 40), 0xFF_FFFF, 20);
         assert!(luminance(lighter) > luminance(rgb(40, 40, 40)));
         assert_eq!(mix(rgb(10, 20, 30), rgb(200, 200, 200), 0), rgb(10, 20, 30));
+    }
+
+    fn build_model(m: &Model) -> Draw {
+        build(m, &HashMap::new(), &HashMap::new(), 1, 1, WORK, &opts(true, 70))
+    }
+
+    fn width(c: &DrawColumn) -> i32 {
+        c.rect.right - c.rect.left
+    }
+
+    #[test]
+    fn cursor_column_is_bigger_than_the_others() {
+        let d = build_model(&model(3, 1));
+        assert_eq!(d.columns.len(), 3);
+        let (l, m, r) = (width(&d.columns[0]), width(&d.columns[1]), width(&d.columns[2]));
+        assert!(m > l && m > r);
+        assert_eq!(l, r);
+    }
+
+    #[test]
+    fn panel_size_does_not_depend_on_which_column_is_big() {
+        let a = build_model(&model(4, 0));
+        let b = build_model(&model(4, 3));
+        assert_eq!((a.panel.w, a.panel.h), (b.panel.w, b.panel.h));
+        let c = build_model(&model(9, 0));
+        let d = build_model(&model(9, 8));
+        assert_eq!((c.panel.w, c.panel.h), (d.panel.w, d.panel.h));
+    }
+
+    #[test]
+    fn columns_touch_no_empty_slots_and_margins_are_equal() {
+        let o = opts(false, 70); // tanpa petunjuk: tidak ada lebar minimum
+        for n in 1..=9 {
+            for big in 0..n {
+                let d = build(&model(n, big), &HashMap::new(), &HashMap::new(), 1, 1, WORK, &o);
+                let (first, last) = (d.columns.first().unwrap(), d.columns.last().unwrap());
+                assert!(
+                    (first.rect.left - (d.panel.w - last.rect.right)).abs() <= 1,
+                    "n={n} big={big}"
+                );
+                assert!(first.rect.left >= 0 && last.rect.right <= d.panel.w);
+                for pair in d.columns.windows(2) {
+                    assert_eq!(pair[1].rect.left - pair[0].rect.right, COL_GAP);
+                    assert_eq!(pair[0].rect.top, pair[1].rect.top); // rata atas
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn cursor_column_is_centered_whenever_both_sides_have_the_same_count() {
+        for n in 1..=9usize {
+            for big in 0..n {
+                let (first, visible) = window_for(n, big);
+                let (left, right) = (big - first, first + visible - 1 - big);
+                if left != right {
+                    continue;
+                }
+                let d = build_model(&model(n, big));
+                let c = d.columns.iter().find(|c| c.active).unwrap();
+                let mid = (c.rect.left + c.rect.right) / 2;
+                assert!((mid - d.panel.w / 2).abs() <= 1, "n={n} big={big}");
+            }
+        }
+    }
+
+    #[test]
+    fn window_for_never_leaves_slots_empty_and_contains_the_cursor() {
+        assert_eq!(window_for(1, 0), (0, 1));
+        assert_eq!(window_for(3, 1), (0, 3));
+        assert_eq!(window_for(9, 0), (0, MAX_VISIBLE));
+        assert_eq!(window_for(9, 4), (2, MAX_VISIBLE));
+        assert_eq!(window_for(9, 8), (4, MAX_VISIBLE));
+        for n in 1..=12usize {
+            for big in 0..n {
+                let (first, visible) = window_for(n, big);
+                assert_eq!(visible, n.min(MAX_VISIBLE));
+                assert!(first + visible <= n);
+                assert!(big >= first && big < first + visible);
+            }
+        }
+    }
+
+    #[test]
+    fn scroll_keeps_the_selected_column_visible_and_stays_put_otherwise() {
+        for n in 1..=12usize {
+            let visible = n.min(MAX_VISIBLE);
+            for first in 0..=(n - visible) {
+                for sel in 0..n {
+                    let f = scroll(first, visible, sel);
+                    assert!(f + visible <= n, "n={n} first={first} sel={sel}");
+                    assert!(sel >= f && sel < f + visible);
+                    if sel >= first && sel < first + visible {
+                        assert_eq!(f, first);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn only_the_visible_window_of_columns_is_drawn() {
+        let mut m = model(7, 3);
+        m.first = 1;
+        m.visible = 5;
+        let d = build_model(&m);
+        assert_eq!(d.columns.len(), 5);
+        assert_eq!(d.items.len(), 15); // 5 kolom x 3 window
+        assert_eq!(d.columns[0].number, 2);
+    }
+
+    #[test]
+    fn columns_use_workspace_numbers_and_flag_only_the_active_one() {
+        let m = Model {
+            maps: vec![(0, ov()), (2, ov()), (3, ov())],
+            first: 0,
+            visible: 3,
+            big: 1,
+            active_ws: 2,
+        };
+        let d = build_model(&m);
+        let nums: Vec<usize> = d.columns.iter().map(|c| c.number).collect();
+        let act: Vec<bool> = d.columns.iter().map(|c| c.active).collect();
+        assert_eq!(nums, vec![1, 3, 4]);
+        assert_eq!(act, vec![false, true, false]);
+        assert!(d.multi);
+    }
+
+    #[test]
+    fn single_workspace_has_no_label_row() {
+        let d = build_with(&opts(true, 70));
+        assert!(!d.multi);
+        assert_eq!(d.columns.len(), 1);
     }
 }

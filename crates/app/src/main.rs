@@ -13,6 +13,8 @@
 //! Win+/                 -> cheatsheet pintasan keyboard (tombol: cheatsheet_key)
 //! Win+Q                 -> tutup window aktif
 //! Win+M                 -> minimize window aktif
+//! Win+Ctrl+Kiri/Kanan   -> workspace sebelumnya / berikutnya (+Shift: kirim window aktif)
+//! Win+Ctrl+1..9         -> pindah ke workspace n (+Shift: kirim window aktif ke sana)
 //! Win+Ctrl+Esc          -> keluar dan kembalikan semua window (juga Ctrl+C)
 //! Ctrl+Alt+... (cadangan, aksi yang sama)
 //!
@@ -32,6 +34,7 @@ mod hook;
 mod overview;
 mod rules;
 mod safety;
+mod taskbar;
 mod tray;
 mod winutil;
 
@@ -119,6 +122,7 @@ fn main() {
         }
         MAIN_THREAD.store(GetCurrentThreadId(), Ordering::Relaxed);
         safety::install(GetCurrentThreadId());
+        taskbar::init();
         if !overview::init(GetCurrentThreadId()) {
             eprintln!("gagal membuat jendela overview");
         }
@@ -174,7 +178,9 @@ fn main() {
         SetTimer(None, 1, poll_ms, None);
 
         println!("vscroll-wm jalan. Win+Arrow = snap, +Shift = fokus, Win+Enter = penuh, Win+Alt = tukar posisi, Win+Alt+F = float/tile, Win+Alt+I = info window, Win+Q = tutup, Win+M = minimize, Win+<overview_key> / Win+Alt+Space = overview, Win+<cheatsheet_key> = daftar pintasan (cadangan: Ctrl+Alt+...). Win+Ctrl+Esc atau Ctrl+C = keluar dan pulihkan semua window.");
-        if app.sync() {
+        let changed = app.sync();
+        app.restore_all_tabs(); // tombol taskbar yang tertinggal dari proses sebelumnya yang mati paksa
+        if changed {
             app.apply();
         }
 
@@ -194,6 +200,7 @@ fn main() {
                 tray::WM_TRAY_HELP => cheatsheet::toggle(work_area(), &app.cfg),
                 overview::WM_OV_MOVE => app.overview_move(msg.wParam.0),
                 overview::WM_OV_CYCLE => app.overview_cycle(msg.wParam.0 != 0),
+                overview::WM_OV_WS => app.overview_workspace(msg.wParam.0),
                 overview::WM_OV_ACCEPT => app.close_overview(true),
                 overview::WM_OV_CANCEL => app.close_overview(false),
                 overview::WM_OV_PICK => app.overview_pick(msg.wParam.0 as u64),
@@ -240,6 +247,7 @@ fn main() {
         }
         tray::remove();
         safety::restore_all();
+        taskbar::shutdown();
         safety::EXIT_DONE.store(true, Ordering::Relaxed);
         println!("semua window dikembalikan. sampai jumpa.");
     }

@@ -111,6 +111,15 @@ pub fn groups(cfg: &Config) -> Vec<Group> {
             rows: moving,
         },
         Group {
+            title: "Workspace".to_string(),
+            rows: vec![
+                row("Win + Ctrl + ← / →", "workspace sebelumnya / berikutnya"),
+                row("Win + Ctrl + 1 … 9", "pindah ke workspace n"),
+                row("Win + Ctrl + Shift + ← / →", "kirim window aktif ke workspace tetangga"),
+                row("Win + Ctrl + Shift + 1 … 9", "kirim window aktif ke workspace n"),
+            ],
+        },
+        Group {
             title: "Window".to_string(),
             rows: vec![
                 row("Win + Q", "tutup window"),
@@ -124,16 +133,17 @@ pub fn groups(cfg: &Config) -> Vec<Group> {
             rows: vec![
                 (help_key, "cheatsheet ini".to_string()),
                 row("Win + Ctrl + Esc", "keluar dan pulihkan semua window"),
-                row("Win + Ctrl + ← / →", "virtual desktop bawaan Windows"),
                 row("ikon tray", "jeda, muat ulang konfigurasi, autostart"),
             ],
         },
         Group {
             title: "Di dalam overview".to_string(),
             rows: vec![
-                row("panah atau Tab", "pilih window"),
+                row("panah", "pilih window; ← / → di tepi lanjut ke workspace tetangga"),
+                row("Tab", "window berikutnya di workspace ini"),
                 row("Enter / lepas Win", "loncat ke window yang dipilih"),
                 row("Esc / klik di luar", "batal"),
+                row("Ctrl + ← / → , 1 … 9", "pilih workspace (Tab hanya di workspace ini)"),
             ],
         },
     ]

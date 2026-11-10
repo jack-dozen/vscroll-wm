@@ -4,12 +4,13 @@ mod actions;
 mod anim;
 mod events;
 mod overview_ctl;
+mod workspace;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
-use layout::{Strip, WindowId};
+use layout::{WindowId, Workspaces};
 
 use windows::Win32::Foundation::{HWND, LPARAM};
 
@@ -25,7 +26,7 @@ use crate::winutil::{
     animations_enabled, bounds, collect, ext_bounds, place, set_border, title, wid, work_area,
     Bounds,
 };
-use crate::{config, safety};
+use crate::{config, overview, safety, taskbar};
 
 /// Overview yang sedang terbuka.
 pub(crate) struct OverviewSession {
@@ -33,10 +34,17 @@ pub(crate) struct OverviewSession {
     pub(crate) selected: WindowId,
     /// Window yang foreground sebelum overview dibuka, untuk dikembalikan saat batal.
     pub(crate) prev_fg: HWND,
+    /// Data untuk membangun ulang panel saat kolom tengah bergeser.
+    pub(crate) model: overview::Model,
+    pub(crate) titles: HashMap<u64, String>,
+    pub(crate) sources: HashMap<u64, isize>,
+    /// Window yang fokus saat overview dibuka (0 = tidak ada), untuk sorotan.
+    pub(crate) focused: u64,
 }
 
 pub(crate) struct App {
-    pub(crate) strip: Strip,
+    /// Semua workspace; yang aktif ditata, sisanya diparkir di luar layar.
+    pub(crate) ws: Workspaces,
     pub(crate) map: HashMap<WindowId, HWND>,
     pub(crate) last_fg: Option<WindowId>,
     /// Batas frame tiap window hasil penempatan terakhir kita; kalau berubah
@@ -46,6 +54,9 @@ pub(crate) struct App {
     /// Window yang masih ada tapi sedang tidak tampil (di-minimize, cloaked, dll).
     /// Slotnya tetap diingat di strip.
     pub(crate) hidden: HashSet<WindowId>,
+    /// Window di workspace lain yang sedang diparkir di luar layar (tombol taskbar
+    /// disembunyikan). Dibuka lagi oleh apply() saat workspacenya aktif.
+    pub(crate) parked: HashSet<WindowId>,
     /// Window yang sengaja dibiarkan mengambang (tidak ditata) lewat Win+Alt+F.
     pub(crate) floating: HashMap<WindowId, HWND>,
     /// Window yang menolak dikendalikan (hak akses lebih tinggi). Dibiarkan mengambang.
@@ -68,12 +79,13 @@ pub(crate) struct App {
 impl App {
     pub(crate) unsafe fn new() -> Self {
         Self {
-            strip: Strip::new(work_area()),
+            ws: Workspaces::new(work_area()),
             map: HashMap::new(),
             last_fg: None,
             actual: HashMap::new(),
             anim: HashMap::new(),
             hidden: HashSet::new(),
+            parked: HashSet::new(),
             floating: HashMap::new(),
             blocked: HashMap::new(),
             anim_timer: 0,
@@ -108,16 +120,18 @@ impl App {
                 // di-minimize / disembunyikan / pindah virtual desktop:
                 // window masih ada, jadi ingat slotnya, jangan hapus dari strip
                 if self.hidden.insert(id) {
-                    self.strip.set_hidden(id, true);
+                    self.ws.set_hidden(id, true);
                     self.anim.remove(&id);
                     changed = true;
                 }
                 continue;
             }
             // benar-benar ditutup
-            self.strip.remove_window(id);
+            self.ws.remove_window(id);
             self.map.remove(&id);
             self.hidden.remove(&id);
+            self.parked.remove(&id);
+            taskbar::forget(h);
             safety::forget(h);
             self.actual.remove(&id);
             self.anim.remove(&id);
@@ -133,11 +147,12 @@ impl App {
             if !self.map.contains_key(&id) {
                 safety::remember(h, work); // posisi asli, untuk dipulihkan saat keluar
                 self.map.insert(id, h);
-                self.strip.add_window(id);
+                self.ws.add_window(id); // masuk ke workspace aktif
                 added = true;
             } else if self.hidden.remove(&id) {
                 // muncul lagi (mis. setelah Win+D): kembali ke slotnya semula
-                self.strip.set_hidden(id, false);
+                self.parked.remove(&id); // kalau di workspace lain, diparkir ulang oleh apply()
+                self.ws.set_hidden(id, false);
                 added = true;
             }
         }
@@ -146,12 +161,16 @@ impl App {
             self.recheck = true;
         }
 
-        // ikuti window yang difokuskan user (klik, alt-tab)
+        // ikuti window yang difokuskan user (klik, alt-tab, tombol taskbar). Window di
+        // workspace lain membawa kita ke workspace itu. Foreground lama yang masih
+        // tertinggal di window yang baru diparkir tidak dihitung.
         let fg = wid(GetForegroundWindow());
-        if added || self.last_fg != Some(fg) {
+        if (added && !self.parked.contains(&fg)) || self.last_fg != Some(fg) {
             self.last_fg = Some(fg);
-            if self.map.contains_key(&fg) && self.strip.focused() != Some(fg) {
-                self.strip.set_focus(fg);
+            if self.map.contains_key(&fg) && self.ws.cur().focused() != Some(fg) {
+                if self.ws.focus_window(fg) {
+                    self.update_workspace_tip();
+                }
                 changed = true;
             }
         }
@@ -177,22 +196,27 @@ impl App {
 
     pub(crate) unsafe fn apply(&mut self) {
         let work = work_area();
-        self.strip.set_viewport(work);
+        self.ws.set_viewport(work);
         let now = Instant::now();
         // Pass kedua hanya kalau ada window yang menolak dikecilkan
         // (tinggi minimum) sehingga layout perlu dihitung ulang.
         for _ in 0..2 {
             let mut grew = false;
-            for p in self.strip.layout() {
+            for p in self.ws.cur().layout() {
                 let Some(&h) = self.map.get(&p.id) else {
                     continue;
                 };
                 let t = p.rect;
+                // baru keluar dari parkir: lompat langsung, jangan dianimasikan dari -32768
+                let was_parked = self.parked.remove(&p.id);
+                if was_parked {
+                    taskbar::show(h);
+                }
                 let cur = ext_bounds(h);
                 let same_size = cur.right - cur.left == t.w
                     && cur.bottom - cur.top == t.h
                     && !IsZoomed(h).as_bool();
-                if same_size {
+                if same_size && !was_parked {
                     // hanya posisi yang berubah -> boleh dianimasikan
                     self.move_only(p.id, h, (cur.left, cur.top), t, work, now);
                     continue;
@@ -216,7 +240,7 @@ impl App {
                     got_w = a.right - a.left;
                 }
                 self.actual.insert(p.id, bounds(a));
-                if got > t.h + 2 && self.strip.set_min_height(p.id, got) {
+                if got > t.h + 2 && self.ws.cur_mut().set_min_height(p.id, got) {
                     eprintln!(
                         "[min-height] \"{}\" menolak lebih pendek dari {} px (diminta {})",
                         title(h),
@@ -225,7 +249,7 @@ impl App {
                     );
                     grew = true;
                 }
-                if got_w > t.w + 2 && self.strip.set_min_width(p.id, got_w) {
+                if got_w > t.w + 2 && self.ws.cur_mut().set_min_width(p.id, got_w) {
                     eprintln!(
                         "[min-width] \"{}\" menolak lebih sempit dari {} px (diminta {})",
                         title(h),
@@ -239,6 +263,15 @@ impl App {
                 break;
             }
         }
+        // window workspace aktif yang tidak ikut ditata (di-minimize) tapi masih diparkir
+        for id in self.ws.window_ids(self.ws.active()) {
+            if self.parked.remove(&id) {
+                if let Some(&h) = self.map.get(&id) {
+                    taskbar::show(h);
+                }
+            }
+        }
+        self.park_inactive();
         if !self.anim.is_empty() && self.anim_timer == 0 {
             // 10 ms = minimum Windows; praktisnya berdetak tiap ~15,6 ms (~64 fps)
             self.anim_timer = SetTimer(None, 0, 10, None);
@@ -278,7 +311,7 @@ impl App {
         self.cfg = cfg.clone();
         OVERVIEW_VK.store(cfg.overview_key, Ordering::Relaxed);
         CHEAT_VK.store(cfg.cheatsheet_key, Ordering::Relaxed);
-        self.strip.set_gap(cfg.gap);
+        self.ws.set_gap(cfg.gap);
         self.focus_border = cfg.focus_border;
         self.refresh_border();
         self.anim_ms = cfg.anim_ms.unwrap_or(if animations_enabled() {

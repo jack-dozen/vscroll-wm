@@ -14,7 +14,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use super::App;
 use crate::winutil::{title, unmanaged_reason, wid};
-use crate::{cheatsheet, rules, safety, tray};
+use crate::{cheatsheet, rules, safety, taskbar, tray};
 
 impl App {
     /// Win+Q: tutup window aktif (setara Alt+F4). Hanya window yang kita kenal,
@@ -42,13 +42,13 @@ impl App {
             return;
         }
         if tiled {
-            self.strip.set_hidden(id, true); // fokus pindah ke tetangga
+            self.ws.set_hidden(id, true); // fokus pindah ke tetangga
             self.hidden.insert(id);
             self.anim.remove(&id);
         }
         let _ = ShowWindow(fg, SW_MINIMIZE);
         if tiled {
-            if let Some(h) = self.strip.focused().and_then(|f| self.map.get(&f).copied()) {
+            if let Some(h) = self.ws.cur().focused().and_then(|f| self.map.get(&f).copied()) {
                 let _ = SetForegroundWindow(h);
                 self.last_fg = Some(wid(h));
             }
@@ -72,10 +72,13 @@ impl App {
             self.finish_all_anims();
             self.stop_sync_timer();
             safety::restore_all(); // juga mengembalikan warna border
+            taskbar::show_all();
+            self.parked.clear();
             self.border_applied = None;
         } else {
             self.sync();
             self.apply();
+            self.update_workspace_tip();
         }
     }
 
@@ -124,12 +127,14 @@ impl App {
     /// berjalan sebagai administrator; UIPI). Keluarkan dari strip supaya tidak
     /// memegang slot kosong yang tidak pernah bisa diisi.
     pub(crate) unsafe fn mark_blocked(&mut self, id: WindowId, h: HWND) {
-        self.strip.remove_window(id);
+        self.ws.remove_window(id);
         self.map.remove(&id);
         self.hidden.remove(&id);
         self.actual.remove(&id);
         self.anim.remove(&id);
         safety::forget(h);
+        self.parked.remove(&id);
+        taskbar::show(h);
         self.blocked.insert(id, h);
         eprintln!(
             "[akses ditolak] \"{}\" tidak bisa dikendalikan (kemungkinan berjalan sebagai administrator)",
@@ -149,7 +154,7 @@ impl App {
         let Some(h) = self.map.remove(&id) else {
             return;
         };
-        self.strip.remove_window(id);
+        self.ws.remove_window(id);
         self.hidden.remove(&id);
         self.actual.remove(&id);
         if let Some(a) = self.anim.remove(&id) {

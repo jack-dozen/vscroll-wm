@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 
-use layout::WindowId;
+use layout::{Dir, WindowId};
 
 #[allow(unused_imports)]
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
@@ -38,18 +38,23 @@ impl App {
         if !overview::available() {
             return false;
         }
-        let Some(focused) = self.strip.focused() else {
-            return false;
-        };
-        let data = self.strip.overview();
-        if data.items.is_empty() {
+        let maps = self.ws.overviews();
+        if maps.is_empty() {
             return false;
         }
-        let work = work_area();
-        let mode = self.cfg.overview_label;
-        let titles: HashMap<u64, String> = data
-            .items
+        // Kolom tengah = workspace aktif (atau yang terdekat kalau aktif kosong).
+        let active = self.ws.active();
+        let center = maps
             .iter()
+            .enumerate()
+            .min_by_key(|(_, (n, _))| (n.abs_diff(active), *n))
+            .map_or(0, |(i, _)| i);
+        let Some(selected) = self.ws.representative(maps[center].0) else {
+            return false;
+        };
+        let mode = self.cfg.overview_label;
+        let all = || maps.iter().flat_map(|(_, o)| o.items.iter());
+        let titles: HashMap<u64, String> = all()
             .filter_map(|it| {
                 self.map.get(&it.id).map(|&h| {
                     let t = title(h);
@@ -65,20 +70,34 @@ impl App {
                 })
             })
             .collect();
-        let sources: HashMap<u64, isize> = data
-            .items
-            .iter()
+        let sources: HashMap<u64, isize> = all()
             .filter_map(|it| self.map.get(&it.id).map(|&h| (it.id.0, h.0 as isize)))
             .collect();
-        let opts = overview::Options {
-            hint: self.cfg.overview_hint,
-            size_pct: self.cfg.overview_size,
-            colors: self.cfg.overview_colors,
+        let focused = self.ws.cur().focused().map_or(0, |f| f.0);
+        let (first, visible) = overview::window_for(maps.len(), center);
+        let model = overview::Model {
+            maps,
+            first,
+            visible,
+            big: center,
+            active_ws: active,
         };
-        let draw = overview::build(&data, &titles, &sources, focused.0, focused.0, work, &opts);
+        let draw = overview::build(
+            &model,
+            &titles,
+            &sources,
+            selected.0,
+            focused,
+            work_area(),
+            &self.overview_options(),
+        );
         self.overview = Some(OverviewSession {
-            selected: focused,
+            selected,
             prev_fg: GetForegroundWindow(),
+            model,
+            titles,
+            sources,
+            focused,
         });
         overview::show(draw, self.cfg.overview_thumbnails);
         OV_MOVED.store(false, Ordering::Relaxed);
@@ -86,26 +105,122 @@ impl App {
         true
     }
 
-    /// Tab di overview: kursor ke window berikutnya / sebelumnya (urutan baca).
-    pub(crate) unsafe fn overview_cycle(&mut self, forward: bool) {
-        if let Some(s) = self.overview.as_mut() {
-            if let Some(n) = self.strip.cycle_from(s.selected, forward) {
-                s.selected = n;
-                overview::set_selected(n.0);
-            }
+    fn overview_options(&self) -> overview::Options {
+        overview::Options {
+            hint: self.cfg.overview_hint,
+            size_pct: self.cfg.overview_size,
+            colors: self.cfg.overview_colors,
         }
     }
 
-    /// Panah di overview: geser kursor ke tetangga (window belum berpindah fokus).
+    /// Pindahkan kursor ke `n`. Kalau workspace-nya berbeda, kolom itu jadi yang besar
+    /// dan jendela kolom digeser seperlunya (panel digambar ulang); selain itu cukup
+    /// menyorot.
+    unsafe fn overview_select(&mut self, n: WindowId) {
+        let opts = self.overview_options();
+        let thumbs = self.cfg.overview_thumbnails;
+        let Some(s) = self.overview.as_mut() else {
+            return;
+        };
+        s.selected = n;
+        let col = s
+            .model
+            .maps
+            .iter()
+            .position(|(_, o)| o.items.iter().any(|it| it.id == n));
+        let Some(col) = col else {
+            overview::set_selected(n.0);
+            return;
+        };
+        let first = overview::scroll(s.model.first, s.model.visible, col);
+        if col == s.model.big && first == s.model.first {
+            overview::set_selected(n.0);
+            return;
+        }
+        s.model.big = col;
+        s.model.first = first;
+        let draw = overview::build(
+            &s.model,
+            &s.titles,
+            &s.sources,
+            n.0,
+            s.focused,
+            work_area(),
+            &opts,
+        );
+        overview::show(draw, thumbs);
+    }
+
+    /// Tab di overview: kursor ke window berikutnya / sebelumnya, hanya di dalam
+    /// workspace window yang sedang dipilih (urutan baca).
+    pub(crate) unsafe fn overview_cycle(&mut self, forward: bool) {
+        let Some(sel) = self.overview.as_ref().map(|s| s.selected) else {
+            return;
+        };
+        let next = self
+            .ws
+            .workspace_of(sel)
+            .and_then(|n| self.ws.strip(n))
+            .and_then(|st| st.cycle_from(sel, forward));
+        if let Some(n) = next {
+            self.overview_select(n);
+        }
+    }
+
+    /// Panah di overview: geser kursor ke tetangga di workspace yang sama (window
+    /// belum berpindah fokus). Kiri/Kanan di tepi workspace lanjut ke workspace
+    /// tetangga, masuk dari tepi yang berhadapan, ke window yang setinggi kursor.
     pub(crate) unsafe fn overview_move(&mut self, dir_index: usize) {
         let Some(dir) = DIRS.get(dir_index).map(|d| d.1) else {
             return;
         };
-        if let Some(s) = self.overview.as_mut() {
-            if let Some(n) = self.strip.neighbor_of(s.selected, dir) {
-                s.selected = n;
-                overview::set_selected(n.0);
-            }
+        let Some(sel) = self.overview.as_ref().map(|s| s.selected) else {
+            return;
+        };
+        let Some(from) = self.ws.workspace_of(sel) else {
+            return;
+        };
+        let next = self
+            .ws
+            .strip(from)
+            .and_then(|st| st.neighbor_of(sel, dir))
+            .or_else(|| {
+                if !matches!(dir, Dir::Left | Dir::Right) {
+                    return None;
+                }
+                let forward = dir == Dir::Right;
+                let target = self.ws.adjacent_workspace(from, forward)?;
+                let y = self
+                    .ws
+                    .strip(from)?
+                    .overview()
+                    .items
+                    .iter()
+                    .find(|it| it.id == sel)
+                    .map(|it| it.rect.y + it.rect.h / 2)?;
+                self.ws.entry_window(target, forward, y)
+            });
+        if let Some(n) = next {
+            self.overview_select(n);
+        }
+    }
+
+    /// Win+Ctrl+Kiri/Kanan atau angka di overview: kursor lompat ke workspace lain.
+    /// `code`: 0 sebelumnya, 1 berikutnya, n >= 2 workspace nomor n - 2 (mulai 0).
+    pub(crate) unsafe fn overview_workspace(&mut self, code: usize) {
+        let Some(sel) = self.overview.as_ref().map(|s| s.selected) else {
+            return;
+        };
+        let Some(from) = self.ws.workspace_of(sel) else {
+            return;
+        };
+        let target = match code {
+            0 => self.ws.adjacent_workspace(from, false),
+            1 => self.ws.adjacent_workspace(from, true),
+            n => Some(n - 2),
+        };
+        if let Some(w) = target.and_then(|t| self.ws.representative(t)) {
+            self.overview_select(w);
         }
     }
 
@@ -126,7 +241,9 @@ impl App {
         };
         overview::hide();
         if accept {
-            self.strip.set_focus(s.selected);
+            if self.ws.focus_window(s.selected) {
+                self.update_workspace_tip(); // window itu ada di workspace lain
+            }
             self.apply();
             if let Some(&h) = self.map.get(&s.selected) {
                 let _ = SetForegroundWindow(h);

@@ -13,7 +13,8 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use crate::consts::{
     DIRS, HOTKEY_CHEATSHEET, HOTKEY_CLOSE, HOTKEY_FLOAT, HOTKEY_INSPECT, HOTKEY_MAXIMIZE,
     HOTKEY_MINIMIZE, HOTKEY_OVERVIEW, HOTKEY_QUIT, HOTKEY_SPLIT_LEFT, HOTKEY_SPLIT_RESET,
-    HOTKEY_SPLIT_RIGHT, WM_ACTION, WM_WINEVENT,
+    HOTKEY_SPLIT_RIGHT, HOTKEY_WS_GO, HOTKEY_WS_NEXT, HOTKEY_WS_NOOP, HOTKEY_WS_PREV,
+    HOTKEY_WS_SEND, HOTKEY_WS_SEND_NEXT, HOTKEY_WS_SEND_PREV, WM_ACTION, WM_WINEVENT,
 };
 use crate::{overview, tray};
 
@@ -56,6 +57,18 @@ pub(crate) fn overview_hook_action(
     if vk == VK_ESCAPE.0 && ctrl {
         return Some((WM_ACTION, HOTKEY_QUIT as usize, false)); // jalan keluar darurat
     }
+    // Win+Ctrl+Kiri/Kanan / angka: sama seperti di luar overview, tapi menggeser kursor
+    if ctrl && !alt && !shift {
+        if vk == VK_LEFT.0 {
+            return Some((overview::WM_OV_WS, 0, true));
+        }
+        if vk == VK_RIGHT.0 {
+            return Some((overview::WM_OV_WS, 1, true));
+        }
+        if (0x31..=0x39).contains(&vk) {
+            return Some((overview::WM_OV_WS, 2 + (vk - 0x31) as usize, true));
+        }
+    }
     if let Some(i) = arrow_index(vk).filter(|_| !ctrl) {
         return Some((overview::WM_OV_MOVE, i as usize, true));
     }
@@ -76,6 +89,29 @@ pub(crate) fn overview_hook_action(
 
 pub(crate) fn arrow_index(vk: u16) -> Option<i32> {
     DIRS.iter().position(|(k, _)| k.0 == vk).map(|i| i as i32)
+}
+
+/// Pintasan workspace (Win+Ctrl+...): id hotkey-nya. Win+Ctrl+D / F4 (buat / tutup
+/// desktop virtual Windows) ikut ditelan supaya tidak ada dua sistem desktop yang
+/// saling menimpa.
+pub(crate) fn workspace_action(vk: u16, shift: bool, alt: bool, ctrl: bool) -> Option<i32> {
+    if !ctrl || alt {
+        return None;
+    }
+    if vk == VK_LEFT.0 {
+        return Some(if shift { HOTKEY_WS_SEND_PREV } else { HOTKEY_WS_PREV });
+    }
+    if vk == VK_RIGHT.0 {
+        return Some(if shift { HOTKEY_WS_SEND_NEXT } else { HOTKEY_WS_NEXT });
+    }
+    if (0x31..=0x39).contains(&vk) {
+        let n = (vk - 0x31) as i32; // tombol '1'..'9'
+        return Some(if shift { HOTKEY_WS_SEND + n } else { HOTKEY_WS_GO + n });
+    }
+    if vk == VK_D.0 || vk == VK_F4.0 {
+        return Some(HOTKEY_WS_NOOP);
+    }
+    None
 }
 
 /// Selipkan tombol dummy supaya Windows tidak membuka Start Menu saat Win
@@ -157,10 +193,17 @@ pub(crate) unsafe extern "system" fn kb_hook(code: i32, wparam: WPARAM, lparam: 
                             }
                             LRESULT(1) // telan tombolnya
                         }
+                        None if workspace_action(vk, shift, alt, ctrl).is_some() => {
+                            // desktop virtual Windows dimatikan: jangan diteruskan
+                            if down {
+                                cancel_start_menu();
+                            }
+                            LRESULT(1)
+                        }
                         None => CallNextHookEx(None, code, wparam, lparam),
                     };
                 }
-                // Win+Ctrl+Arrow dibiarkan lewat: itu pindah virtual desktop bawaan Windows
+                // Win+Ctrl+... = workspace (menggantikan desktop virtual bawaan Windows)
                 let action = if let Some(i) = arrow_index(vk).filter(|_| !ctrl) {
                     // Win+Alt: tukar posisi, Win+Shift: fokus, Win: snap
                     Some(if alt {
@@ -174,6 +217,8 @@ pub(crate) unsafe extern "system" fn kb_hook(code: i32, wparam: WPARAM, lparam: 
                     Some(HOTKEY_MAXIMIZE)
                 } else if vk == VK_ESCAPE.0 && ctrl {
                     Some(HOTKEY_QUIT)
+                } else if let Some(id) = workspace_action(vk, shift, alt, ctrl) {
+                    Some(id)
                 } else if vk == VK_Q.0 && !shift && !alt && !ctrl {
                     Some(HOTKEY_CLOSE)
                 } else if vk == VK_M.0 && !shift && !alt && !ctrl {
@@ -285,8 +330,12 @@ mod tests {
             act(VK_DOWN.0, false, true, false),
             Some((overview::WM_OV_MOVE, 3, true))
         );
-        // Win+Ctrl+Panah (virtual desktop bawaan) tidak disentuh
-        assert_eq!(act(VK_LEFT.0, false, false, true), None);
+        // Win+Ctrl+Kiri/Kanan / angka = lompat workspace (kursor)
+        assert_eq!(act(VK_LEFT.0, false, false, true), Some((overview::WM_OV_WS, 0, true)));
+        assert_eq!(act(VK_RIGHT.0, false, false, true), Some((overview::WM_OV_WS, 1, true)));
+        assert_eq!(act(0x31, false, false, true), Some((overview::WM_OV_WS, 2, true)));
+        assert_eq!(act(0x39, false, false, true), Some((overview::WM_OV_WS, 10, true)));
+        assert_eq!(act(VK_LEFT.0, true, false, true), None); // kirim window dari overview: belum ada
     }
 
     #[test]
@@ -349,6 +398,47 @@ mod tests {
             HOTKEY_MAXIMIZE,
             HOTKEY_INSPECT,
             HOTKEY_SPLIT_RESET,
+        ] {
+            assert!(!repeat_allowed(id), "{id}");
+        }
+    }
+
+    #[test]
+    fn workspace_keys_map_to_hotkey_ids() {
+        assert_eq!(workspace_action(VK_LEFT.0, false, false, true), Some(HOTKEY_WS_PREV));
+        assert_eq!(workspace_action(VK_RIGHT.0, false, false, true), Some(HOTKEY_WS_NEXT));
+        assert_eq!(workspace_action(VK_LEFT.0, true, false, true), Some(HOTKEY_WS_SEND_PREV));
+        assert_eq!(workspace_action(VK_RIGHT.0, true, false, true), Some(HOTKEY_WS_SEND_NEXT));
+        assert_eq!(workspace_action(0x31, false, false, true), Some(HOTKEY_WS_GO));
+        assert_eq!(workspace_action(0x39, false, false, true), Some(HOTKEY_WS_GO + 8));
+        assert_eq!(workspace_action(0x31, true, false, true), Some(HOTKEY_WS_SEND));
+        assert_eq!(workspace_action(0x39, true, false, true), Some(HOTKEY_WS_SEND + 8));
+        assert_eq!(workspace_action(VK_D.0, false, false, true), Some(HOTKEY_WS_NOOP));
+        assert_eq!(workspace_action(VK_F4.0, false, false, true), Some(HOTKEY_WS_NOOP));
+    }
+
+    #[test]
+    fn workspace_keys_need_ctrl_and_ignore_other_combos() {
+        assert_eq!(workspace_action(VK_LEFT.0, false, false, false), None); // snap biasa
+        assert_eq!(workspace_action(0x31, false, false, false), None);
+        assert_eq!(workspace_action(VK_LEFT.0, false, true, true), None); // Ctrl+Alt: bukan kita
+        assert_eq!(workspace_action(VK_UP.0, false, false, true), None);
+        assert_eq!(workspace_action(0x30, false, false, true), None); // '0'
+        assert_eq!(workspace_action(0x3A, false, false, true), None);
+    }
+
+    #[test]
+    fn workspace_shortcuts_fire_once_per_press() {
+        for id in [
+            HOTKEY_WS_PREV,
+            HOTKEY_WS_NEXT,
+            HOTKEY_WS_SEND_PREV,
+            HOTKEY_WS_SEND_NEXT,
+            HOTKEY_WS_NOOP,
+            HOTKEY_WS_GO,
+            HOTKEY_WS_GO + 8,
+            HOTKEY_WS_SEND,
+            HOTKEY_WS_SEND + 8,
         ] {
             assert!(!repeat_allowed(id), "{id}");
         }

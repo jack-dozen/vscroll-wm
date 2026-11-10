@@ -50,3 +50,26 @@ pub(crate) const RECHECK_MS: u32 = 250;
 pub(crate) const DEFAULT_ANIM_MS: f32 = 160.0;
 
 pub(crate) const WM_ACTION: u32 = WM_APP + 1;
+
+/// Win+Ctrl+Kiri / Kanan: workspace sebelumnya / berikutnya.
+pub(crate) const HOTKEY_WS_PREV: i32 = 24;
+
+pub(crate) const HOTKEY_WS_NEXT: i32 = 25;
+
+/// Win+Ctrl+Shift+Kiri / Kanan: kirim window aktif ke workspace sebelumnya / berikutnya.
+pub(crate) const HOTKEY_WS_SEND_PREV: i32 = 26;
+
+pub(crate) const HOTKEY_WS_SEND_NEXT: i32 = 27;
+
+/// Win+Ctrl+D / Win+Ctrl+F4 (buat / tutup desktop virtual Windows): ditelan saja.
+pub(crate) const HOTKEY_WS_NOOP: i32 = 28;
+
+/// Win+Ctrl+1..9 -> HOTKEY_WS_GO + 0..8 (pindah ke workspace n).
+pub(crate) const HOTKEY_WS_GO: i32 = 30;
+
+/// Win+Ctrl+Shift+1..9 -> HOTKEY_WS_SEND + 0..8 (kirim window aktif ke workspace n).
+pub(crate) const HOTKEY_WS_SEND: i32 = 40;
+
+/// Posisi x parkir window workspace lain: batas bawah USER32 (i16::MIN); nilai yang
+/// lebih kecil dijepit ke sini. Sengaja bukan -32000 (posisi "minimized" lama).
+pub(crate) const PARK_X: i32 = i16::MIN as i32;

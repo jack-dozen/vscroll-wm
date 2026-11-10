@@ -167,7 +167,10 @@ pub unsafe fn install(main_thread: u32) {
     }
     let default = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        unsafe { restore_all() };
+        unsafe {
+            restore_all();
+            crate::taskbar::shutdown(); // kembalikan tombol taskbar yang kita sembunyikan
+        }
         default(info);
     }));
 }
