@@ -74,6 +74,7 @@ impl App {
             safety::restore_all(); // juga mengembalikan warna border
             taskbar::show_all();
             self.parked.clear();
+            self.leaving.clear();
             self.border_applied = None;
         } else {
             self.sync();
@@ -134,6 +135,7 @@ impl App {
         self.anim.remove(&id);
         safety::forget(h);
         self.parked.remove(&id);
+        self.leaving.remove(&id);
         taskbar::show(h);
         self.blocked.insert(id, h);
         eprintln!(

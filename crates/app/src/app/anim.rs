@@ -2,7 +2,7 @@
 
 use std::time::Instant;
 
-use layout::{Rect, WindowId};
+use layout::{Dir, Rect, WindowId};
 
 use windows::Win32::Foundation::HWND;
 
@@ -13,6 +13,20 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use super::App;
 use crate::winutil::{bounds, ext_bounds, hits, insets};
+
+/// Jarak awal isyarat tukar posisi: seperlima area kerja.
+const CUE_FRACTION: i32 = 5;
+
+/// Selisih awal isyarat tukar posisi: window mulai bergeser berlawanan dengan arah
+/// perpindahan lalu meluncur ke tempatnya, jadi tampak bergerak searah `dir`.
+pub(crate) fn cue_offset(dir: Dir, work: Rect) -> (i32, i32) {
+    match dir {
+        Dir::Down => (0, -work.h / CUE_FRACTION),
+        Dir::Up => (0, work.h / CUE_FRACTION),
+        Dir::Right => (-work.w / CUE_FRACTION, 0),
+        Dir::Left => (work.w / CUE_FRACTION, 0),
+    }
+}
 
 /// Animasi posisi satu window (ukuran tidak ikut dianimasikan).
 pub(crate) struct Anim {
@@ -101,6 +115,78 @@ impl App {
         }
     }
 
+    /// Loncat ke `t` digeser `off`, lalu meluncur ke `t`. Tanpa animasi (mati / tidak
+    /// terlihat) window langsung ke `t`.
+    pub(crate) unsafe fn slide_from(
+        &mut self,
+        id: WindowId,
+        hwnd: HWND,
+        t: Rect,
+        off: (i32, i32),
+        work: Rect,
+        now: Instant,
+    ) {
+        let start = (t.x + off.0, t.y + off.1);
+        if self.anim_ms > 0.0 {
+            let inset = insets(hwnd);
+            let _ = SetWindowPos(
+                hwnd,
+                None,
+                start.0 - inset.0,
+                start.1 - inset.1,
+                0,
+                0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+            self.anim.remove(&id); // mulai dari `start`, bukan dari animasi lama
+        }
+        self.move_only(id, hwnd, start, t, work, now);
+    }
+
+    /// Meluncur keluar layar ke sisi `exit_to` (+1 kanan, -1 kiri) selebar area kerja,
+    /// dari posisi tujuannya saat ini. True kalau animasi dimulai (window masih tampak);
+    /// kalau tidak, window sudah langsung dipindah dan pemanggil boleh memarkirnya.
+    pub(crate) unsafe fn slide_out(
+        &mut self,
+        id: WindowId,
+        hwnd: HWND,
+        exit_to: i32,
+        work: Rect,
+        now: Instant,
+    ) -> bool {
+        let Some(&(l, t, r, b)) = self.actual.get(&id) else {
+            return false;
+        };
+        let target = Rect {
+            x: l + exit_to * work.w,
+            y: t,
+            w: r - l,
+            h: b - t,
+        };
+        let cur = ext_bounds(hwnd);
+        self.move_only(id, hwnd, (cur.left, cur.top), target, work, now);
+        self.anim.contains_key(&id)
+    }
+
+    /// Isyarat tukar posisi window penuh lebar (lihat `Strip::take_move_cue`): window
+    /// yang tetap di tempat luncur masuk dari arah perpindahannya. Tidak dilakukan kalau
+    /// animasi mati atau window itu sudah bergerak sendiri (sudah kelihatan).
+    pub(crate) unsafe fn cue_slide(&mut self, id: WindowId, dir: Dir, work: Rect, now: Instant) {
+        if self.anim_ms <= 0.0 || self.anim.contains_key(&id) {
+            return;
+        }
+        let (Some(&hwnd), Some(&(l, t, r, b))) = (self.map.get(&id), self.actual.get(&id)) else {
+            return;
+        };
+        let rect = Rect {
+            x: l,
+            y: t,
+            w: r - l,
+            h: b - t,
+        };
+        self.slide_from(id, hwnd, rect, cue_offset(dir, work), work, now);
+    }
+
     /// Satu frame animasi: semua window yang bergerak dipindah dalam satu batch.
     pub(crate) unsafe fn tick_anim(&mut self) {
         if self.anim.is_empty() {
@@ -145,6 +231,9 @@ impl App {
             if let Some(a) = self.anim.remove(&id) {
                 self.actual.insert(id, bounds(ext_bounds(a.hwnd)));
             }
+            if self.leaving.remove(&id) {
+                self.finish_park(id); // selesai meluncur keluar: parkir sungguhan
+            }
         }
         if self.anim.is_empty() {
             self.stop_anim_timer();
@@ -165,6 +254,29 @@ impl App {
             );
             self.actual.insert(id, bounds(ext_bounds(a.hwnd)));
         }
+        for id in std::mem::take(&mut self.leaving) {
+            self.finish_park(id);
+        }
         self.stop_anim_timer();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const WORK: Rect = Rect {
+        x: 0,
+        y: 0,
+        w: 1920,
+        h: 1080,
+    };
+
+    #[test]
+    fn cue_starts_against_the_direction_of_travel() {
+        assert_eq!(cue_offset(Dir::Down, WORK), (0, -216)); // dipindah ke bawah: datang dari atas
+        assert_eq!(cue_offset(Dir::Up, WORK), (0, 216));
+        assert_eq!(cue_offset(Dir::Right, WORK), (-384, 0));
+        assert_eq!(cue_offset(Dir::Left, WORK), (384, 0));
     }
 }

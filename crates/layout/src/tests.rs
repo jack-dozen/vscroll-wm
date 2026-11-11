@@ -165,6 +165,28 @@ fn rejoining_a_block_after_maximize_still_follows_that_blocks_ratio() {
 }
 
 #[test]
+fn moving_a_full_width_window_leaves_a_cue_for_the_app() {
+    let mut s = strip();
+    s.add_window(A);
+    s.add_window(B); // B fokus, di bawah A (keduanya penuh lebar)
+    s.move_window(Dir::Up);
+    assert_eq!(s.take_move_cue(), Some((B, Dir::Up)));
+    assert_eq!(s.take_move_cue(), None); // sekali pakai
+}
+
+#[test]
+fn lane_swaps_and_failed_moves_leave_no_cue() {
+    let mut s = two_half_lanes();
+    s.set_focus(A);
+    s.move_window(Dir::Right); // tukar sisi: sudah kelihatan di layar
+    assert_eq!(s.take_move_cue(), None);
+    let mut s = strip();
+    s.add_window(A);
+    s.move_window(Dir::Down); // tidak ada tetangga
+    assert_eq!(s.take_move_cue(), None);
+}
+
+#[test]
 fn min_height_stretches_aligned_neighbor_to_keep_edges_even() {
     // A dan B sama-sama setengah tinggi, berdampingan. B punya minimum 600:
     // A diregangkan ke 600 supaya dasar keduanya rata.

@@ -130,4 +130,6 @@ pub struct Strip {
     pub(crate) min_widths: HashMap<WindowId, i32>,
     /// Jarak antar window dan ke tepi layar (piksel).
     pub(crate) gap: i32,
+    /// Tukar posisi terakhir window penuh lebar, belum diambil app (lihat `take_move_cue`).
+    pub(crate) cue: Option<(WindowId, Dir)>,
 }

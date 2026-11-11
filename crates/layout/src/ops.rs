@@ -15,6 +15,7 @@ impl Strip {
             min_heights: HashMap::new(),
             min_widths: HashMap::new(),
             gap: 0,
+            cue: None,
         }
     }
 
@@ -416,6 +417,16 @@ impl Strip {
         } else {
             self.items.swap(a, b);
         }
+        // window penuh lebar yang ditukar tetap tampak di tempat yang sama (viewport
+        // mengikuti fokus): beri tahu app supaya bisa memberi isyarat gerak
+        self.cue = (sa == Span::Full).then_some((id, dir));
         self.ensure_visible();
+    }
+
+    /// Ambil (dan hapus) isyarat tukar posisi terakhir: window penuh lebar yang baru
+    /// dipindah dan arahnya. None kalau tukar terakhir sudah kelihatan di layar (lajur)
+    /// atau tidak ada.
+    pub fn take_move_cue(&mut self) -> Option<(WindowId, Dir)> {
+        self.cue.take()
     }
 }

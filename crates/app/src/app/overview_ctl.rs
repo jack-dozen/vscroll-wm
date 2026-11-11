@@ -10,6 +10,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 #[allow(unused_imports)]
 use windows::Win32::UI::WindowsAndMessaging::*;
 
+use super::workspace::{slide_dir, Slide};
 use super::{App, OverviewSession};
 use crate::consts::{DIRS, EVENT_DEBOUNCE_MS};
 use crate::hook::{OV_MOVED, OV_OPEN};
@@ -241,8 +242,11 @@ impl App {
         };
         overview::hide();
         if accept {
+            let old = self.ws.active();
             if self.ws.focus_window(s.selected) {
-                self.update_workspace_tip(); // window itu ada di workspace lain
+                // window itu ada di workspace lain: pindah dengan animasi geser
+                self.slide = Some(Slide::switching(slide_dir(old, self.ws.active())));
+                self.update_workspace_tip();
             }
             self.apply();
             if let Some(&h) = self.map.get(&s.selected) {

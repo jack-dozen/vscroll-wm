@@ -27,6 +27,7 @@ use crate::winutil::{
     Bounds,
 };
 use crate::{config, overview, safety, taskbar};
+use workspace::{slide_dir, Slide};
 
 /// Overview yang sedang terbuka.
 pub(crate) struct OverviewSession {
@@ -57,6 +58,11 @@ pub(crate) struct App {
     /// Window di workspace lain yang sedang diparkir di luar layar (tombol taskbar
     /// disembunyikan). Dibuka lagi oleh apply() saat workspacenya aktif.
     pub(crate) parked: HashSet<WindowId>,
+    /// Window yang sedang meluncur keluar layar menuju parkir; diparkir sungguhan saat
+    /// animasinya selesai (tick_anim). Selalu juga ada di `parked`.
+    pub(crate) leaving: HashSet<WindowId>,
+    /// Arah geser untuk apply() berikutnya (pindah / kirim workspace); dipakai sekali.
+    pub(crate) slide: Option<Slide>,
     /// Window yang sengaja dibiarkan mengambang (tidak ditata) lewat Win+Alt+F.
     pub(crate) floating: HashMap<WindowId, HWND>,
     /// Window yang menolak dikendalikan (hak akses lebih tinggi). Dibiarkan mengambang.
@@ -86,6 +92,8 @@ impl App {
             anim: HashMap::new(),
             hidden: HashSet::new(),
             parked: HashSet::new(),
+            leaving: HashSet::new(),
+            slide: None,
             floating: HashMap::new(),
             blocked: HashMap::new(),
             anim_timer: 0,
@@ -131,6 +139,7 @@ impl App {
             self.map.remove(&id);
             self.hidden.remove(&id);
             self.parked.remove(&id);
+            self.leaving.remove(&id);
             taskbar::forget(h);
             safety::forget(h);
             self.actual.remove(&id);
@@ -168,7 +177,9 @@ impl App {
         if (added && !self.parked.contains(&fg)) || self.last_fg != Some(fg) {
             self.last_fg = Some(fg);
             if self.map.contains_key(&fg) && self.ws.cur().focused() != Some(fg) {
+                let old = self.ws.active();
                 if self.ws.focus_window(fg) {
+                    self.slide = Some(Slide::switching(slide_dir(old, self.ws.active())));
                     self.update_workspace_tip();
                 }
                 changed = true;
@@ -198,6 +209,7 @@ impl App {
         let work = work_area();
         self.ws.set_viewport(work);
         let now = Instant::now();
+        let slide = self.slide.take(); // arah geser pindah workspace, sekali pakai
         // Pass kedua hanya kalau ada window yang menolak dikecilkan
         // (tinggi minimum) sehingga layout perlu dihitung ulang.
         for _ in 0..2 {
@@ -207,19 +219,29 @@ impl App {
                     continue;
                 };
                 let t = p.rect;
-                // baru keluar dari parkir: lompat langsung, jangan dianimasikan dari -32768
+                // baru keluar dari parkir: mulai dari luar layar di sisi masuk lalu meluncur
+                // (jangan dianimasikan dari -32768). Yang masih meluncur keluar (pindah balik
+                // di tengah animasi) cukup dilanjutkan ke posisi barunya.
                 let was_parked = self.parked.remove(&p.id);
+                let was_leaving = self.leaving.remove(&p.id);
                 if was_parked {
                     taskbar::show(h);
                 }
+                let at_park = was_parked && !was_leaving;
                 let cur = ext_bounds(h);
                 let same_size = cur.right - cur.left == t.w
                     && cur.bottom - cur.top == t.h
                     && !IsZoomed(h).as_bool();
-                if same_size && !was_parked {
+                if same_size && !at_park {
                     // hanya posisi yang berubah -> boleh dianimasikan
                     self.move_only(p.id, h, (cur.left, cur.top), t, work, now);
                     continue;
+                }
+                if same_size && self.anim_ms > 0.0 {
+                    if let Some(s) = slide {
+                        self.slide_from(p.id, h, t, (s.enter_from * work.w, 0), work, now);
+                        continue;
+                    }
                 }
                 // ukuran berubah -> langsung ke ukuran akhir, tanpa animasi
                 self.anim.remove(&p.id);
@@ -265,13 +287,18 @@ impl App {
         }
         // window workspace aktif yang tidak ikut ditata (di-minimize) tapi masih diparkir
         for id in self.ws.window_ids(self.ws.active()) {
+            self.leaving.remove(&id);
             if self.parked.remove(&id) {
                 if let Some(&h) = self.map.get(&id) {
                     taskbar::show(h);
                 }
             }
         }
-        self.park_inactive();
+        self.park_inactive(slide, work, now);
+        // isyarat tukar posisi window penuh lebar (lihat Strip::take_move_cue)
+        if let Some((id, dir)) = self.ws.cur_mut().take_move_cue() {
+            self.cue_slide(id, dir, work, now);
+        }
         if !self.anim.is_empty() && self.anim_timer == 0 {
             // 10 ms = minimum Windows; praktisnya berdetak tiap ~15,6 ms (~64 fps)
             self.anim_timer = SetTimer(None, 0, 10, None);
