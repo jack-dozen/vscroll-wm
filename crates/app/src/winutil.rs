@@ -29,28 +29,28 @@ pub(crate) fn wid(h: HWND) -> WindowId {
 /// Kenapa window ini TIDAK ditata (None = boleh ditata).
 pub(crate) unsafe fn unmanaged_reason(hwnd: HWND) -> Option<&'static str> {
     if !IsWindowVisible(hwnd).as_bool() {
-        return Some("tidak terlihat");
+        return Some("not visible");
     }
     if IsIconic(hwnd).as_bool() {
-        return Some("sedang di-minimize");
+        return Some("minimized");
     }
     let style = GetWindowLongPtrW(hwnd, GWL_STYLE) as u32;
     let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
     if style & WS_CAPTION.0 != WS_CAPTION.0 {
-        return Some("tidak punya title bar (WS_CAPTION)");
+        return Some("no title bar (WS_CAPTION)");
     }
     // tidak bisa di-resize (dialog, installer, utilitas kecil): biarkan mengambang
     if style & WS_THICKFRAME.0 == 0 {
-        return Some("tidak bisa di-resize (tanpa WS_THICKFRAME)");
+        return Some("cannot be resized (no WS_THICKFRAME)");
     }
     if ex & (WS_EX_TOOLWINDOW.0 | WS_EX_NOACTIVATE.0) != 0 {
-        return Some("tool window / tidak bisa diaktifkan");
+        return Some("tool window / cannot be activated");
     }
     if GetWindow(hwnd, GW_OWNER).map_or(false, |o| o != HWND::default()) {
-        return Some("dialog / popup milik window lain");
+        return Some("dialog / popup owned by another window");
     }
     if GetWindowTextLengthW(hwnd) == 0 {
-        return Some("judul kosong");
+        return Some("empty title");
     }
     let mut cloaked = 0u32;
     let _ = DwmGetWindowAttribute(

@@ -195,6 +195,23 @@ impl Workspaces {
         }
     }
 
+    /// Seperti `adjacent_workspace`, tapi berputar: dari ujung terakhir (`forward`) lanjut
+    /// ke workspace pertama yang punya window terlihat, dan sebaliknya. None kalau tidak
+    /// ada workspace lain yang punya window terlihat.
+    pub fn wrapped_workspace(&self, from: usize, forward: bool) -> Option<usize> {
+        let has = |n: usize| {
+            self.strips
+                .get(n)
+                .is_some_and(|s| !s.overview().items.is_empty())
+        };
+        let target = if forward {
+            (0..self.strips.len()).find(|&n| has(n))
+        } else {
+            (0..self.strips.len()).rev().find(|&n| has(n))
+        };
+        target.filter(|&n| n != from)
+    }
+
     /// Window wakil workspace `n`: yang fokus, atau yang pertama terlihat. None kalau
     /// workspace itu tidak ada / tidak punya window terlihat.
     pub fn representative(&self, n: usize) -> Option<WindowId> {
@@ -490,5 +507,23 @@ mod tests {
         w.add_window(B); // di bawahnya: pusat y = 1080
         assert_eq!(w.entry_window(0, true, 100), Some(A));
         assert_eq!(w.entry_window(0, false, 1200), Some(B));
+    }
+
+    #[test]
+    fn wrapped_workspace_jumps_to_the_opposite_end() {
+        let mut w = ws();
+        w.add_window(A);
+        w.switch_to(1);
+        w.add_window(B);
+        w.switch_to(2);
+        w.add_window(C); // [A] [B] [C] []
+        assert_eq!(w.wrapped_workspace(2, true), Some(0)); // setelah yang terakhir: pertama
+        assert_eq!(w.wrapped_workspace(0, false), Some(2)); // sebelum yang pertama: terakhir
+        assert_eq!(w.wrapped_workspace(1, true), Some(0)); // selalu ke ujung seberang
+        // hanya satu workspace berisi: tidak ada tujuan lain
+        let mut w = ws();
+        w.add_window(A);
+        assert_eq!(w.wrapped_workspace(0, true), None);
+        assert_eq!(w.wrapped_workspace(0, false), None);
     }
 }

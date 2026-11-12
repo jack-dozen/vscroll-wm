@@ -165,11 +165,11 @@ unsafe fn post_main(msg: u32) {
 unsafe fn show_menu(hwnd: HWND) {
     let Ok(menu) = CreatePopupMenu() else { return };
     let paused = PAUSED.load(Ordering::Relaxed);
-    let pause_txt = wide(if paused { "Lanjutkan" } else { "Jeda" });
-    let reload_txt = wide("Muat ulang konfigurasi");
-    let help_txt = wide("Pintasan keyboard");
-    let auto_txt = wide("Jalankan saat login");
-    let quit_txt = wide("Keluar (pulihkan window)");
+    let pause_txt = wide(if paused { "Resume" } else { "Pause" });
+    let reload_txt = wide("Reload configuration");
+    let help_txt = wide("Keyboard shortcuts");
+    let auto_txt = wide("Run at login");
+    let quit_txt = wide("Quit (restore windows)");
 
     let _ = AppendMenuW(menu, MF_STRING, ID_PAUSE, PCWSTR(pause_txt.as_ptr()));
     let _ = AppendMenuW(menu, MF_STRING, ID_RELOAD, PCWSTR(reload_txt.as_ptr()));

@@ -60,6 +60,11 @@ Reload config anytime from the tray menu → **Reload configuration**.
 | `focus_border` | *(none)* | Focus border color on Windows 11 (`#RRGGBB` or `off`) |
 | `overview_key` | `tab` | Key used with Win for overview (`tab`, `space`, `grave`, single letter/number, or `off`). `Win+Alt+Space` is always available |
 | `overview_size` | `70` | Overview panel size as % of work area (30–100) |
+| `overview_wrap` | `on` | Arrow keys in the overview wrap around at the ends (Up on the top row → bottom row, Left/Right → first/last workspace) |
+| `resize_step` | `80` | Step (px) of the column divider shortcuts `Win` + `]` / `[` |
+| `height_mode` / `height_step` | `preset` / `80` | `Win` + `↑` `↓`: jump between 1/3, 1/2, full (`preset`) or move per step (`step`, in px) |
+| `cheatsheet_key` | `slash` | Key used with Win to open the shortcut cheatsheet (or `off`) |
+| `bind.<action>` | *(see below)* | Custom shortcut for an action, e.g. `bind.close = win+w` |
 | `overview_hint` | `on` | Show key hints at the bottom of the overview |
 | `overview_thumbnails` | `on` | Show window thumbnails in overview |
 | `overview_label` | `title` | Label style: `title` / `app` / `reverse` |
@@ -77,25 +82,53 @@ class:CabinetWClass
 
 ### Keyboard Shortcuts
 
+Press `Win` + `/` at any time to see the cheatsheet; it is generated from the shortcuts
+that are actually in effect, including your custom ones.
+
 | Shortcut | Action |
 |----------|--------|
-| `Win` + `←` `→` `↑` `↓` | Snap / move active window |
-| `Win` + `Shift` + Arrow | Move focus |
-| `Win` + `Enter` | Maximize / restore active window |
-| `Win` + `Alt` + Arrow | Swap with neighboring window |
-| `Win` + `Alt` + `F` | Toggle float / tile |
-| `Win` + `Alt` + `I` | Print window info (class / exe / title) to console |
+| `Win` + `↑` `↓` | Shorter / taller (presets or steps, see `height_mode`) |
+| `Win` + `←` `→` | Move into the left / right column |
+| `Win` + `]` / `[` | Move the column divider (`resize_step`) |
+| `Win` + `\` | Column divider back to 50/50 |
+| `Win` + `Enter` | Back to full width and height |
+| `Win` + `Shift` + Arrow | Move focus to the neighbouring window |
+| `Win` + `Alt` + Arrow | Swap places with the neighbouring window |
 | `Win` + `Tab` *(or configured key)* | Open overview (strip map) |
-| `Win` + `Alt` + `Space` | Overview (always available) |
+| `Win` + `Alt` + `Space` | Overview (second default chord) |
+| `Win` + `Ctrl` + `←` `→` | Previous / next workspace |
+| `Win` + `Ctrl` + `1`…`9` | Go to workspace n |
+| `Win` + `Ctrl` + `Shift` + `←` `→` / `1`…`9` | Send the active window to another workspace |
 | `Win` + `Q` | Close active window |
 | `Win` + `M` | Minimize active window |
-| `Win` + `Ctrl` + `Esc` | Quit and restore all windows |
+| `Win` + `Alt` + `F` | Toggle float / tile |
+| `Win` + `Alt` + `I` | Show window info (class / exe / title) |
+| `Win` + `/` | Shortcut cheatsheet |
+| `Win` + `Ctrl` + `Esc` | Quit and restore all windows (fixed) |
+| `Ctrl` + `Alt` + … | Backup copies of snap, focus, Enter, F, I, Space; `Ctrl` + `Alt` + `Shift` + `Q` quits (fixed) |
 
 While overview is open:
-- Arrow keys / Tab / Shift+Tab → move selection
-- Enter → confirm
-- Esc → cancel
+- Arrow keys → move selection (wraps around at the ends unless `overview_wrap = off`; `←` `→` at an edge continue into the neighbouring workspace)
+- Tab / Shift+Tab (or the overview key while holding Win) → next / previous window in the workspace
+- `Ctrl` + `←` `→` or `1`…`9` → select a workspace
+- Enter or click → jump to the window; Esc → cancel
 - Release Win after moving selection → jump to that window
+
+### Custom shortcuts
+
+Every shortcut above (except the fixed ones) can be changed in `vscroll-wm.conf`:
+
+```
+bind.close = win+w                       # one chord
+bind.overview = win+o, win+alt+space     # several chords, separated by commas
+bind.minimize = off                      # disable
+bind.workspace_goto = alt+1-9            # numbered actions take "1-9"
+```
+
+A chord is one or more modifiers (`win`, `ctrl`, `alt`, `shift`; at least one) joined with `+`,
+followed by a key. The full list of actions, key names and defaults is in
+`vscroll-wm.conf.example`. If two actions claim the same chord, the explicitly configured
+one wins and a warning is printed. Reload with the tray menu → **Reload configuration**.
 
 ---
 
@@ -106,7 +139,6 @@ I hope someone forks, clones, copies, or just steals the idea and makes a better
 Right now it only supports **Windows**. The long-term wish is to support more operating systems.
 
 ### Planned features
-- Shortcut cheatsheet overlay
 - Consume window horizontally
 
 ### Known issues

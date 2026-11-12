@@ -21,12 +21,12 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use self::anim::Anim;
 use crate::consts::DEFAULT_ANIM_MS;
-use crate::hook::{CHEAT_VK, OVERVIEW_VK};
+use crate::hook::OVERVIEW_VK;
 use crate::winutil::{
     animations_enabled, bounds, collect, ext_bounds, place, set_border, title, wid, work_area,
     Bounds,
 };
-use crate::{config, overview, safety, taskbar};
+use crate::{bindings, config, overview, safety, taskbar};
 use workspace::{slide_dir, Slide};
 
 /// Overview yang sedang terbuka.
@@ -336,8 +336,8 @@ impl App {
     /// Terapkan konfigurasi (gap, animasi, warna border).
     pub(crate) unsafe fn apply_config(&mut self, cfg: &config::Config) {
         self.cfg = cfg.clone();
-        OVERVIEW_VK.store(cfg.overview_key, Ordering::Relaxed);
-        CHEAT_VK.store(cfg.cheatsheet_key, Ordering::Relaxed);
+        bindings::install(&cfg.bindings);
+        OVERVIEW_VK.store(cfg.bindings.overview_cycle_vk(), Ordering::Relaxed);
         self.ws.set_gap(cfg.gap);
         self.focus_border = cfg.focus_border;
         self.refresh_border();

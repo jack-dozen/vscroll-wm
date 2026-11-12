@@ -10,11 +10,10 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 #[allow(unused_imports)]
 use windows::Win32::UI::WindowsAndMessaging::*;
 
+use crate::bindings::{self, ALT, CTRL, SHIFT, WIN};
 use crate::consts::{
-    DIRS, HOTKEY_CHEATSHEET, HOTKEY_CLOSE, HOTKEY_FLOAT, HOTKEY_INSPECT, HOTKEY_MAXIMIZE,
-    HOTKEY_MINIMIZE, HOTKEY_OVERVIEW, HOTKEY_QUIT, HOTKEY_SPLIT_LEFT, HOTKEY_SPLIT_RESET,
-    HOTKEY_SPLIT_RIGHT, HOTKEY_WS_GO, HOTKEY_WS_NEXT, HOTKEY_WS_NOOP, HOTKEY_WS_PREV,
-    HOTKEY_WS_SEND, HOTKEY_WS_SEND_NEXT, HOTKEY_WS_SEND_PREV, WM_ACTION, WM_WINEVENT,
+    DIRS, HOTKEY_OVERVIEW, HOTKEY_QUIT, HOTKEY_WS_GO, HOTKEY_WS_NEXT, HOTKEY_WS_PREV, WM_ACTION,
+    WM_WINEVENT,
 };
 use crate::{overview, tray};
 
@@ -22,11 +21,9 @@ pub(crate) static MAIN_THREAD: AtomicU32 = AtomicU32::new(0);
 
 pub(crate) static WIN_DOWN: AtomicBool = AtomicBool::new(false);
 
-/// Tombol overview bersama Win (kode virtual-key; 0 = mati). Diatur dari konfigurasi.
+/// Tombol untuk berputar antar window saat overview terbuka dan Win ditahan (kode
+/// virtual-key; 0 = mati). Diturunkan dari ikatan `overview` (lihat bindings.rs).
 pub(crate) static OVERVIEW_VK: AtomicU16 = AtomicU16::new(0x09);
-
-/// Tombol cheatsheet bersama Win (0 = mati). Diatur dari konfigurasi.
-pub(crate) static CHEAT_VK: AtomicU16 = AtomicU16::new(0xBF);
 
 /// Tombol pintasan yang sedang ditahan, untuk mengenali event berulang (auto-repeat).
 pub(crate) static HELD_VK: AtomicU16 = AtomicU16::new(0);
@@ -38,14 +35,8 @@ pub(crate) static OV_OPEN: AtomicBool = AtomicBool::new(false);
 /// overview langsung loncat ke window yang dipilih (gaya Alt+Tab).
 pub(crate) static OV_MOVED: AtomicBool = AtomicBool::new(false);
 
-/// Pintasan yang boleh berulang saat tombolnya ditahan: yang menggeser atau mengubah
-/// ukuran. Sisanya (tutup, minimize, float, overview, cheatsheet, keluar, ...) hanya
-/// sekali per tekan, supaya menahan Win+Q tidak menutup window berturut-turut.
-pub(crate) fn repeat_allowed(id: i32) -> bool {
-    matches!(id, 1..=8 | 10..=13 | HOTKEY_SPLIT_RIGHT | HOTKEY_SPLIT_LEFT)
-}
-
 /// Aksi tombol Win+... saat overview terbuka: (pesan, wParam, menggeser pilihan?).
+/// `bound` = id hotkey yang terikat pada kombinasi ini menurut konfigurasi (bindings.rs).
 /// None = bukan tombol overview; dibiarkan lewat ke Windows (tiling tidak ikut jalan).
 pub(crate) fn overview_hook_action(
     vk: u16,
@@ -53,21 +44,20 @@ pub(crate) fn overview_hook_action(
     alt: bool,
     ctrl: bool,
     overview_vk: u16,
+    bound: Option<i32>,
 ) -> Option<(u32, usize, bool)> {
     if vk == VK_ESCAPE.0 && ctrl {
         return Some((WM_ACTION, HOTKEY_QUIT as usize, false)); // jalan keluar darurat
     }
-    // Win+Ctrl+Kiri/Kanan / angka: sama seperti di luar overview, tapi menggeser kursor
-    if ctrl && !alt && !shift {
-        if vk == VK_LEFT.0 {
-            return Some((overview::WM_OV_WS, 0, true));
+    // Pintasan workspace (sesuai ikatan sekarang): sama seperti di luar overview,
+    // tapi menggeser kursor
+    match bound {
+        Some(HOTKEY_WS_PREV) => return Some((overview::WM_OV_WS, 0, true)),
+        Some(HOTKEY_WS_NEXT) => return Some((overview::WM_OV_WS, 1, true)),
+        Some(id) if (HOTKEY_WS_GO..HOTKEY_WS_GO + 9).contains(&id) => {
+            return Some((overview::WM_OV_WS, 2 + (id - HOTKEY_WS_GO) as usize, true));
         }
-        if vk == VK_RIGHT.0 {
-            return Some((overview::WM_OV_WS, 1, true));
-        }
-        if (0x31..=0x39).contains(&vk) {
-            return Some((overview::WM_OV_WS, 2 + (vk - 0x31) as usize, true));
-        }
+        _ => {}
     }
     if let Some(i) = arrow_index(vk).filter(|_| !ctrl) {
         return Some((overview::WM_OV_MOVE, i as usize, true));
@@ -81,7 +71,7 @@ pub(crate) fn overview_hook_action(
     if overview_vk != 0 && vk == overview_vk && !alt && !ctrl {
         return Some((overview::WM_OV_CYCLE, if shift { 0 } else { 1 }, true));
     }
-    if vk == VK_SPACE.0 && alt {
+    if bound == Some(HOTKEY_OVERVIEW) {
         return Some((WM_ACTION, HOTKEY_OVERVIEW as usize, false)); // tutup
     }
     None
@@ -89,29 +79,6 @@ pub(crate) fn overview_hook_action(
 
 pub(crate) fn arrow_index(vk: u16) -> Option<i32> {
     DIRS.iter().position(|(k, _)| k.0 == vk).map(|i| i as i32)
-}
-
-/// Pintasan workspace (Win+Ctrl+...): id hotkey-nya. Win+Ctrl+D / F4 (buat / tutup
-/// desktop virtual Windows) ikut ditelan supaya tidak ada dua sistem desktop yang
-/// saling menimpa.
-pub(crate) fn workspace_action(vk: u16, shift: bool, alt: bool, ctrl: bool) -> Option<i32> {
-    if !ctrl || alt {
-        return None;
-    }
-    if vk == VK_LEFT.0 {
-        return Some(if shift { HOTKEY_WS_SEND_PREV } else { HOTKEY_WS_PREV });
-    }
-    if vk == VK_RIGHT.0 {
-        return Some(if shift { HOTKEY_WS_SEND_NEXT } else { HOTKEY_WS_NEXT });
-    }
-    if (0x31..=0x39).contains(&vk) {
-        let n = (vk - 0x31) as i32; // tombol '1'..'9'
-        return Some(if shift { HOTKEY_WS_SEND + n } else { HOTKEY_WS_GO + n });
-    }
-    if vk == VK_D.0 || vk == VK_F4.0 {
-        return Some(HOTKEY_WS_NOOP);
-    }
-    None
 }
 
 /// Selipkan tombol dummy supaya Windows tidak membuka Start Menu saat Win
@@ -131,6 +98,46 @@ pub(crate) unsafe fn cancel_start_menu() {
     };
     let inputs = [key(KEYBD_EVENT_FLAGS(0)), key(KEYEVENTF_KEYUP)];
     SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+}
+
+/// Modifier selain Win yang sedang ditahan (bitmask SHIFT / ALT / CTRL dari bindings.rs).
+unsafe fn held_mods() -> u8 {
+    let mut m = 0u8;
+    if GetAsyncKeyState(VK_SHIFT.0 as i32) < 0 {
+        m |= SHIFT;
+    }
+    if GetAsyncKeyState(VK_MENU.0 as i32) < 0 {
+        m |= ALT;
+    }
+    if GetAsyncKeyState(VK_CONTROL.0 as i32) < 0 {
+        m |= CTRL;
+    }
+    m
+}
+
+/// Kirim aksi `id` ke thread utama dan telan tombolnya. Pengulangan karena tombol
+/// ditahan diabaikan kecuali aksinya memang boleh berulang.
+unsafe fn fire(vk: u16, id: i32, down: bool) -> LRESULT {
+    if down {
+        let repeat = HELD_VK.swap(vk, Ordering::Relaxed) == vk;
+        if repeat && !bindings::repeat_allowed(id) {
+            return LRESULT(1); // tombol ditahan: abaikan pengulangan
+        }
+        if id == HOTKEY_OVERVIEW && !OV_OPEN.load(Ordering::Relaxed) {
+            // optimistis: tombol berikutnya (mis. Tab kedua) harus sudah
+            // dianggap "overview terbuka" sebelum thread utama selesai membukanya
+            OV_OPEN.store(true, Ordering::Relaxed);
+            OV_MOVED.store(false, Ordering::Relaxed);
+        }
+        let _ = PostThreadMessageW(
+            MAIN_THREAD.load(Ordering::Relaxed),
+            WM_ACTION,
+            WPARAM(id as usize),
+            LPARAM(0),
+        );
+        cancel_start_menu();
+    }
+    LRESULT(1) // telan tombolnya
 }
 
 /// Low-level keyboard hook. Harus cepat: kerjanya cuma menelan tombol dan
@@ -166,14 +173,15 @@ pub(crate) unsafe extern "system" fn kb_hook(code: i32, wparam: WPARAM, lparam: 
                 && (GetAsyncKeyState(VK_LWIN.0 as i32) < 0
                     || GetAsyncKeyState(VK_RWIN.0 as i32) < 0)
             {
-                let shift = GetAsyncKeyState(VK_SHIFT.0 as i32) < 0;
-                let alt = GetAsyncKeyState(VK_MENU.0 as i32) < 0;
-                let ctrl = GetAsyncKeyState(VK_CONTROL.0 as i32) < 0;
+                let held = held_mods();
+                let (shift, alt, ctrl) = (held & SHIFT != 0, held & ALT != 0, held & CTRL != 0);
+                // aksi yang terikat pada kombinasi ini (tombol terkunci dulu, lalu konfigurasi)
+                let bound = bindings::lookup_active(WIN | held, vk);
                 if OV_OPEN.load(Ordering::Relaxed) {
-                    // Overview terbuka: tiling mati. Panah menggeser pilihan, Tab berputar,
-                    // Enter / Esc memilih / membatalkan. Selain itu dibiarkan ke Windows.
+                    // Overview terbuka: tiling mati. Panah menggeser pilihan, tombol overview
+                    // berputar, Enter / Esc memilih / membatalkan. Selain itu dibiarkan ke Windows.
                     let ov_vk = OVERVIEW_VK.load(Ordering::Relaxed);
-                    return match overview_hook_action(vk, shift, alt, ctrl, ov_vk) {
+                    return match overview_hook_action(vk, shift, alt, ctrl, ov_vk, bound) {
                         Some((msg, wp, moves)) => {
                             if down {
                                 let repeat = HELD_VK.swap(vk, Ordering::Relaxed) == vk;
@@ -193,7 +201,7 @@ pub(crate) unsafe extern "system" fn kb_hook(code: i32, wparam: WPARAM, lparam: 
                             }
                             LRESULT(1) // telan tombolnya
                         }
-                        None if workspace_action(vk, shift, alt, ctrl).is_some() => {
+                        None if bound.is_some_and(bindings::is_workspace_id) => {
                             // desktop virtual Windows dimatikan: jangan diteruskan
                             if down {
                                 cancel_start_menu();
@@ -203,76 +211,20 @@ pub(crate) unsafe extern "system" fn kb_hook(code: i32, wparam: WPARAM, lparam: 
                         None => CallNextHookEx(None, code, wparam, lparam),
                     };
                 }
-                // Win+Ctrl+... = workspace (menggantikan desktop virtual bawaan Windows)
-                let action = if let Some(i) = arrow_index(vk).filter(|_| !ctrl) {
-                    // Win+Alt: tukar posisi, Win+Shift: fokus, Win: snap
-                    Some(if alt {
-                        i + 10
-                    } else if shift {
-                        i + 5
-                    } else {
-                        i + 1
-                    })
-                } else if vk == VK_RETURN.0 {
-                    Some(HOTKEY_MAXIMIZE)
-                } else if vk == VK_ESCAPE.0 && ctrl {
-                    Some(HOTKEY_QUIT)
-                } else if let Some(id) = workspace_action(vk, shift, alt, ctrl) {
-                    Some(id)
-                } else if vk == VK_Q.0 && !shift && !alt && !ctrl {
-                    Some(HOTKEY_CLOSE)
-                } else if vk == VK_M.0 && !shift && !alt && !ctrl {
-                    Some(HOTKEY_MINIMIZE)
-                } else if vk == VK_OEM_6.0 && !shift && !alt && !ctrl {
-                    Some(HOTKEY_SPLIT_RIGHT)
-                } else if vk == VK_OEM_4.0 && !shift && !alt && !ctrl {
-                    Some(HOTKEY_SPLIT_LEFT)
-                } else if vk == VK_OEM_5.0 && !shift && !alt && !ctrl {
-                    Some(HOTKEY_SPLIT_RESET)
-                } else if vk != 0
-                    && vk == OVERVIEW_VK.load(Ordering::Relaxed)
-                    && !shift
-                    && !alt
-                    && !ctrl
-                {
-                    Some(HOTKEY_OVERVIEW)
-                } else if vk != 0
-                    && vk == CHEAT_VK.load(Ordering::Relaxed)
-                    && !shift
-                    && !alt
-                    && !ctrl
-                {
-                    Some(HOTKEY_CHEATSHEET)
-                } else if vk == VK_F.0 && alt {
-                    Some(HOTKEY_FLOAT)
-                } else if vk == VK_I.0 && alt {
-                    Some(HOTKEY_INSPECT)
-                } else if vk == VK_SPACE.0 && alt {
-                    Some(HOTKEY_OVERVIEW)
-                } else {
-                    None
-                };
-                if let Some(id) = action {
-                    if down {
-                        let repeat = HELD_VK.swap(vk, Ordering::Relaxed) == vk;
-                        if repeat && !repeat_allowed(id) {
-                            return LRESULT(1); // tombol ditahan: abaikan pengulangan
+                if let Some(id) = bound {
+                    return fire(vk, id, down);
+                }
+            } else {
+                // Pintasan tanpa Win (mis. Alt+H atau Ctrl+Alt+O): hanya kalau ada modifier
+                // yang ditahan. Saat overview terbuka hanya tombol overview-nya sendiri
+                // yang berlaku (menutupnya); sisanya untuk jendela overview.
+                let held = held_mods();
+                if held != 0 {
+                    if let Some(id) = bindings::lookup_active(held, vk) {
+                        if !OV_OPEN.load(Ordering::Relaxed) || id == HOTKEY_OVERVIEW {
+                            return fire(vk, id, down);
                         }
-                        if id == HOTKEY_OVERVIEW {
-                            // optimistis: tombol berikutnya (mis. Tab kedua) harus sudah
-                            // dianggap "overview terbuka" sebelum thread utama selesai membukanya
-                            OV_OPEN.store(true, Ordering::Relaxed);
-                            OV_MOVED.store(false, Ordering::Relaxed);
-                        }
-                        let _ = PostThreadMessageW(
-                            MAIN_THREAD.load(Ordering::Relaxed),
-                            WM_ACTION,
-                            WPARAM(id as usize),
-                            LPARAM(0),
-                        );
-                        cancel_start_menu();
                     }
-                    return LRESULT(1); // telan tombolnya
                 }
             }
         }
@@ -305,11 +257,18 @@ pub(crate) unsafe extern "system" fn win_event_proc(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bindings::Bindings;
 
     const TAB: u16 = 0x09;
 
+    /// Kombinasi Win + modifier yang diberikan, lewat ikatan bawaan.
     fn act(vk: u16, shift: bool, alt: bool, ctrl: bool) -> Option<(u32, usize, bool)> {
-        overview_hook_action(vk, shift, alt, ctrl, TAB)
+        let mods = WIN
+            | if shift { SHIFT } else { 0 }
+            | if alt { ALT } else { 0 }
+            | if ctrl { CTRL } else { 0 };
+        let bound = Bindings::defaults().lookup(mods, vk);
+        overview_hook_action(vk, shift, alt, ctrl, TAB, bound)
     }
 
     #[test]
@@ -339,6 +298,22 @@ mod tests {
     }
 
     #[test]
+    fn workspace_keys_in_the_overview_follow_custom_bindings() {
+        // workspace_next dipindah ke Win+Ctrl+L: di overview ikut menggeser kursor
+        let mut b = Bindings::defaults();
+        let next = bindings::find_action("workspace_next").unwrap();
+        b.set(next, vec![bindings::Chord::new(WIN | CTRL, 0x4C)]);
+        let bound = b.lookup(WIN | CTRL, 0x4C);
+        assert_eq!(
+            overview_hook_action(0x4C, false, false, true, TAB, bound),
+            Some((overview::WM_OV_WS, 1, true))
+        );
+        // tombol lamanya tidak lagi berarti workspace berikutnya
+        let old = b.lookup(WIN | CTRL, VK_RIGHT.0);
+        assert_eq!(overview_hook_action(VK_RIGHT.0, false, false, true, TAB, old), None);
+    }
+
+    #[test]
     fn tab_cycles_forward_and_shift_tab_backward() {
         assert_eq!(
             act(TAB, false, false, false),
@@ -348,7 +323,8 @@ mod tests {
             act(TAB, true, false, false),
             Some((overview::WM_OV_CYCLE, 0, true))
         );
-        assert_eq!(overview_hook_action(TAB, false, false, false, 0), None); // overview_key off
+        // overview_key off: tidak ada tombol putar
+        assert_eq!(overview_hook_action(TAB, false, false, false, 0, None), None);
     }
 
     #[test]
@@ -376,71 +352,5 @@ mod tests {
         assert_eq!(act(VK_Q.0, false, false, false), None); // tutup window: mati
         assert_eq!(act(VK_M.0, false, false, false), None); // minimize: mati
         assert_eq!(act(VK_F.0, false, true, false), None); // float: mati
-    }
-
-    #[test]
-    fn only_movement_and_resize_shortcuts_repeat_when_held() {
-        for id in 1..=8 {
-            assert!(repeat_allowed(id), "{id}");
-        }
-        for id in 10..=13 {
-            assert!(repeat_allowed(id), "{id}");
-        }
-        assert!(repeat_allowed(HOTKEY_SPLIT_RIGHT) && repeat_allowed(HOTKEY_SPLIT_LEFT));
-        // sekali per tekan: tutup, minimize, float, overview, cheatsheet, keluar, dll.
-        for id in [
-            HOTKEY_CLOSE,
-            HOTKEY_MINIMIZE,
-            HOTKEY_FLOAT,
-            HOTKEY_OVERVIEW,
-            HOTKEY_CHEATSHEET,
-            HOTKEY_QUIT,
-            HOTKEY_MAXIMIZE,
-            HOTKEY_INSPECT,
-            HOTKEY_SPLIT_RESET,
-        ] {
-            assert!(!repeat_allowed(id), "{id}");
-        }
-    }
-
-    #[test]
-    fn workspace_keys_map_to_hotkey_ids() {
-        assert_eq!(workspace_action(VK_LEFT.0, false, false, true), Some(HOTKEY_WS_PREV));
-        assert_eq!(workspace_action(VK_RIGHT.0, false, false, true), Some(HOTKEY_WS_NEXT));
-        assert_eq!(workspace_action(VK_LEFT.0, true, false, true), Some(HOTKEY_WS_SEND_PREV));
-        assert_eq!(workspace_action(VK_RIGHT.0, true, false, true), Some(HOTKEY_WS_SEND_NEXT));
-        assert_eq!(workspace_action(0x31, false, false, true), Some(HOTKEY_WS_GO));
-        assert_eq!(workspace_action(0x39, false, false, true), Some(HOTKEY_WS_GO + 8));
-        assert_eq!(workspace_action(0x31, true, false, true), Some(HOTKEY_WS_SEND));
-        assert_eq!(workspace_action(0x39, true, false, true), Some(HOTKEY_WS_SEND + 8));
-        assert_eq!(workspace_action(VK_D.0, false, false, true), Some(HOTKEY_WS_NOOP));
-        assert_eq!(workspace_action(VK_F4.0, false, false, true), Some(HOTKEY_WS_NOOP));
-    }
-
-    #[test]
-    fn workspace_keys_need_ctrl_and_ignore_other_combos() {
-        assert_eq!(workspace_action(VK_LEFT.0, false, false, false), None); // snap biasa
-        assert_eq!(workspace_action(0x31, false, false, false), None);
-        assert_eq!(workspace_action(VK_LEFT.0, false, true, true), None); // Ctrl+Alt: bukan kita
-        assert_eq!(workspace_action(VK_UP.0, false, false, true), None);
-        assert_eq!(workspace_action(0x30, false, false, true), None); // '0'
-        assert_eq!(workspace_action(0x3A, false, false, true), None);
-    }
-
-    #[test]
-    fn workspace_shortcuts_fire_once_per_press() {
-        for id in [
-            HOTKEY_WS_PREV,
-            HOTKEY_WS_NEXT,
-            HOTKEY_WS_SEND_PREV,
-            HOTKEY_WS_SEND_NEXT,
-            HOTKEY_WS_NOOP,
-            HOTKEY_WS_GO,
-            HOTKEY_WS_GO + 8,
-            HOTKEY_WS_SEND,
-            HOTKEY_WS_SEND + 8,
-        ] {
-            assert!(!repeat_allowed(id), "{id}");
-        }
     }
 }

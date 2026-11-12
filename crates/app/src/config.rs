@@ -22,10 +22,17 @@
 //!   overview_key = tab        tombol overview bersama Win: tab, space, grave, satu
 //!                     huruf/angka (bukan q/m), atau off. Win+Alt+Space selalu aktif.
 //!   overview_color_selected / _active / _view / _background / _box = #RRGGBB
+//!   overview_wrap = on        panah di overview berputar: dari ujung loncat ke ujung seberang
+//!   bind.<aksi> = win+q       ubah pintasan (daftar aksi: bindings.rs / vscroll-wm.conf.example).
+//!                     Beberapa tombol dipisah koma, off = dimatikan. overview_key dan
+//!                     cheatsheet_key tetap berlaku sebagai tombol bawaan bind.overview /
+//!                     bind.cheatsheet.
 //!
 //! Komentar hanya berlaku untuk baris yang diawali #.
 
 use std::path::PathBuf;
+
+use crate::bindings::{self, Bindings, Chord, ALT, WIN};
 
 pub const DEFAULT_GAP: i32 = 16;
 
@@ -102,6 +109,10 @@ pub struct Config {
     /// Kode virtual-key tombol overview (bersama Win). 0 = dimatikan.
     pub overview_key: u16,
     pub overview_colors: OverviewColors,
+    /// Panah di overview berputar (dari ujung loncat ke ujung seberang).
+    pub overview_wrap: bool,
+    /// Tombol tiap aksi (bawaan + `bind.*` + overview_key / cheatsheet_key).
+    pub bindings: Bindings,
 }
 
 impl Default for Config {
@@ -121,6 +132,8 @@ impl Default for Config {
             overview_size: 70,
             overview_key: 0x09, // Tab
             overview_colors: OverviewColors::default(),
+            overview_wrap: true,
+            bindings: Bindings::defaults(),
         }
     }
 }
@@ -130,6 +143,9 @@ impl Config {
     pub fn parse(text: &str) -> (Config, Vec<String>) {
         let mut cfg = Config::default();
         let mut warnings = Vec::new();
+        let mut binds = Bindings::defaults();
+        // aksi yang diatur lewat bind.* (urutan file = urutan prioritas saat bentrok)
+        let mut explicit: Vec<usize> = Vec::new();
         for (n, raw) in text.lines().enumerate() {
             let n = n + 1;
             let line = raw.trim();
@@ -215,6 +231,24 @@ impl Config {
                 "overview_color_box" => {
                     color_setting(value, &mut cfg.overview_colors.box_fill, &key, n, &mut warnings)
                 }
+                "overview_wrap" => match parse_bool(value) {
+                    Some(b) => cfg.overview_wrap = b,
+                    None => warnings.push(format!("baris {n}: overview_wrap harus on/off")),
+                },
+                k if k.starts_with("bind.") => {
+                    let name = k["bind.".len()..].trim();
+                    match bindings::find_action(name) {
+                        None => warnings.push(format!("baris {n}: aksi tidak dikenal '{name}'")),
+                        Some(i) => match bindings::parse_list(i, value) {
+                            Ok(list) => {
+                                binds.set(i, list);
+                                explicit.retain(|&e| e != i);
+                                explicit.push(i);
+                            }
+                            Err(e) => warnings.push(format!("baris {n}: {e}")),
+                        },
+                    }
+                }
                 k if k.starts_with("alias.") => {
                     let stem = k["alias.".len()..].trim().trim_end_matches(".exe").to_string();
                     if stem.is_empty() || value.is_empty() {
@@ -232,6 +266,26 @@ impl Config {
                 .push("cheatsheet_key sama dengan overview_key: cheatsheet dimatikan".to_string());
             cfg.cheatsheet_key = 0;
         }
+        // overview_key / cheatsheet_key (cara lama) = tombol bawaan kedua aksi itu,
+        // kecuali kalau sudah diatur lewat bind.*
+        if let Some(i) = bindings::find_action("overview").filter(|i| !explicit.contains(i)) {
+            let mut list = Vec::new();
+            if cfg.overview_key != 0 {
+                list.push(Chord::new(WIN, cfg.overview_key));
+            }
+            list.push(Chord::new(WIN | ALT, 0x20)); // Win+Alt+Space: selalu ada
+            binds.set(i, list);
+        }
+        if let Some(i) = bindings::find_action("cheatsheet").filter(|i| !explicit.contains(i)) {
+            let list = if cfg.cheatsheet_key != 0 {
+                vec![Chord::new(WIN, cfg.cheatsheet_key)]
+            } else {
+                Vec::new()
+            };
+            binds.set(i, list);
+        }
+        warnings.extend(binds.resolve_conflicts(&explicit));
+        cfg.bindings = binds;
         (cfg, warnings)
     }
 }
@@ -612,5 +666,62 @@ mod tests {
         assert_eq!(Config::parse("height_step = 9999").0.height_step, 400);
         let (cfg, w) = Config::parse("height_mode = pixel");
         assert_eq!((cfg.height_mode, w.len()), (HeightMode::Preset, 1));
+    }
+
+    #[test]
+    fn overview_wrap_defaults_to_on() {
+        assert!(Config::default().overview_wrap);
+        let (cfg, w) = Config::parse("overview_wrap = off");
+        assert!(!cfg.overview_wrap && w.is_empty());
+        let (cfg, w) = Config::parse("overview_wrap = kadang");
+        assert!(cfg.overview_wrap);
+        assert_eq!(w.len(), 1);
+    }
+
+    #[test]
+    fn bind_lines_change_shortcuts() {
+        let (cfg, w) = Config::parse("bind.close = win+x\nbind.minimize = off\nbind.overview = ctrl+alt+o\n");
+        assert!(w.is_empty(), "{w:?}");
+        let b = &cfg.bindings;
+        assert_eq!(b.lookup(WIN, 0x58), Some(crate::consts::HOTKEY_CLOSE));
+        assert_eq!(b.lookup(WIN, 0x51), None); // Win+Q tidak lagi menutup
+        assert_eq!(b.lookup(WIN, 0x4D), None); // minimize dimatikan
+        assert_eq!(
+            b.lookup(bindings::CTRL | ALT, 0x4F),
+            Some(crate::consts::HOTKEY_OVERVIEW)
+        );
+        assert_eq!(b.lookup(WIN, 0x09), None); // Win+Tab dilepas (bind.overview menggantikan semuanya)
+    }
+
+    #[test]
+    fn bad_bind_lines_warn_and_keep_defaults() {
+        let (cfg, w) = Config::parse("bind.nope = win+x\nbind.close = win+\nbind.float = hyper+f\n");
+        assert_eq!(w.len(), 3, "{w:?}");
+        assert_eq!(cfg.bindings, Bindings::defaults());
+    }
+
+    #[test]
+    fn bind_conflicts_are_resolved_in_favour_of_the_explicit_line() {
+        let (cfg, w) = Config::parse("bind.close = win+m\n");
+        assert_eq!(w.len(), 1, "{w:?}"); // minimize kehilangan Win+M
+        assert_eq!(cfg.bindings.lookup(WIN, 0x4D), Some(crate::consts::HOTKEY_CLOSE));
+    }
+
+    #[test]
+    fn legacy_keys_still_set_the_default_chords() {
+        let (cfg, w) = Config::parse("overview_key = z\ncheatsheet_key = f1\n");
+        assert!(w.is_empty(), "{w:?}");
+        assert_eq!(cfg.bindings.lookup(WIN, 0x5A), Some(crate::consts::HOTKEY_OVERVIEW));
+        assert_eq!(cfg.bindings.lookup(WIN, 0x70), Some(crate::consts::HOTKEY_CHEATSHEET));
+        assert_eq!(cfg.bindings.lookup(WIN | ALT, 0x20), Some(crate::consts::HOTKEY_OVERVIEW));
+        assert_eq!(cfg.bindings.lookup(WIN, 0x09), None);
+        // bind.* menang atas overview_key
+        let (cfg, _) = Config::parse("overview_key = z\nbind.overview = win+o\n");
+        assert_eq!(cfg.bindings.lookup(WIN, 0x4F), Some(crate::consts::HOTKEY_OVERVIEW));
+        assert_eq!(cfg.bindings.lookup(WIN, 0x5A), None);
+        // overview_key = off: Win+Alt+Space tetap ada
+        let (cfg, _) = Config::parse("overview_key = off\n");
+        assert_eq!(cfg.bindings.lookup(WIN | ALT, 0x20), Some(crate::consts::HOTKEY_OVERVIEW));
+        assert_eq!(cfg.bindings.overview_cycle_vk(), 0);
     }
 }

@@ -293,6 +293,48 @@ impl Strip {
         best.map(|(_, n)| n)
     }
 
+    /// Seperti `neighbor_of`, tapi untuk saat tidak ada window lagi di arah `dir`:
+    /// lompat ke ujung seberang strip (Atas di baris teratas -> baris terbawah, Kiri
+    /// di tepi kiri -> tepi kanan, dst.), sebisanya di lajur / baris yang sama.
+    /// Dipakai panah di overview supaya pilihan berputar. None kalau tidak ada window
+    /// lain di sisi seberang, atau `id` tidak dikenal / tersembunyi.
+    pub fn wrap_neighbor_of(&self, id: WindowId, dir: Dir) -> Option<WindowId> {
+        let flow = self.flow();
+        let f = flow.iter().find(|c| c.id == id && c.span != Span::Hidden)?;
+        let (fx0, fx1) = f.x_range();
+        let (fy0, fy1) = (f.top, f.bottom());
+        let f_mid = (fy0 + fy1) / 2;
+        let shown = || flow.iter().filter(|c| c.span != Span::Hidden);
+        let first_top = shown().map(|c| c.top).min()?;
+        let last_bottom = shown().map(|c| c.bottom()).max()?;
+        let first_x = shown().map(|c| c.x_range().0).min()?;
+        let last_x = shown().map(|c| c.x_range().1).max()?;
+
+        let mut best: Option<((bool, i32, i32, i32), WindowId)> = None;
+        for c in shown().filter(|c| c.id != id) {
+            let (cx0, cx1) = c.x_range();
+            let (cy0, cy1) = (c.top, c.bottom());
+            let h_ov = (fx1.min(cx1) - fx0.max(cx0)).max(0);
+            let v_ov = (fy1.min(cy1) - fy0.max(cy0)).max(0);
+            let dy = ((cy0 + cy1) / 2 - f_mid).abs();
+            // Hanya window di sisi "belakang" `id` yang jadi kandidat (Atas: yang ada di
+            // bawahnya, dst.); yang terdekat ke ujung seberang menang.
+            let key = match dir {
+                Dir::Up if cy0 >= fy1 => Some((h_ov == 0, last_bottom - cy1, -h_ov, cy0)),
+                Dir::Down if cy1 <= fy0 => Some((h_ov == 0, cy0 - first_top, -h_ov, cy0)),
+                Dir::Left if cx0 >= fx1 => Some((v_ov == 0, last_x - cx1, dy, cy0)),
+                Dir::Right if cx1 <= fx0 => Some((v_ov == 0, cx0 - first_x, dy, cy0)),
+                _ => None,
+            };
+            if let Some(k) = key {
+                if best.map_or(true, |(bk, _)| k < bk) {
+                    best = Some((k, c.id));
+                }
+            }
+        }
+        best.map(|(_, n)| n)
+    }
+
     /// Window berikutnya (atau sebelumnya) menurut urutan baca: atas ke bawah,
     /// kiri ke kanan, berputar. Dipakai untuk Tab di overview. None kalau hanya
     /// ada satu window atau `id` tidak dikenal / tersembunyi.

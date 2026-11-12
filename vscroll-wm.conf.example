@@ -74,3 +74,51 @@ overview_label = title
 # overview_color_view = #78C882
 # overview_color_background = #14161C
 # overview_color_box = #2D3240
+
+# --- Overview: wrap-around arrow navigation ---
+# on (default): arrow keys in the overview wrap around. Up on the top row goes to the
+# bottom row and vice versa; Left / Right at a workspace edge continue into the
+# neighbouring workspace, and from the last / first workspace wrap to the first / last
+# (with a single workspace they wrap inside it). off: stop at the ends.
+overview_wrap = on
+
+# --- Custom shortcuts (bind.<action>) ---
+# Every shortcut can be changed here; the cheatsheet (Win+/) always shows what is
+# actually in effect. Format:  bind.<action> = <chord>[, <chord>...]
+#   chord      modifiers joined with "+", then the key, e.g.  win+shift+left
+#   modifiers  win, ctrl, alt, shift  (at least one is required)
+#   keys       a-z, 0-9, left right up down, enter, esc, space, tab, backspace, delete,
+#              insert, home, end, pageup, pagedown, f1-f12, slash, backslash, lbracket,
+#              rbracket, grave, comma, period, minus, equals, semicolon, quote
+#   off        disables the action;  several chords are separated by commas
+# Numbered actions (workspace_goto, workspace_send) take "1-9" as the key.
+# Win+Ctrl+Esc (quit) and Win+Ctrl+D / F4 (blocked) are reserved and cannot be changed.
+# If a chord is claimed twice, the line that is written in this file wins over a default,
+# and the earlier line wins over a later one; a warning is printed to the console.
+# overview_key / cheatsheet_key above still work as the default chord of the overview /
+# cheatsheet actions, unless bind.overview / bind.cheatsheet is set.
+#
+# Actions and their defaults:
+#   snap_up = win+up                    shorter (taller with snap_down)
+#   snap_down = win+down
+#   snap_left = win+left                move into the left column
+#   snap_right = win+right
+#   split_right = win+]                 move the column divider
+#   split_left = win+[
+#   split_reset = win+\                 divider back to 50/50
+#   maximize = win+enter                full width and height
+#   focus_left / focus_right / focus_up / focus_down = win+shift+<arrow>
+#   swap_left / swap_right / swap_up / swap_down = win+alt+<arrow>
+#   overview = win+tab, win+alt+space
+#   workspace_prev = win+ctrl+left      workspace_next = win+ctrl+right
+#   workspace_goto = win+ctrl+1-9       workspace_send = win+ctrl+shift+1-9
+#   workspace_send_prev = win+ctrl+shift+left   workspace_send_next = win+ctrl+shift+right
+#   close = win+q       minimize = win+m       float = win+alt+f       inspect = win+alt+i
+#   cheatsheet = win+/
+#
+# Examples:
+# bind.close = win+w
+# bind.minimize = off
+# bind.focus_left = alt+h
+# bind.focus_right = alt+l
+# bind.overview = win+o, win+alt+space

@@ -528,9 +528,9 @@ unsafe fn paint(hwnd: HWND) {
                 };
                 SetTextColor(hdc, COLORREF(hint_color));
                 let hint_text = if d.multi {
-                    "←↑↓→ pilih (←→ di tepi = workspace lain)  ·  Enter loncat  ·  Esc batal"
+                    "←↑↓→ select (←→ at an edge = other workspace)  ·  Enter jump  ·  Esc cancel"
                 } else {
-                    "←↑↓→ pilih  ·  Enter loncat  ·  Esc batal"
+                    "←↑↓→ select  ·  Enter jump  ·  Esc cancel"
                 };
                 let mut hint: Vec<u16> = hint_text.encode_utf16().collect();
                 let mut hr = RECT {

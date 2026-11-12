@@ -14,7 +14,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use super::App;
 use crate::winutil::{title, unmanaged_reason, wid};
-use crate::{cheatsheet, rules, safety, taskbar, tray};
+use crate::{bindings, cheatsheet, rules, safety, taskbar, tray};
 
 impl App {
     /// Win+Q: tutup window aktif (setara Alt+F4). Hanya window yang kita kenal,
@@ -62,7 +62,7 @@ impl App {
         let paused = !tray::PAUSED.load(Ordering::Relaxed);
         tray::PAUSED.store(paused, Ordering::Relaxed);
         tray::set_tip(if paused {
-            "vscroll-wm (dijeda)"
+            "vscroll-wm (paused)"
         } else {
             "vscroll-wm"
         });
@@ -90,23 +90,23 @@ impl App {
         let id = wid(h);
         let class = rules::class_name(h);
         let title = rules::window_title(h);
-        let exe = rules::exe_name(h).unwrap_or_else(|| "(tidak terbaca)".into());
+        let exe = rules::exe_name(h).unwrap_or_else(|| "(unreadable)".into());
         let status = if self.floating.contains_key(&id) {
-            "mengambang (Win+Alt+F)".to_string()
+            format!("floating (toggle with {})", bindings::active_label("float"))
         } else if self.blocked.contains_key(&id) {
-            "tidak bisa dikendalikan: kemungkinan berjalan sebagai administrator \
-             (jalankan vscroll-wm sebagai administrator juga)"
+            "cannot be controlled: probably running as administrator \
+             (run vscroll-wm as administrator too)"
                 .to_string()
         } else if self.map.contains_key(&id) {
-            "ditata".to_string()
+            "tiled".to_string()
         } else {
             match unmanaged_reason(h) {
-                Some(why) => format!("tidak ditata: {why}"),
-                None => "belum ditata (menunggu sinkronisasi)".to_string(),
+                Some(why) => format!("not tiled: {why}"),
+                None => "not tiled yet (waiting for sync)".to_string(),
             }
         };
         let text = format!(
-            "judul : {title}\nclass : {class}\nexe   : {exe}\nstatus: {status}\n\nBaris untuk vscroll-wm.ignore:\n  class:{class}\n  exe:{exe}\n  title:{title}"
+            "title : {title}\nclass : {class}\nexe   : {exe}\nstatus: {status}\n\nLines for vscroll-wm.ignore:\n  class:{class}\n  exe:{exe}\n  title:{title}"
         );
         println!("---------- window aktif ----------\n{text}\n----------------------------------");
         if !cfg!(debug_assertions) {
@@ -117,7 +117,7 @@ impl App {
                 MessageBoxW(
                     None,
                     PCWSTR(wide.as_ptr()),
-                    w!("vscroll-wm: info window"),
+                    w!("vscroll-wm: window info"),
                     MB_OK | MB_ICONINFORMATION,
                 );
             });

@@ -671,6 +671,58 @@ fn cycle_skips_hidden_and_needs_two_windows() {
     assert_eq!(s.cycle_from(B, true), None); // tersembunyi
 }
 
+#[test]
+fn wrap_neighbor_jumps_to_the_opposite_end() {
+    // A kiri atas, B kanan atas, C penuh di bawah
+    let mut s = strip();
+    s.add_window(A);
+    s.snap(Dir::Up);
+    s.snap(Dir::Left);
+    s.add_window(B);
+    s.snap(Dir::Up);
+    s.snap(Dir::Right);
+    s.add_window(C);
+    s.snap(Dir::Up);
+    // Atas di baris teratas -> baris terbawah
+    assert_eq!(s.wrap_neighbor_of(A, Dir::Up), Some(C));
+    assert_eq!(s.wrap_neighbor_of(B, Dir::Up), Some(C));
+    // Bawah di baris terbawah -> baris teratas (A atau B, sama-sama menutup lebar C)
+    assert!(matches!(s.wrap_neighbor_of(C, Dir::Down), Some(w) if w == A || w == B));
+    // Kiri di tepi kiri -> lajur kanan, baris yang sama; sebaliknya untuk Kanan
+    assert_eq!(s.wrap_neighbor_of(A, Dir::Left), Some(B));
+    assert_eq!(s.wrap_neighbor_of(B, Dir::Right), Some(A));
+    // window penuh lebar tidak punya "sisi seberang" di arah horizontal
+    assert_eq!(s.wrap_neighbor_of(C, Dir::Left), None);
+    assert_eq!(s.wrap_neighbor_of(C, Dir::Right), None);
+    assert_eq!(s.focused(), Some(C)); // fokus tidak berubah
+}
+
+#[test]
+fn wrap_neighbor_in_a_single_column_matches_reading_order() {
+    let mut s = strip();
+    s.add_window(A);
+    s.add_window(B);
+    s.add_window(C); // tiga window penuh bertumpuk
+    assert_eq!(s.wrap_neighbor_of(A, Dir::Up), Some(C));
+    assert_eq!(s.wrap_neighbor_of(C, Dir::Down), Some(A));
+    assert_eq!(s.wrap_neighbor_of(B, Dir::Left), None);
+    assert_eq!(s.wrap_neighbor_of(B, Dir::Right), None);
+}
+
+#[test]
+fn wrap_neighbor_needs_two_visible_windows() {
+    let mut s = strip();
+    s.add_window(A);
+    for d in [Dir::Up, Dir::Down, Dir::Left, Dir::Right] {
+        assert_eq!(s.wrap_neighbor_of(A, d), None);
+    }
+    s.add_window(B);
+    s.set_hidden(B, true);
+    assert_eq!(s.wrap_neighbor_of(A, Dir::Up), None); // B tersembunyi
+    assert_eq!(s.wrap_neighbor_of(B, Dir::Up), None); // id tersembunyi
+    assert_eq!(s.wrap_neighbor_of(D, Dir::Up), None); // id tidak dikenal
+}
+
 fn two_half_lanes() -> Strip {
     let mut s = strip();
     s.add_window(A);

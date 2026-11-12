@@ -1,9 +1,9 @@
 //! Cheatsheet: daftar pintasan keyboard dalam panel di tengah layar (Win+/).
 //!
-//! Daftarnya dihasilkan dari konfigurasi yang sedang berlaku, jadi tombol yang
-//! bisa diubah (overview_key, cheatsheet_key, resize_step) selalu tertulis benar.
-//!
-//! PERHATIAN: kalau menambah atau mengubah pintasan di main.rs, perbarui `groups()`.
+//! Daftarnya DIHASILKAN dari tabel aksi (bindings.rs) dan konfigurasi yang sedang
+//! berlaku, jadi tombol hasil `bind.*` / overview_key / resize_step selalu tertulis benar.
+//! Aksi baru cukup ditambah di `bindings::ACTIONS`; yang perlu diperbarui di sini hanya
+//! baris tetap (yang tidak bisa diubah): `fixed_rows()`.
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
@@ -24,14 +24,17 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
+use crate::bindings::{self, Chord};
 use crate::config::{rgb, Config, HeightMode, OverviewColors};
 use crate::overview::luminance;
 
-const TITLE_TEXT: &str = "Pintasan keyboard";
-const FOOTER_TEXT: &str = "tekan tombol apa saja, atau klik, untuk menutup";
+const TITLE_TEXT: &str = "Keyboard shortcuts";
+const FOOTER_TEXT: &str = "press any key, or click, to close";
 
 const PAD: i32 = 28;
+/// Lebar kolom tombol: minimal ini, melebar sesuai teks terpanjang sampai KEYS_W_MAX.
 const KEYS_W: i32 = 250;
+const KEYS_W_MAX: i32 = 300;
 const DESC_W: i32 = 520;
 const COL_GAP: i32 = 48;
 const ROW_H: i32 = 34;
@@ -46,107 +49,140 @@ pub struct Group {
     pub rows: Vec<(String, String)>,
 }
 
-/// Nama tombol untuk ditampilkan, dari kode virtual-key.
-pub fn key_name(vk: u16) -> String {
-    match vk {
-        0x09 => "Tab".to_string(),
-        0x20 => "Space".to_string(),
-        0xC0 => "`".to_string(),
-        0xBF => "/".to_string(),
-        0x70..=0x7B => format!("F{}", vk - 0x6F),
-        0x30..=0x39 | 0x41..=0x5A => ((vk as u8) as char).to_string(),
-        _ => format!("0x{vk:02X}"),
+/// Isi keterangan: placeholder diganti nilai konfigurasi.
+fn describe(desc: &str, cfg: &Config) -> String {
+    let height_note = if cfg.height_mode == HeightMode::Step {
+        format!(" (±{} px)", cfg.height_step)
+    } else {
+        String::new()
+    };
+    desc.replace("{resize_step}", &cfg.resize_step.to_string())
+        .replace("{height_note}", &height_note)
+}
+
+/// Tambah satu baris ke kelompok berjudul `group` (dibuat di akhir kalau belum ada).
+fn push_row(out: &mut Vec<Group>, group: &str, keys: String, desc: String) {
+    match out.iter_mut().find(|g| g.title == group) {
+        Some(g) => g.rows.push((keys, desc)),
+        None => out.push(Group {
+            title: group.to_string(),
+            rows: vec![(keys, desc)],
+        }),
     }
 }
 
-/// Semua pintasan, dikelompokkan, sesuai konfigurasi sekarang.
-pub fn groups(cfg: &Config) -> Vec<Group> {
-    let row = |k: &str, d: &str| (k.to_string(), d.to_string());
-
-    let mut moving = vec![
-        row("Win + Shift + panah", "pindah fokus ke tetangga"),
-        row("Win + Alt + panah", "tukar posisi dengan tetangga"),
-    ];
-    if cfg.overview_key != 0 {
-        moving.push((
-            format!("Win + {}", key_name(cfg.overview_key)),
-            "overview: peta seluruh strip".to_string(),
-        ));
-        moving.push(row("Win + Alt + Space", "overview (cadangan)"));
+/// Baris yang tidak bisa diubah lewat `bind.*`: tombol terkunci, tombol di dalam
+/// overview, dan cadangan. (kelompok, tombol, keterangan)
+fn fixed_rows(cfg: &Config) -> Vec<(&'static str, String, String)> {
+    let row = |g: &'static str, k: &str, d: &str| (g, k.to_string(), d.to_string());
+    let cycle = cfg.bindings.overview_cycle_vk();
+    let cycle_keys = if cycle != 0 && cycle != 0x09 {
+        format!("Tab / Win + {}", bindings::vk_label(cycle))
     } else {
-        moving.push(row("Win + Alt + Space", "overview: peta seluruh strip"));
+        "Tab".to_string()
+    };
+    let select = if cfg.overview_wrap {
+        "select a window (wraps around at the ends)"
+    } else {
+        "select a window"
+    };
+    vec![
+        row(
+            bindings::G_WORKSPACE,
+            "Win + Ctrl + D / F4",
+            "disabled (workspaces replace virtual desktops)",
+        ),
+        row(
+            bindings::G_APP,
+            "Win + Ctrl + Esc",
+            "quit and restore all windows",
+        ),
+        row(
+            bindings::G_APP,
+            "Ctrl + Alt + …",
+            "backup copies of snap, focus, Enter, F, I, Space",
+        ),
+        row(
+            bindings::G_APP,
+            "Ctrl + Alt + Shift + Q",
+            "quit and restore all windows (backup)",
+        ),
+        row(
+            bindings::G_APP,
+            "tray icon",
+            "pause, reload config, run at login, quit",
+        ),
+        row(bindings::G_OVERVIEW, "Arrow keys", select),
+        row(
+            bindings::G_OVERVIEW,
+            "← / → at an edge",
+            "continue into the next / previous workspace",
+        ),
+        row(
+            bindings::G_OVERVIEW,
+            &cycle_keys,
+            "next window in this workspace (+ Shift: previous)",
+        ),
+        row(
+            bindings::G_OVERVIEW,
+            "Enter / release Win",
+            "jump to the selected window",
+        ),
+        row(bindings::G_OVERVIEW, "Esc / click outside", "cancel"),
+        row(bindings::G_OVERVIEW, "Click a window", "jump to it"),
+        row(
+            bindings::G_OVERVIEW,
+            "Ctrl + ← / → , 1 … 9",
+            "select a workspace",
+        ),
+    ]
+}
+
+/// Semua pintasan, dikelompokkan, sesuai konfigurasi sekarang. Baris bisa diikat
+/// dihasilkan dari `bindings::ACTIONS`; aksi se-kelompok dengan keterangan sama digabung
+/// jadi satu baris, tombol ke-2 dst. dari satu aksi jadi baris "(alternate)".
+pub fn groups(cfg: &Config) -> Vec<Group> {
+    // (kelompok, keterangan, indeks aksi) dengan urutan kemunculan di tabel
+    let mut specs: Vec<(&str, &str, Vec<usize>)> = Vec::new();
+    for (i, a) in bindings::ACTIONS.iter().enumerate() {
+        match specs.iter_mut().find(|s| s.0 == a.group && s.1 == a.desc) {
+            Some(s) => s.2.push(i),
+            None => specs.push((a.group, a.desc, vec![i])),
+        }
     }
 
-    let help_key = if cfg.cheatsheet_key != 0 {
-        format!("Win + {}", key_name(cfg.cheatsheet_key))
-    } else {
-        "menu tray".to_string()
-    };
-
-    let height_row = if cfg.height_mode == HeightMode::Step {
-        (
-            "Win + ↑ / ↓".to_string(),
-            format!("tinggi lebih pendek / lebih tinggi (±{} px)", cfg.height_step),
-        )
-    } else {
-        row("Win + ↑ / ↓", "tinggi lebih pendek / lebih tinggi")
-    };
-
-    vec![
-        Group {
-            title: "Susunan window".to_string(),
-            rows: vec![
-                height_row,
-                row("Win + ← / →", "masuk lajur kiri / kanan"),
-                (
-                    "Win + ] / [".to_string(),
-                    format!("geser pembagi lajur (±{} px)", cfg.resize_step),
-                ),
-                row("Win + \\", "pembagi lajur kembali 50/50"),
-                row("Win + Enter", "kembali penuh (lebar + tinggi)"),
-            ],
-        },
-        Group {
-            title: "Berpindah".to_string(),
-            rows: moving,
-        },
-        Group {
-            title: "Workspace".to_string(),
-            rows: vec![
-                row("Win + Ctrl + ← / →", "workspace sebelumnya / berikutnya"),
-                row("Win + Ctrl + 1 … 9", "pindah ke workspace n"),
-                row("Win + Ctrl + Shift + ← / →", "kirim window aktif ke workspace tetangga"),
-                row("Win + Ctrl + Shift + 1 … 9", "kirim window aktif ke workspace n"),
-            ],
-        },
-        Group {
-            title: "Window".to_string(),
-            rows: vec![
-                row("Win + Q", "tutup window"),
-                row("Win + M", "minimize window"),
-                row("Win + Alt + F", "float / tile window"),
-                row("Win + Alt + I", "info window (class, exe, judul)"),
-            ],
-        },
-        Group {
-            title: "Aplikasi".to_string(),
-            rows: vec![
-                (help_key, "cheatsheet ini".to_string()),
-                row("Win + Ctrl + Esc", "keluar dan pulihkan semua window"),
-                row("ikon tray", "jeda, muat ulang konfigurasi, autostart"),
-            ],
-        },
-        Group {
-            title: "Di dalam overview".to_string(),
-            rows: vec![
-                row("panah", "pilih window; ← / → di tepi lanjut ke workspace tetangga"),
-                row("Tab", "window berikutnya di workspace ini"),
-                row("Enter / lepas Win", "loncat ke window yang dipilih"),
-                row("Esc / klik di luar", "batal"),
-                row("Ctrl + ← / → , 1 … 9", "pilih workspace (Tab hanya di workspace ini)"),
-            ],
-        },
-    ]
+    let mut out: Vec<Group> = Vec::new();
+    for (group, desc, idxs) in specs {
+        let slots = idxs
+            .iter()
+            .map(|&i| cfg.bindings.chords(i).len())
+            .max()
+            .unwrap_or(0);
+        let text = describe(desc, cfg);
+        if slots == 0 {
+            // tanpa tombol: hanya cheatsheet yang tetap ditampilkan (lewat menu tray)
+            if idxs.iter().any(|&i| bindings::ACTIONS[i].name == "cheatsheet") {
+                push_row(&mut out, group, "tray menu".to_string(), text);
+            }
+            continue;
+        }
+        for slot in 0..slots {
+            let chords: Vec<Chord> = idxs
+                .iter()
+                .filter_map(|&i| cfg.bindings.chords(i).get(slot).copied())
+                .collect();
+            let shown = if slot == 0 {
+                text.clone()
+            } else {
+                format!("{text} (alternate)")
+            };
+            push_row(&mut out, group, bindings::join_chords(&chords), shown);
+        }
+    }
+    for (group, keys, desc) in fixed_rows(cfg) {
+        push_row(&mut out, group, keys, desc);
+    }
+    out
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -194,7 +230,14 @@ fn assign(groups: &[Group], n: i32) -> (Vec<i32>, Vec<Vec<usize>>) {
 /// Hitung panel dan posisi semua teks. Dua kolom kalau lebar layar cukup
 /// (tampil lebih ringkas); satu kolom kalau tidak.
 pub fn compute(groups: &[Group], work: Rect) -> Sheet {
-    let col_w = KEYS_W + DESC_W;
+    let longest = groups
+        .iter()
+        .flat_map(|g| g.rows.iter())
+        .map(|(k, _)| k.chars().count() as i32)
+        .max()
+        .unwrap_or(0);
+    let keys_w = (longest * 9 + 20).clamp(KEYS_W, KEYS_W_MAX);
+    let col_w = keys_w + DESC_W;
     let max_w = work.w * 92 / 100;
     let max_h = work.h * 92 / 100;
     let by_width =
@@ -264,7 +307,7 @@ pub fn compute(groups: &[Group], work: Rect) -> Sheet {
                     rect: RECT {
                         left: x0,
                         top: y,
-                        right: x0 + KEYS_W - 12,
+                        right: x0 + keys_w - 12,
                         bottom: y + ROW_H,
                     },
                 });
@@ -272,7 +315,7 @@ pub fn compute(groups: &[Group], work: Rect) -> Sheet {
                     kind: CellKind::Desc,
                     text: desc.clone(),
                     rect: RECT {
-                        left: x0 + KEYS_W,
+                        left: x0 + keys_w,
                         top: y,
                         right: x0 + col_w,
                         bottom: y + ROW_H,
@@ -385,7 +428,7 @@ unsafe fn paint(hwnd: HWND) {
                     CellKind::Keys => (
                         &FONT_BOLD,
                         colors.active,
-                        DT_LEFT | DT_VCENTER | DT_SINGLELINE,
+                        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
                     ),
                     CellKind::Desc => (
                         &FONT_NORMAL,
@@ -534,20 +577,8 @@ mod tests {
     }
 
     #[test]
-    fn key_names_are_readable() {
-        assert_eq!(key_name(0x09), "Tab");
-        assert_eq!(key_name(0x5A), "Z");
-        assert_eq!(key_name(0x33), "3");
-        assert_eq!(key_name(0xBF), "/");
-        assert_eq!(key_name(0x70), "F1");
-        assert_eq!(key_name(0x7B), "F12");
-    }
-
-    #[test]
     fn rows_reflect_the_current_configuration() {
-        let mut cfg = Config::default();
-        cfg.overview_key = 0x5A;
-        cfg.resize_step = 120;
+        let (cfg, _) = Config::parse("overview_key = z\nresize_step = 120\n");
         let rows = all_rows(&cfg);
         assert!(rows.iter().any(|(k, _)| k == "Win + Z"));
         assert!(rows.iter().any(|(_, d)| d.contains("120")));
@@ -557,27 +588,88 @@ mod tests {
     }
 
     #[test]
-    fn disabled_keys_fall_back_gracefully() {
-        let mut cfg = Config::default();
-        cfg.overview_key = 0;
-        cfg.cheatsheet_key = 0;
+    fn custom_bindings_show_up_without_touching_the_cheatsheet() {
+        let (cfg, _) = Config::parse("bind.close = ctrl+alt+x\nbind.minimize = off\n");
         let rows = all_rows(&cfg);
-        let alt_space = rows
-            .iter()
-            .filter(|(k, _)| k == "Win + Alt + Space")
-            .count();
-        assert_eq!(alt_space, 1); // tidak dobel
         assert!(rows
             .iter()
-            .any(|(k, d)| k == "menu tray" && d.contains("cheatsheet")));
+            .any(|(k, d)| k == "Ctrl + Alt + X" && d == "close the window"));
+        assert!(!rows.iter().any(|(_, d)| d == "minimize the window")); // dimatikan: tidak tampil
+        assert!(!rows.iter().any(|(k, _)| k == "Win + Q"));
     }
 
     #[test]
-    fn no_duplicate_key_labels() {
+    fn every_bindable_action_appears_in_the_cheatsheet() {
+        let cfg = Config::default();
+        let rows = all_rows(&cfg);
+        for (i, a) in bindings::ACTIONS.iter().enumerate() {
+            let desc = describe(a.desc, &cfg);
+            let hit = rows.iter().any(|(_, d)| d.starts_with(&desc));
+            assert!(hit, "{} tidak muncul di cheatsheet", a.name);
+            // dan tombol bawaannya tertulis di baris itu
+            for c in cfg.bindings.chords(i) {
+                let label = match c.key {
+                    bindings::Key::Vk(v) => bindings::vk_label(v),
+                    bindings::Key::Digits => "1 … 9".to_string(),
+                };
+                assert!(
+                    rows.iter().any(|(k, d)| d.starts_with(&desc)
+                        && (k.contains(&label) || k.ends_with("arrows"))),
+                    "{} / {}",
+                    a.name,
+                    label
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn default_labels_match_the_documented_shortcuts() {
+        let rows = all_rows(&Config::default());
+        for (k, d) in [
+            ("Win + ↑ / ↓", "shorter / taller"),
+            ("Win + ← / →", "move into the left / right column"),
+            ("Win + Shift + arrows", "focus the neighbouring window"),
+            ("Win + Alt + arrows", "swap places with the neighbouring window"),
+            ("Win + Ctrl + ← / →", "previous / next workspace"),
+            ("Win + Ctrl + 1 … 9", "go to workspace n"),
+            ("Win + Ctrl + Shift + 1 … 9", "send window to workspace n"),
+            ("Win + ] / [", "move the column divider (±80 px)"),
+            ("Win + Tab", "overview: map of the whole strip"),
+            ("Win + Alt + Space", "overview: map of the whole strip (alternate)"),
+            ("Win + Q", "close the window"),
+        ] {
+            assert!(rows.iter().any(|(rk, rd)| rk == k && rd == d), "{k} / {d}");
+        }
+    }
+
+    #[test]
+    fn height_note_and_wrap_follow_the_configuration() {
+        let (cfg, _) = Config::parse("height_mode = step\nheight_step = 120\noverview_wrap = off\n");
+        let rows = all_rows(&cfg);
+        assert!(rows
+            .iter()
+            .any(|(k, d)| k == "Win + ↑ / ↓" && d.contains("120")));
+        assert!(rows.iter().any(|(k, d)| k == "Arrow keys" && d == "select a window"));
+        assert!(!all_rows(&Config::default())
+            .iter()
+            .any(|(k, d)| k == "Win + ↑ / ↓" && d.contains("px")));
+    }
+
+    #[test]
+    fn disabled_cheatsheet_key_falls_back_to_the_tray_menu() {
+        let (cfg, _) = Config::parse("cheatsheet_key = off\n");
+        let rows = all_rows(&cfg);
+        assert!(rows
+            .iter()
+            .any(|(k, d)| k == "tray menu" && d.contains("cheatsheet")));
+    }
+
+    #[test]
+    fn no_duplicate_key_labels_for_defaults() {
         let rows = all_rows(&Config::default());
         let keys: HashSet<&String> = rows.iter().map(|(k, _)| k).collect();
         assert_eq!(keys.len(), rows.len());
-        assert!(rows.len() >= 18);
     }
 
     #[test]
@@ -642,18 +734,5 @@ mod tests {
             assert!(k.rect.right <= d.rect.left);
             assert_eq!(k.rect.top, d.rect.top);
         }
-    }
-
-    #[test]
-    fn height_row_follows_the_mode() {
-        let mut cfg = Config::default();
-        cfg.height_mode = HeightMode::Step;
-        cfg.height_step = 120;
-        assert!(all_rows(&cfg)
-            .iter()
-            .any(|(k, d)| k == "Win + ↑ / ↓" && d.contains("120")));
-        assert!(!all_rows(&Config::default())
-            .iter()
-            .any(|(k, d)| k == "Win + ↑ / ↓" && d.contains("px")));
     }
 }

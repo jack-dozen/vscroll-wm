@@ -171,6 +171,9 @@ impl App {
     /// Panah di overview: geser kursor ke tetangga di workspace yang sama (window
     /// belum berpindah fokus). Kiri/Kanan di tepi workspace lanjut ke workspace
     /// tetangga, masuk dari tepi yang berhadapan, ke window yang setinggi kursor.
+    /// Kalau sudah di ujung dan `overview_wrap` aktif, kursor berputar ke ujung seberang
+    /// (workspace pertama / terakhir untuk Kiri/Kanan; baris terbawah / teratas untuk
+    /// Atas/Bawah; kalau hanya ada satu workspace, Kiri/Kanan berputar di dalamnya).
     pub(crate) unsafe fn overview_move(&mut self, dir_index: usize) {
         let Some(dir) = DIRS.get(dir_index).map(|d| d.1) else {
             return;
@@ -181,29 +184,44 @@ impl App {
         let Some(from) = self.ws.workspace_of(sel) else {
             return;
         };
-        let next = self
+        let mut next = self
             .ws
             .strip(from)
             .and_then(|st| st.neighbor_of(sel, dir))
-            .or_else(|| {
-                if !matches!(dir, Dir::Left | Dir::Right) {
-                    return None;
-                }
-                let forward = dir == Dir::Right;
-                let target = self.ws.adjacent_workspace(from, forward)?;
-                let y = self
-                    .ws
-                    .strip(from)?
-                    .overview()
-                    .items
-                    .iter()
-                    .find(|it| it.id == sel)
-                    .map(|it| it.rect.y + it.rect.h / 2)?;
-                self.ws.entry_window(target, forward, y)
+            .or_else(|| self.overview_cross(from, sel, dir, false));
+        if next.is_none() && self.cfg.overview_wrap {
+            next = self.overview_cross(from, sel, dir, true).or_else(|| {
+                self.ws
+                    .strip(from)
+                    .and_then(|st| st.wrap_neighbor_of(sel, dir))
             });
+        }
         if let Some(n) = next {
             self.overview_select(n);
         }
+    }
+
+    /// Kiri/Kanan melewati tepi workspace: window tujuan di workspace tetangga (`wrap` =
+    /// berputar ke workspace di ujung seberang), setinggi kursor. None untuk Atas/Bawah.
+    fn overview_cross(&self, from: usize, sel: WindowId, dir: Dir, wrap: bool) -> Option<WindowId> {
+        if !matches!(dir, Dir::Left | Dir::Right) {
+            return None;
+        }
+        let forward = dir == Dir::Right;
+        let target = if wrap {
+            self.ws.wrapped_workspace(from, forward)?
+        } else {
+            self.ws.adjacent_workspace(from, forward)?
+        };
+        let y = self
+            .ws
+            .strip(from)?
+            .overview()
+            .items
+            .iter()
+            .find(|it| it.id == sel)
+            .map(|it| it.rect.y + it.rect.h / 2)?;
+        self.ws.entry_window(target, forward, y)
     }
 
     /// Win+Ctrl+Kiri/Kanan atau angka di overview: kursor lompat ke workspace lain.
