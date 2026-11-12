@@ -75,6 +75,13 @@ overview_label = title
 # overview_color_background = #14161C
 # overview_color_box = #2D3240
 
+# --- Workspace indicator ---
+# on (default): a small panel appears in the middle of the screen for about a second
+# whenever the workspace changes ("Workspace 2" plus one box per workspace, the current
+# one highlighted). It never takes focus and ignores clicks. Colors follow the overview
+# colors below. off: no panel.
+workspace_osd = on
+
 # --- Overview: wrap-around arrow navigation ---
 # on (default): arrow keys in the overview wrap around. Up on the top row goes to the
 # bottom row and vice versa; Left / Right at a workspace edge continue into the

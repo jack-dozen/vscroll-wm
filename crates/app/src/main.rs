@@ -32,6 +32,7 @@ mod cheatsheet;
 mod config;
 mod consts;
 mod hook;
+mod osd;
 mod overview;
 mod rules;
 mod safety;
@@ -70,7 +71,8 @@ fn main() {
         }
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let mut app = App::new();
-        app.apply_config(&config::load());
+        let report = config::load();
+        app.apply_config(&report.cfg);
 
         for (i, (vk, _)) in DIRS.iter().enumerate() {
             let base = MOD_CONTROL | MOD_ALT | MOD_NOREPEAT;
@@ -130,6 +132,9 @@ fn main() {
         if !cheatsheet::init() {
             eprintln!("gagal membuat jendela cheatsheet");
         }
+        if !osd::init() {
+            eprintln!("gagal membuat jendela osd workspace");
+        }
         if RegisterHotKey(
             None,
             HOTKEY_OVERVIEW,
@@ -185,6 +190,7 @@ fn main() {
             app.apply();
         }
 
+        app::show_config_problems(&report); // salah ketik di config langsung terlihat
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
             match msg.message {
@@ -209,6 +215,11 @@ fn main() {
                     if !tray::PAUSED.load(Ordering::Relaxed) {
                         app.on_event(msg.wParam.0 as u32, HWND(msg.lParam.0 as *mut c_void));
                     }
+                }
+                WM_TIMER if !msg.hwnd.0.is_null() => {
+                    // timer milik sebuah jendela (osd workspace): serahkan ke window proc-nya
+                    let _ = TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
                 }
                 WM_TIMER => {
                     let id = msg.wParam.0;

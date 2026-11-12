@@ -19,6 +19,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 #[allow(unused_imports)]
 use windows::Win32::UI::WindowsAndMessaging::*;
 
+pub(crate) use self::actions::show_config_problems;
 use self::anim::Anim;
 use crate::consts::DEFAULT_ANIM_MS;
 use crate::hook::OVERVIEW_VK;
@@ -350,8 +351,9 @@ impl App {
 
     /// Muat ulang file konfigurasi (menu tray). Aturan ignore butuh restart.
     pub(crate) unsafe fn reload_config(&mut self) {
-        let cfg = config::load();
-        self.apply_config(&cfg);
+        let report = config::load();
+        self.apply_config(&report.cfg);
         self.apply();
+        actions::show_config_problems(&report);
     }
 }

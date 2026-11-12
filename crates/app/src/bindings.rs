@@ -342,7 +342,7 @@ pub fn parse_chord(text: &str, numbered: bool) -> Result<Chord, String> {
     let mut parts: Vec<&str> = lower.split('+').map(str::trim).collect();
     let key_tok = parts.pop().unwrap_or("");
     if key_tok.is_empty() {
-        return Err(format!("'{}': tombolnya kosong", text.trim()));
+        return Err(format!("'{}': missing key", text.trim()));
     }
     let mut mods = 0u8;
     for m in parts {
@@ -353,39 +353,39 @@ pub fn parse_chord(text: &str, numbered: bool) -> Result<Chord, String> {
             "shift" => SHIFT,
             other => {
                 return Err(format!(
-                    "'{}': modifier '{other}' tidak dikenal (win, ctrl, alt, shift)",
+                    "'{}': unknown modifier '{other}' (win, ctrl, alt, shift)",
                     text.trim()
                 ))
             }
         };
         if mods & bit != 0 {
-            return Err(format!("'{}': modifier dobel", text.trim()));
+            return Err(format!("'{}': modifier given twice", text.trim()));
         }
         mods |= bit;
     }
     if mods == 0 {
         return Err(format!(
-            "'{}': butuh minimal satu modifier (win, ctrl, alt, shift)",
+            "'{}': needs at least one modifier (win, ctrl, alt, shift)",
             text.trim()
         ));
     }
     let key = if matches!(key_tok, "1-9" | "1..9") {
         if !numbered {
             return Err(format!(
-                "'{}': 1-9 hanya untuk workspace_goto / workspace_send",
+                "'{}': 1-9 is only for workspace_goto / workspace_send",
                 text.trim()
             ));
         }
         Key::Digits
     } else if numbered {
         return Err(format!(
-            "'{}': aksi ini memakai tombol 1-9 (mis. win+ctrl+1-9)",
+            "'{}': this action takes 1-9 as its key (e.g. win+ctrl+1-9)",
             text.trim()
         ));
     } else {
         match parse_key(key_tok) {
             Some(vk) => Key::Vk(vk),
-            None => return Err(format!("'{}': tombol '{key_tok}' tidak dikenal", text.trim())),
+            None => return Err(format!("'{}': unknown key '{key_tok}'", text.trim())),
         }
     };
     Ok(Chord { mods, key })
@@ -589,7 +589,7 @@ impl Bindings {
                     .any(|r| c.conflicts(&Chord::new(r.0, r.1)))
                 {
                     warnings.push(format!(
-                        "{} (bind.{}) dicadangkan aplikasi, diabaikan",
+                        "{} (bind.{}) is reserved by the app and was ignored",
                         c.label(),
                         ACTIONS[i].name
                     ));
@@ -597,7 +597,7 @@ impl Bindings {
                 }
                 if let Some(other) = taken.iter().find(|t| t.0.conflicts(&c)) {
                     warnings.push(format!(
-                        "{} dipakai bind.{} dan bind.{}: bind.{} diabaikan",
+                        "{} is used by bind.{} and bind.{}: bind.{} was ignored",
                         c.label(),
                         ACTIONS[other.1].name,
                         ACTIONS[i].name,

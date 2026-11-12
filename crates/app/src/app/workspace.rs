@@ -18,8 +18,8 @@ use windows::Win32::UI::WindowsAndMessaging::{GetShellWindow, SetForegroundWindo
 
 use super::App;
 use crate::consts::PARK_X;
-use crate::winutil::{bounds, ext_bounds, place, wid};
-use crate::{safety, taskbar, tray};
+use crate::winutil::{bounds, ext_bounds, place, wid, work_area};
+use crate::{osd, safety, taskbar, tray};
 
 /// Arah geser animasi pindah workspace: `enter_from` = sisi asal window yang masuk
 /// (+1 kanan, -1 kiri), `exit_to` = sisi tujuan window yang keluar.
@@ -112,12 +112,25 @@ impl App {
         self.last_fg = Some(wid(h));
     }
 
-    /// Tooltip tray menunjukkan workspace aktif.
+    /// Tooltip tray menunjukkan workspace aktif; kalau `workspace_osd` aktif, panel kecil
+    /// muncul sebentar setiap workspace berubah (osd.rs mengabaikan panggilan yang sama).
     pub(crate) unsafe fn update_workspace_tip(&self) {
         if tray::PAUSED.load(Ordering::Relaxed) {
             return;
         }
-        tray::set_tip(&format!("vscroll-wm - workspace {}", self.ws.active() + 1));
+        let active = self.ws.active();
+        tray::set_tip(&format!("vscroll-wm - workspace {}", active + 1));
+        if self.cfg.workspace_osd {
+            let total = self
+                .ws
+                .overviews()
+                .iter()
+                .map(|(n, _)| n + 1)
+                .max()
+                .unwrap_or(0)
+                .max(active + 1);
+            osd::notify(active, total, self.cfg.overview_colors, work_area());
+        }
     }
 
     /// Saat start: kembalikan tombol taskbar yang mungkin tertinggal terhapus oleh

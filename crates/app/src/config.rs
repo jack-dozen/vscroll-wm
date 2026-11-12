@@ -22,6 +22,7 @@
 //!   overview_key = tab        tombol overview bersama Win: tab, space, grave, satu
 //!                     huruf/angka (bukan q/m), atau off. Win+Alt+Space selalu aktif.
 //!   overview_color_selected / _active / _view / _background / _box = #RRGGBB
+//!   workspace_osd = on        panel kecil sesaat di tengah layar setiap pindah workspace
 //!   overview_wrap = on        panah di overview berputar: dari ujung loncat ke ujung seberang
 //!   bind.<aksi> = win+q       ubah pintasan (daftar aksi: bindings.rs / vscroll-wm.conf.example).
 //!                     Beberapa tombol dipisah koma, off = dimatikan. overview_key dan
@@ -111,6 +112,8 @@ pub struct Config {
     pub overview_colors: OverviewColors,
     /// Panah di overview berputar (dari ujung loncat ke ujung seberang).
     pub overview_wrap: bool,
+    /// Panel kecil sesaat setiap pindah workspace.
+    pub workspace_osd: bool,
     /// Tombol tiap aksi (bawaan + `bind.*` + overview_key / cheatsheet_key).
     pub bindings: Bindings,
 }
@@ -133,6 +136,7 @@ impl Default for Config {
             overview_key: 0x09, // Tab
             overview_colors: OverviewColors::default(),
             overview_wrap: true,
+            workspace_osd: true,
             bindings: Bindings::defaults(),
         }
     }
@@ -153,7 +157,7 @@ impl Config {
                 continue;
             }
             let Some((key, value)) = line.split_once('=') else {
-                warnings.push(format!("baris {n}: bukan 'kunci = nilai'"));
+                warnings.push(format!("line {n}: not in 'key = value' form"));
                 continue;
             };
             let key = key.trim().to_lowercase();
@@ -161,59 +165,59 @@ impl Config {
             match key.as_str() {
                 "gap" => match value.parse::<i32>() {
                     Ok(v) => cfg.gap = v.clamp(0, 200),
-                    Err(_) => warnings.push(format!("baris {n}: gap harus bilangan bulat")),
+                    Err(_) => warnings.push(format!("line {n}: gap must be a whole number")),
                 },
                 "anim_ms" => match value.parse::<f32>() {
                     Ok(v) if v.is_finite() => cfg.anim_ms = Some(v.clamp(0.0, 1000.0)),
-                    _ => warnings.push(format!("baris {n}: anim_ms harus angka")),
+                    _ => warnings.push(format!("line {n}: anim_ms must be a number")),
                 },
                 "focus_border" => match parse_color(value) {
                     Some(color) => cfg.focus_border = color,
-                    None => warnings.push(format!("baris {n}: focus_border harus #RRGGBB atau off")),
+                    None => warnings.push(format!("line {n}: focus_border must be #RRGGBB or off")),
                 },
                 "overview_hint" => match parse_bool(value) {
                     Some(b) => cfg.overview_hint = b,
-                    None => warnings.push(format!("baris {n}: overview_hint harus on/off")),
+                    None => warnings.push(format!("line {n}: overview_hint must be on/off")),
                 },
                 "overview_thumbnails" => match parse_bool(value) {
                     Some(b) => cfg.overview_thumbnails = b,
-                    None => warnings.push(format!("baris {n}: overview_thumbnails harus on/off")),
+                    None => warnings.push(format!("line {n}: overview_thumbnails must be on/off")),
                 },
                 "overview_label" => match value.to_lowercase().as_str() {
                     "title" => cfg.overview_label = LabelMode::Title,
                     "app" => cfg.overview_label = LabelMode::App,
                     "reverse" => cfg.overview_label = LabelMode::Reverse,
                     _ => warnings.push(format!(
-                        "baris {n}: overview_label harus title, app, atau reverse"
+                        "line {n}: overview_label must be title, app or reverse"
                     )),
                 },
                 "resize_step" => match value.parse::<i32>() {
                     Ok(v) => cfg.resize_step = v.clamp(10, 400),
-                    Err(_) => warnings.push(format!("baris {n}: resize_step harus bilangan bulat")),
+                    Err(_) => warnings.push(format!("line {n}: resize_step must be a whole number")),
                 },
                 "height_mode" => match value.to_lowercase().as_str() {
                     "preset" => cfg.height_mode = HeightMode::Preset,
                     "step" => cfg.height_mode = HeightMode::Step,
-                    _ => warnings.push(format!("baris {n}: height_mode harus preset atau step")),
+                    _ => warnings.push(format!("line {n}: height_mode must be preset or step")),
                 },
                 "height_step" => match value.parse::<i32>() {
                     Ok(v) => cfg.height_step = v.clamp(10, 400),
-                    Err(_) => warnings.push(format!("baris {n}: height_step harus bilangan bulat")),
+                    Err(_) => warnings.push(format!("line {n}: height_step must be a whole number")),
                 },
                 "overview_size" => match value.parse::<i32>() {
                     Ok(v) => cfg.overview_size = v.clamp(30, 100),
-                    Err(_) => warnings.push(format!("baris {n}: overview_size harus bilangan bulat")),
+                    Err(_) => warnings.push(format!("line {n}: overview_size must be a whole number")),
                 },
                 "cheatsheet_key" => match parse_key(value) {
                     Some(k) => cfg.cheatsheet_key = k,
                     None => warnings.push(format!(
-                        "baris {n}: cheatsheet_key harus slash, f1-f12, tab, space, grave, off, atau satu huruf/angka (bukan q/m)"
+                        "line {n}: cheatsheet_key must be slash, f1-f12, tab, space, grave, off, or a single letter/digit (not q/m)"
                     )),
                 },
                 "overview_key" => match parse_key(value) {
                     Some(k) => cfg.overview_key = k,
                     None => warnings.push(format!(
-                        "baris {n}: overview_key harus tab, space, grave, off, atau satu huruf/angka (bukan q/m)"
+                        "line {n}: overview_key must be tab, space, grave, off, or a single letter/digit (not q/m)"
                     )),
                 },
                 "overview_color_selected" => {
@@ -231,39 +235,43 @@ impl Config {
                 "overview_color_box" => {
                     color_setting(value, &mut cfg.overview_colors.box_fill, &key, n, &mut warnings)
                 }
+                "workspace_osd" => match parse_bool(value) {
+                    Some(b) => cfg.workspace_osd = b,
+                    None => warnings.push(format!("line {n}: workspace_osd must be on/off")),
+                },
                 "overview_wrap" => match parse_bool(value) {
                     Some(b) => cfg.overview_wrap = b,
-                    None => warnings.push(format!("baris {n}: overview_wrap harus on/off")),
+                    None => warnings.push(format!("line {n}: overview_wrap must be on/off")),
                 },
                 k if k.starts_with("bind.") => {
                     let name = k["bind.".len()..].trim();
                     match bindings::find_action(name) {
-                        None => warnings.push(format!("baris {n}: aksi tidak dikenal '{name}'")),
+                        None => warnings.push(format!("line {n}: unknown action '{name}' in bind.{name}")),
                         Some(i) => match bindings::parse_list(i, value) {
                             Ok(list) => {
                                 binds.set(i, list);
                                 explicit.retain(|&e| e != i);
                                 explicit.push(i);
                             }
-                            Err(e) => warnings.push(format!("baris {n}: {e}")),
+                            Err(e) => warnings.push(format!("line {n}: {e}")),
                         },
                     }
                 }
                 k if k.starts_with("alias.") => {
                     let stem = k["alias.".len()..].trim().trim_end_matches(".exe").to_string();
                     if stem.is_empty() || value.is_empty() {
-                        warnings.push(format!("baris {n}: alias butuh nama exe dan nama tampilan"));
+                        warnings.push(format!("line {n}: alias needs an exe name and a display name"));
                     } else {
                         cfg.aliases.retain(|(s, _)| *s != stem);
                         cfg.aliases.push((stem, value.to_string()));
                     }
                 }
-                _ => warnings.push(format!("baris {n}: kunci tidak dikenal '{key}'")),
+                _ => warnings.push(format!("line {n}: unknown key '{key}'")),
             }
         }
         if cfg.cheatsheet_key != 0 && cfg.cheatsheet_key == cfg.overview_key {
             warnings
-                .push("cheatsheet_key sama dengan overview_key: cheatsheet dimatikan".to_string());
+                .push("cheatsheet_key equals overview_key: cheatsheet key disabled".to_string());
             cfg.cheatsheet_key = 0;
         }
         // overview_key / cheatsheet_key (cara lama) = tombol bawaan kedua aksi itu,
@@ -309,7 +317,7 @@ fn parse_color(v: &str) -> Option<Option<u32>> {
 fn color_setting(value: &str, target: &mut u32, name: &str, n: usize, warnings: &mut Vec<String>) {
     match parse_color(value) {
         Some(Some(c)) => *target = c,
-        _ => warnings.push(format!("baris {n}: {name} harus #RRGGBB")),
+        _ => warnings.push(format!("line {n}: {name} must be #RRGGBB")),
     }
 }
 
@@ -442,20 +450,34 @@ fn find_file() -> Option<PathBuf> {
     p.exists().then_some(p)
 }
 
+/// Hasil memuat konfigurasi: isinya, masalah yang ditemukan (untuk ditampilkan ke
+/// pengguna), dan file yang dibaca.
+pub struct LoadReport {
+    pub cfg: Config,
+    pub problems: Vec<String>,
+    pub path: Option<PathBuf>,
+}
+
 /// Muat konfigurasi: bawaan, lalu file, lalu environment variable.
-pub fn load() -> Config {
+pub fn load() -> LoadReport {
     let mut cfg = Config::default();
-    if let Some(path) = find_file() {
-        match std::fs::read_to_string(&path) {
+    let mut problems = Vec::new();
+    let path = find_file();
+    if let Some(path) = &path {
+        match std::fs::read_to_string(path) {
             Ok(text) => {
                 let (c, warnings) = Config::parse(&text);
                 cfg = c;
                 println!("konfigurasi dimuat dari {}", path.display());
-                for w in warnings {
+                for w in &warnings {
                     eprintln!("konfigurasi: {w}");
                 }
+                problems = warnings;
             }
-            Err(e) => eprintln!("gagal membaca {}: {e}", path.display()),
+            Err(e) => {
+                eprintln!("gagal membaca {}: {e}", path.display());
+                problems.push(format!("could not read the file: {e}"));
+            }
         }
     }
     if let Some(v) = std::env::var("VSCROLL_GAP")
@@ -472,7 +494,11 @@ pub fn load() -> Config {
             cfg.anim_ms = Some(v.clamp(0.0, 1000.0));
         }
     }
-    cfg
+    LoadReport {
+        cfg,
+        problems,
+        path,
+    }
 }
 
 #[cfg(test)]
@@ -666,6 +692,16 @@ mod tests {
         assert_eq!(Config::parse("height_step = 9999").0.height_step, 400);
         let (cfg, w) = Config::parse("height_mode = pixel");
         assert_eq!((cfg.height_mode, w.len()), (HeightMode::Preset, 1));
+    }
+
+    #[test]
+    fn workspace_osd_defaults_to_on() {
+        assert!(Config::default().workspace_osd);
+        let (cfg, w) = Config::parse("workspace_osd = off");
+        assert!(!cfg.workspace_osd && w.is_empty());
+        let (cfg, w) = Config::parse("workspace_osd = ya");
+        assert!(cfg.workspace_osd);
+        assert_eq!(w.len(), 1);
     }
 
     #[test]

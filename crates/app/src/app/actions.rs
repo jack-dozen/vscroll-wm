@@ -14,7 +14,35 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use super::App;
 use crate::winutil::{title, unmanaged_reason, wid};
-use crate::{bindings, cheatsheet, rules, safety, taskbar, tray};
+use crate::{bindings, cheatsheet, osd, rules, safety, taskbar, tray};
+
+/// Tampilkan masalah konfigurasi di kotak pesan (build release tidak punya console).
+/// Jalan di thread terpisah supaya message loop tidak terblokir. Tidak melakukan
+/// apa-apa kalau tidak ada masalah.
+pub(crate) fn show_config_problems(report: &crate::config::LoadReport) {
+    if report.problems.is_empty() {
+        return;
+    }
+    let file = report
+        .path
+        .as_ref()
+        .map_or_else(|| "configuration".to_string(), |p| p.display().to_string());
+    let list: Vec<String> = report.problems.iter().map(|p| format!("  - {p}")).collect();
+    let text = format!(
+        "{} problem(s) in {file}:\n\n{}\n\nThe affected settings keep their defaults.\nFix the file, then use the tray menu: Reload configuration.",
+        report.problems.len(),
+        list.join("\n")
+    );
+    let wide: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
+    std::thread::spawn(move || unsafe {
+        MessageBoxW(
+            None,
+            PCWSTR(wide.as_ptr()),
+            w!("vscroll-wm: configuration problems"),
+            MB_OK | MB_ICONWARNING,
+        );
+    });
+}
 
 impl App {
     /// Win+Q: tutup window aktif (setara Alt+F4). Hanya window yang kita kenal,
@@ -69,6 +97,7 @@ impl App {
         if paused {
             self.close_overview(false);
             cheatsheet::hide();
+            osd::hide();
             self.finish_all_anims();
             self.stop_sync_timer();
             safety::restore_all(); // juga mengembalikan warna border

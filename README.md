@@ -60,6 +60,7 @@ Reload config anytime from the tray menu → **Reload configuration**.
 | `focus_border` | *(none)* | Focus border color on Windows 11 (`#RRGGBB` or `off`) |
 | `overview_key` | `tab` | Key used with Win for overview (`tab`, `space`, `grave`, single letter/number, or `off`). `Win+Alt+Space` is always available |
 | `overview_size` | `70` | Overview panel size as % of work area (30–100) |
+| `workspace_osd` | `on` | Small indicator in the middle of the screen for ~1 second whenever the workspace changes |
 | `overview_wrap` | `on` | Arrow keys in the overview wrap around at the ends (Up on the top row → bottom row, Left/Right → first/last workspace) |
 | `resize_step` | `80` | Step (px) of the column divider shortcuts `Win` + `]` / `[` |
 | `height_mode` / `height_step` | `preset` / `80` | `Win` + `↑` `↓`: jump between 1/3, 1/2, full (`preset`) or move per step (`step`, in px) |
@@ -139,7 +140,7 @@ I hope someone forks, clones, copies, or just steals the idea and makes a better
 Right now it only supports **Windows**. The long-term wish is to support more operating systems.
 
 ### Planned features
-- Consume window horizontally
+- *(nothing queued right now)*
 
 ### Known issues
 *(to be filled)*
