@@ -100,6 +100,18 @@ pub struct Placement {
     pub visible: bool,
 }
 
+/// Tempat window disisipkan ke sebuah strip (drag di overview). Selalu relatif terhadap
+/// window yang sudah ada di strip itu.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InsertPosition {
+    /// Di lajur seberang window setengah lebar ini, sejajar dengannya (satu blok).
+    Beside(WindowId),
+    /// Penuh lebar, di atas blok window ini (pemisah blok).
+    FullBefore(WindowId),
+    /// Penuh lebar, di bawah blok window ini (pemisah blok).
+    FullAfter(WindowId),
+}
+
 /// Satu window di peta overview (koordinat strip, tanpa scroll).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OverviewItem {

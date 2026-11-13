@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 
-use layout::{Dir, WindowId};
+use layout::{Dir, InsertPosition, WindowId};
 
 #[allow(unused_imports)]
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
@@ -241,6 +241,81 @@ impl App {
         if let Some(w) = target.and_then(|t| self.ws.representative(t)) {
             self.overview_select(w);
         }
+    }
+
+    /// Window diseret lalu dilepas di overview (lihat `overview::take_drop`):
+    ///  - di kolom workspace lain: pindah ke sana, di tempat yang ditunjuk penanda:
+    ///    di sebelah window setengah lebar (setengah lebar, sejajar), atau penuh lebar di
+    ///    atas / bawah blok (pemisah blok baru)
+    ///  - di window lain pada workspace yang sama: tukar posisi
+    /// Tiling nyata ikut diperbarui; panel digambar ulang dan tetap terbuka.
+    pub(crate) unsafe fn overview_drop(&mut self) {
+        let Some((src, slot)) = overview::take_drop() else {
+            return;
+        };
+        if self.overview.is_none() {
+            return;
+        }
+        let src = WindowId(src);
+        let Some(from) = self.ws.workspace_of(src) else {
+            return;
+        };
+        let to = slot.number.saturating_sub(1);
+        let at = match slot.kind {
+            overview::SlotKind::Beside(t) => Some(InsertPosition::Beside(WindowId(t))),
+            overview::SlotKind::Before(t) => Some(InsertPosition::FullBefore(WindowId(t))),
+            overview::SlotKind::After(t) => Some(InsertPosition::FullAfter(WindowId(t))),
+            overview::SlotKind::Swap(_) => None,
+        };
+        let changed = match (to != from, at, slot.kind) {
+            (true, Some(p), _) => self.ws.move_window_at(src, to, p),
+            (true, None, _) => self.ws.move_window_to(src, to),
+            (false, _, overview::SlotKind::Swap(t)) => self.ws.swap_windows(src, WindowId(t)),
+            (false, Some(p), _) => self.ws.reposition_window(src, p),
+            (false, None, _) => false,
+        };
+        if changed {
+            self.apply(); // parkir / penataan mengikuti susunan baru
+            self.overview_rebuild(src);
+        }
+    }
+
+    /// Susun ulang panel dari data layout sekarang (setelah window dipindah), kursor di
+    /// `selected`.
+    unsafe fn overview_rebuild(&mut self, selected: WindowId) {
+        let opts = self.overview_options();
+        let thumbs = self.cfg.overview_thumbnails;
+        let active = self.ws.active();
+        let maps = self.ws.overviews();
+        if maps.is_empty() {
+            return;
+        }
+        let col = maps
+            .iter()
+            .position(|(_, o)| o.items.iter().any(|it| it.id == selected))
+            .unwrap_or(0);
+        let (first, visible) = overview::window_for(maps.len(), col);
+        let Some(s) = self.overview.as_mut() else {
+            return;
+        };
+        s.selected = selected;
+        s.model = overview::Model {
+            maps,
+            first,
+            visible,
+            big: col,
+            active_ws: active,
+        };
+        let draw = overview::build(
+            &s.model,
+            &s.titles,
+            &s.sources,
+            selected.0,
+            s.focused,
+            work_area(),
+            &opts,
+        );
+        overview::show(draw, thumbs);
     }
 
     pub(crate) unsafe fn overview_pick(&mut self, id: u64) {

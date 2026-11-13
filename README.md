@@ -60,6 +60,7 @@ Reload config anytime from the tray menu → **Reload configuration**.
 | `focus_border` | *(none)* | Focus border color on Windows 11 (`#RRGGBB` or `off`) |
 | `overview_key` | `tab` | Key used with Win for overview (`tab`, `space`, `grave`, single letter/number, or `off`). `Win+Alt+Space` is always available |
 | `overview_size` | `70` | Overview panel size as % of work area (30–100) |
+| `mouse_drag` | `on` | Drag a window onto another to swap; drag the edge next to the column divider to move it; in the overview, drag a window onto another workspace to move it |
 | `remember_layout` | `on` | Save the layout automatically and restore it when vscroll-wm is restarted while the windows are still open (not after a reboot) |
 | `workspace_osd` | `on` | Small indicator near the bottom of the screen for ~1 second whenever the workspace changes |
 | `overview_wrap` | `on` | Arrow keys in the overview wrap around at the ends (Up on the top row → bottom row, Left/Right → first/last workspace) |
@@ -110,6 +111,7 @@ that are actually in effect, including your custom ones.
 | `Ctrl` + `Alt` + … | Backup copies of snap, focus, Enter, F, I, Space; `Ctrl` + `Alt` + `Shift` + `Q` quits (fixed) |
 
 While overview is open:
+- Drag a window onto another workspace's column to move it there (like Task View). A marker shows the landing spot: next to a half-width window = half width beside it; on a full-width window or at the very top / bottom edge = full width above / below the block. Dropping on another window of the same workspace swaps them; Esc cancels the drag
 - Arrow keys → move selection (wraps around at the ends unless `overview_wrap = off`; `←` `→` at an edge continue into the neighbouring workspace)
 - Tab / Shift+Tab (or the overview key while holding Win) → next / previous window in the workspace
 - `Ctrl` + `←` `→` or `1`…`9` → select a workspace

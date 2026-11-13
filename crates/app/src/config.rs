@@ -22,6 +22,9 @@
 //!   overview_key = tab        tombol overview bersama Win: tab, space, grave, satu
 //!                     huruf/angka (bukan q/m), atau off. Win+Alt+Space selalu aktif.
 //!   overview_color_selected / _active / _view / _background / _box = #RRGGBB
+//!   mouse_drag = on           seret window ke window lain = tukar posisi; tarik tepi window yang
+//!                     berbatasan dengan pembagi lajur = geser pembagi; di overview, seret
+//!                     window ke kolom workspace lain = pindah workspace
 //!   remember_layout = on      simpan susunan workspace; dipulihkan kalau vscroll-wm dijalankan
 //!                     ulang selagi window-windownya masih terbuka
 //!   workspace_osd = on        panel kecil sesaat di bagian bawah layar setiap pindah workspace
@@ -118,6 +121,8 @@ pub struct Config {
     pub workspace_osd: bool,
     /// Simpan / pulihkan susunan workspace (layout.state).
     pub remember_layout: bool,
+    /// Drag mouse: tukar posisi, geser pembagi (di layar) dan pindah workspace (di overview).
+    pub mouse_drag: bool,
     /// Tombol tiap aksi (bawaan + `bind.*` + overview_key / cheatsheet_key).
     pub bindings: Bindings,
 }
@@ -142,6 +147,7 @@ impl Default for Config {
             overview_wrap: true,
             workspace_osd: true,
             remember_layout: true,
+            mouse_drag: true,
             bindings: Bindings::defaults(),
         }
     }
@@ -240,6 +246,10 @@ impl Config {
                 "overview_color_box" => {
                     color_setting(value, &mut cfg.overview_colors.box_fill, &key, n, &mut warnings)
                 }
+                "mouse_drag" => match parse_bool(value) {
+                    Some(b) => cfg.mouse_drag = b,
+                    None => warnings.push(format!("line {n}: mouse_drag must be on/off")),
+                },
                 "remember_layout" => match parse_bool(value) {
                     Some(b) => cfg.remember_layout = b,
                     None => warnings.push(format!("line {n}: remember_layout must be on/off")),
@@ -701,6 +711,16 @@ mod tests {
         assert_eq!(Config::parse("height_step = 9999").0.height_step, 400);
         let (cfg, w) = Config::parse("height_mode = pixel");
         assert_eq!((cfg.height_mode, w.len()), (HeightMode::Preset, 1));
+    }
+
+    #[test]
+    fn mouse_drag_defaults_to_on() {
+        assert!(Config::default().mouse_drag);
+        let (cfg, w) = Config::parse("mouse_drag = off");
+        assert!(!cfg.mouse_drag && w.is_empty());
+        let (cfg, w) = Config::parse("mouse_drag = sering");
+        assert!(cfg.mouse_drag);
+        assert_eq!(w.len(), 1);
     }
 
     #[test]

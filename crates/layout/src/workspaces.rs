@@ -244,6 +244,64 @@ impl Workspaces {
         Some(id)
     }
 
+    /// Pindahkan window `id` (bukan hanya yang fokus) ke workspace `n`; workspace aktif
+    /// tidak berubah. Aturannya sama dengan `move_focused_to`. False kalau `id` tidak
+    /// dikenal, sudah di `n`, atau `n` di luar jangkauan.
+    pub fn move_window_to(&mut self, id: WindowId, n: usize) -> bool {
+        self.move_window_with(id, n, None)
+    }
+
+    /// Seperti `move_window_to`, tapi window disisipkan pada `at` di workspace tujuan
+    /// (lihat `Strip::insert_window`); kalau `at` tidak berlaku, masuk seperti biasa.
+    pub fn move_window_at(&mut self, id: WindowId, n: usize, at: InsertPosition) -> bool {
+        self.move_window_with(id, n, Some(at))
+    }
+
+    fn move_window_with(&mut self, id: WindowId, n: usize, at: Option<InsertPosition>) -> bool {
+        let Some(from) = self.workspace_of(id) else {
+            return false;
+        };
+        if from == n || n >= self.strips.len() {
+            return false;
+        }
+        let min_h = self.strips[from].min_heights.get(&id).copied();
+        let min_w = self.strips[from].min_widths.get(&id).copied();
+        self.strips[from].remove_window(id);
+        let dst = &mut self.strips[n];
+        if !at.is_some_and(|p| dst.insert_window(id, p)) {
+            dst.add_window(id);
+        }
+        if let Some(h) = min_h {
+            dst.min_heights.insert(id, h);
+        }
+        if let Some(w) = min_w {
+            dst.min_widths.insert(id, w);
+        }
+        dst.ensure_visible();
+        self.normalize();
+        true
+    }
+
+    /// Pindahkan window ke tempat `at` di workspace-nya sendiri (drag ke ruang kosong).
+    pub fn reposition_window(&mut self, id: WindowId, at: InsertPosition) -> bool {
+        let Some(n) = self.workspace_of(id) else {
+            return false;
+        };
+        let ok = self.strips[n].reinsert_window(id, at);
+        if ok {
+            self.normalize();
+        }
+        ok
+    }
+
+    /// Tukar posisi dua window yang berada di workspace yang sama (drag mouse).
+    pub fn swap_windows(&mut self, a: WindowId, b: WindowId) -> bool {
+        match (self.workspace_of(a), self.workspace_of(b)) {
+            (Some(x), Some(y)) if x == y => self.strips[x].swap_windows(a, b),
+            _ => false,
+        }
+    }
+
     /// Seperti `move_focused_to`, ke workspace sebelumnya / berikutnya (tidak berputar).
     pub fn move_focused_rel(&mut self, delta: i32) -> Option<WindowId> {
         let n = self.active as i64 + delta as i64;
@@ -588,6 +646,62 @@ mod tests {
         w.add_window(B); // di bawahnya: pusat y = 1080
         assert_eq!(w.entry_window(0, true, 100), Some(A));
         assert_eq!(w.entry_window(0, false, 1200), Some(B));
+    }
+
+    #[test]
+    fn move_window_to_works_for_any_window_and_keeps_the_active_workspace() {
+        let mut w = ws();
+        w.add_window(A);
+        w.add_window(B);
+        w.switch_to(1);
+        w.add_window(C); // [A B] [C] []
+        assert!(w.move_window_to(A, 1)); // bukan window yang fokus
+        assert_eq!(w.workspace_of(A), Some(1));
+        assert_eq!(w.workspace_of(B), Some(0));
+        assert_eq!(w.active(), 1);
+        assert!(!w.move_window_to(A, 1)); // sudah di sana
+        assert!(!w.move_window_to(A, 99)); // di luar jangkauan
+        assert!(!w.move_window_to(X, 0)); // tidak dikenal
+        // boleh ke workspace kosong di ujung; yang lama yang kosong dibuang
+        let last = w.count() - 1;
+        assert!(w.move_window_to(B, last));
+        assert!(w.workspace_of(B).is_some());
+        assert_ne!(w.workspace_of(B), w.workspace_of(C)); // workspace sendiri
+    }
+
+    #[test]
+    fn move_window_at_places_the_window_in_the_target_block() {
+        let mut w = ws();
+        w.add_window(A);
+        w.cur_mut().snap(Dir::Left);
+        w.switch_to(1);
+        w.add_window(X); // [A] [X] []
+        assert!(w.move_window_at(X, 0, InsertPosition::Beside(A)));
+        assert_eq!(w.workspace_of(X), Some(0));
+        let items = w.strip(0).unwrap().items();
+        assert_eq!((items[0].id, items[0].span), (A, Span::Left));
+        assert_eq!((items[1].id, items[1].span), (X, Span::Right));
+
+        // penempatan yang tidak berlaku (target tidak ada): tetap masuk ke workspace itu
+        let mut w = ws();
+        w.add_window(A);
+        w.switch_to(1);
+        w.add_window(X);
+        assert!(w.move_window_at(X, 0, InsertPosition::Beside(C)));
+        assert_eq!(w.workspace_of(X), Some(0));
+    }
+
+    #[test]
+    fn swap_windows_only_within_one_workspace() {
+        let mut w = ws();
+        w.add_window(A);
+        w.add_window(B);
+        w.switch_to(1);
+        w.add_window(C); // [A B] [C]
+        assert!(w.swap_windows(A, B));
+        assert_eq!(w.strip(0).unwrap().items()[0].id, B);
+        assert!(!w.swap_windows(A, C)); // beda workspace
+        assert!(!w.swap_windows(A, X)); // tidak dikenal
     }
 
     #[test]

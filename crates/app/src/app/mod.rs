@@ -3,6 +3,7 @@
 mod actions;
 mod anim;
 mod events;
+mod mouse;
 mod overview_ctl;
 mod persist;
 mod workspace;

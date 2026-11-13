@@ -86,7 +86,7 @@ fn fixed_rows(cfg: &Config) -> Vec<(&'static str, String, String)> {
     } else {
         "select a window"
     };
-    vec![
+    let mut rows = vec![
         row(
             bindings::G_WORKSPACE,
             "Win + Ctrl + D / F4",
@@ -135,7 +135,35 @@ fn fixed_rows(cfg: &Config) -> Vec<(&'static str, String, String)> {
             "Ctrl + ← / → , 1 … 9",
             "select a workspace",
         ),
-    ]
+    ];
+    if cfg.mouse_drag {
+        rows.push(row(
+            bindings::G_LAYOUT,
+            "Drag onto a window",
+            "swap places with that window",
+        ));
+        rows.push(row(
+            bindings::G_LAYOUT,
+            "Drag an inner edge",
+            "move the column divider (edge next to it)",
+        ));
+        rows.push(row(
+            bindings::G_OVERVIEW,
+            "Drag a window",
+            "drop on a workspace column to move it",
+        ));
+        rows.push(row(
+            bindings::G_OVERVIEW,
+            "Drop beside a window",
+            "half width, next to that window",
+        ));
+        rows.push(row(
+            bindings::G_OVERVIEW,
+            "Drop at top / bottom",
+            "full width, as a block separator",
+        ));
+    }
+    rows
 }
 
 /// Semua pintasan, dikelompokkan, sesuai konfigurasi sekarang. Baris bisa diikat
@@ -654,6 +682,16 @@ mod tests {
         assert!(!all_rows(&Config::default())
             .iter()
             .any(|(k, d)| k == "Win + ↑ / ↓" && d.contains("px")));
+    }
+
+    #[test]
+    fn mouse_rows_follow_mouse_drag() {
+        let on = all_rows(&Config::default());
+        assert!(on.iter().any(|(k, _)| k == "Drag onto a window"));
+        assert!(on.iter().any(|(k, _)| k == "Drag a window"));
+        let (cfg, _) = Config::parse("mouse_drag = off\n");
+        let off = all_rows(&cfg);
+        assert!(!off.iter().any(|(k, _)| k.starts_with("Drag")));
     }
 
     #[test]

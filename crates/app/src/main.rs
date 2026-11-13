@@ -213,6 +213,7 @@ fn main() {
                 overview::WM_OV_ACCEPT => app.close_overview(true),
                 overview::WM_OV_CANCEL => app.close_overview(false),
                 overview::WM_OV_PICK => app.overview_pick(msg.wParam.0 as u64),
+                overview::WM_OV_DROP => app.overview_drop(),
                 WM_WINEVENT => {
                     if !tray::PAUSED.load(Ordering::Relaxed) {
                         app.on_event(msg.wParam.0 as u32, HWND(msg.lParam.0 as *mut c_void));

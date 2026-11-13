@@ -51,6 +51,10 @@ impl App {
             }
             _ => false,
         };
+        if event == EVENT_SYSTEM_MOVESIZEEND && known {
+            // drag / tarik tepi window selesai: tukar posisi atau geser pembagi (mouse.rs)
+            self.on_drag_end(hwnd);
+        }
         if relevant {
             self.schedule_sync(EVENT_DEBOUNCE_MS);
         }

@@ -11,7 +11,7 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
 use std::sync::Mutex;
 
-use layout::{Overview, Rect};
+use layout::{Overview, Rect, Span};
 use windows::core::{w, BOOL};
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Dwm::{
@@ -22,11 +22,13 @@ use windows::Win32::Graphics::Dwm::{
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, CreateFontIndirectW, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect,
     InvalidateRect, SelectObject, SetBkMode, SetTextColor, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT,
-    DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, HGDIOBJ, LOGFONTW, PAINTSTRUCT, TRANSPARENT,
+    DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, HBRUSH, HDC, HGDIOBJ, LOGFONTW, PAINTSTRUCT,
+    TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_LEFT, VK_RETURN, VK_RIGHT, VK_SHIFT, VK_TAB, VK_UP,
+    GetKeyState, ReleaseCapture, SetCapture, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_LEFT, VK_RETURN,
+    VK_RIGHT, VK_SHIFT, VK_TAB, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -42,6 +44,8 @@ pub const WM_OV_PICK: u32 = WM_APP + 10;
 pub const WM_OV_CYCLE: u32 = WM_APP + 11;
 /// wParam = 0 workspace sebelumnya, 1 berikutnya, n >= 2 workspace nomor n - 2 (mulai 0).
 pub const WM_OV_WS: u32 = WM_APP + 13;
+/// Window diseret dan dilepas di overview; detailnya diambil lewat `take_drop()`.
+pub const WM_OV_DROP: u32 = WM_APP + 14;
 
 /// Pengaturan tampilan panel.
 pub struct Options {
@@ -60,6 +64,8 @@ pub struct DrawItem {
     pub source: isize,
     /// Kalau ada thumbnail: pita di bawah kotak tempat label digambar.
     pub label_band: Option<RECT>,
+    /// Lebar window di strip: penuh, atau lajur kiri / kanan (untuk titik drop).
+    pub span: Span,
 }
 
 /// Satu workspace di panel.
@@ -90,6 +96,246 @@ pub struct Draw {
 }
 
 static DRAW: Mutex<Option<Draw>> = Mutex::new(None);
+
+/// Drag window di overview (seperti Task View): tombol kiri ditekan di sebuah kotak lalu
+/// digeser melewati ambang.
+struct Drag {
+    /// Window yang diseret.
+    id: u64,
+    start: (i32, i32),
+    /// Sudah melewati ambang gerak (bukan sekadar klik).
+    active: bool,
+    /// Indeks kolom workspace di bawah kursor.
+    over: Option<usize>,
+    /// Titik tujuan di bawah kursor (hanya untuk panah penanda; dihitung ulang saat dilepas).
+    slot: Option<DropSlot>,
+}
+static DRAG: Mutex<Option<Drag>> = Mutex::new(None);
+/// Hasil drop yang menunggu diambil thread utama: (window yang diseret, tujuannya).
+type DropInfo = (u64, DropSlot);
+static DROP: Mutex<Option<DropInfo>> = Mutex::new(None);
+/// Gerak minimum (piksel) sebelum klik dianggap drag.
+const DRAG_START: i32 = 6;
+
+/// Ambil hasil drop terakhir (sekali).
+pub fn take_drop() -> Option<DropInfo> {
+    DROP.lock().ok().and_then(|mut g| g.take())
+}
+
+fn point_in(r: &RECT, x: i32, y: i32) -> bool {
+    x >= r.left && x < r.right && y >= r.top && y < r.bottom
+}
+
+/// Isi panel di titik (x, y): (indeks kolom, nomor workspace mulai 1, window selain `skip`).
+fn hit_at(x: i32, y: i32, skip: u64) -> (Option<usize>, Option<usize>, Option<u64>) {
+    let Ok(g) = DRAW.lock() else {
+        return (None, None, None);
+    };
+    let Some(d) = g.as_ref() else {
+        return (None, None, None);
+    };
+    let col = d.columns.iter().position(|c| point_in(&c.rect, x, y));
+    let number = col.map(|i| d.columns[i].number);
+    let item = d
+        .items
+        .iter()
+        .find(|it| it.id != skip && point_in(&it.rect, x, y))
+        .map(|it| it.id);
+    (col, number, item)
+}
+
+/// Di mana window yang dijatuhkan akan mendarat.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotKind {
+    /// Setengah lebar, di lajur seberang window ini (sejajar).
+    Beside(u64),
+    /// Penuh lebar di atas blok window ini.
+    Before(u64),
+    /// Penuh lebar di bawah blok window ini.
+    After(u64),
+    /// Tukar posisi dengan window ini (di workspace yang sama).
+    Swap(u64),
+}
+
+/// Titik tujuan drop: nomor workspace (mulai 1), jenisnya, dan area penandanya di panel.
+#[derive(Debug, Clone, Copy)]
+pub struct DropSlot {
+    pub number: usize,
+    pub kind: SlotKind,
+    pub mark: RECT,
+}
+
+/// Tebal garis penanda "penuh lebar".
+const BAR: i32 = 6;
+/// Zona tepi atas / bawah strip (persen tinggi window di tepi itu, minimal piksel):
+/// menjatuhkan di sana = penuh lebar di luar blok.
+const EDGE_PCT: i32 = 22;
+const EDGE_MIN: i32 = 10;
+/// Kolom dianggap mencakup sedikit ruang di atas (label) dan di bawahnya.
+const EXPAND_TOP: i32 = 24;
+const EXPAND_BOTTOM: i32 = 16;
+
+fn same_slot(a: &Option<DropSlot>, b: &Option<DropSlot>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => a.number == b.number && a.kind == b.kind,
+        _ => false,
+    }
+}
+
+/// Area di lajur seberang `x` (sejajar dengannya) di dalam kolom `col`.
+fn beside_rect(x: &DrawItem, col: &RECT) -> RECT {
+    let (l, r) = if x.span == Span::Right {
+        (col.left, x.rect.left - MARGIN)
+    } else {
+        (x.rect.right + MARGIN, col.right)
+    };
+    RECT {
+        left: l,
+        top: x.rect.top,
+        right: r.max(l + 8),
+        bottom: x.rect.bottom,
+    }
+}
+
+/// Titik tujuan untuk window `src` yang dijatuhkan di (x, y) panel. Murni (hanya membaca
+/// `d`), supaya bisa diuji.
+///  - kolom workspace yang sama dengan asalnya: tukar posisi dengan window di bawah kursor
+///  - kolom lain: di window setengah lebar = di sebelahnya (setengah lebar); di zona tepi
+///    atas / bawah strip, atau di window penuh lebar = penuh lebar di batas blok
+pub fn slot_at(d: &Draw, x: i32, y: i32, src: u64) -> Option<DropSlot> {
+    let col = d.columns.iter().find(|c| {
+        x >= c.rect.left
+            && x < c.rect.right
+            && y >= c.rect.top - EXPAND_TOP
+            && y < c.rect.bottom + EXPAND_BOTTOM
+    })?;
+    let in_col = |it: &&DrawItem| {
+        point_in(
+            &col.rect,
+            (it.rect.left + it.rect.right) / 2,
+            (it.rect.top + it.rect.bottom) / 2,
+        )
+    };
+    let src_here = d.items.iter().any(|it| it.id == src && in_col(&it));
+    let items: Vec<&DrawItem> = d
+        .items
+        .iter()
+        .filter(|it| it.id != src)
+        .filter(in_col)
+        .collect();
+
+    if src_here {
+        // di atas dirinya sendiri: tidak ada tujuan
+        if d.items
+            .iter()
+            .any(|it| it.id == src && point_in(&it.rect, x, y))
+        {
+            return None;
+        }
+        // di atas window lain: tukar; di ruang kosong: isi ruang itu (seperti workspace lain)
+        if let Some(t) = items.iter().find(|it| point_in(&it.rect, x, y)) {
+            return Some(DropSlot {
+                number: col.number,
+                kind: SlotKind::Swap(t.id),
+                mark: t.rect,
+            });
+        }
+    }
+
+    let top_item = items
+        .iter()
+        .copied()
+        .min_by_key(|it| (it.rect.top, it.rect.left))?;
+    let bottom_item = items
+        .iter()
+        .copied()
+        .max_by_key(|it| (it.rect.bottom, -it.rect.left))?;
+    let edge = |it: &DrawItem| ((it.rect.bottom - it.rect.top) * EDGE_PCT / 100).max(EDGE_MIN);
+    let bar = |yy: i32| RECT {
+        left: col.rect.left,
+        top: yy - BAR / 2,
+        right: col.rect.right,
+        bottom: yy + BAR / 2,
+    };
+
+    let (kind, mark) = if y < top_item.rect.top + edge(top_item) {
+        (
+            SlotKind::Before(top_item.id),
+            bar(top_item.rect.top - MARGIN),
+        )
+    } else if y >= bottom_item.rect.bottom - edge(bottom_item) {
+        (
+            SlotKind::After(bottom_item.id),
+            bar(bottom_item.rect.bottom + MARGIN),
+        )
+    } else {
+        // window yang memuat y (di lajur terdekat dengan x); di celah antar baris, yang
+        // paling dekat secara vertikal
+        let over = items
+            .iter()
+            .copied()
+            .filter(|it| y >= it.rect.top && y < it.rect.bottom)
+            .min_by_key(|it| {
+                if x < it.rect.left {
+                    it.rect.left - x
+                } else if x >= it.rect.right {
+                    x - it.rect.right + 1
+                } else {
+                    0
+                }
+            });
+        let near = over.or_else(|| {
+            items.iter().copied().min_by_key(|it| {
+                if y < it.rect.top {
+                    it.rect.top - y
+                } else {
+                    y - it.rect.bottom + 1
+                }
+            })
+        })?;
+        match near.span {
+            Span::Full => {
+                if y < (near.rect.top + near.rect.bottom) / 2 {
+                    (SlotKind::Before(near.id), bar(near.rect.top - MARGIN))
+                } else {
+                    (SlotKind::After(near.id), bar(near.rect.bottom + MARGIN))
+                }
+            }
+            _ => (SlotKind::Beside(near.id), beside_rect(near, &col.rect)),
+        }
+    };
+    Some(DropSlot {
+        number: col.number,
+        kind,
+        mark,
+    })
+}
+
+/// `slot_at` pada panel yang sedang ditampilkan.
+fn slot_for(x: i32, y: i32, src: u64) -> Option<DropSlot> {
+    let g = DRAW.lock().ok()?;
+    slot_at(g.as_ref()?, x, y, src)
+}
+
+/// Bingkai persegi (garis tebal `t`) di sekeliling `r`.
+unsafe fn frame(hdc: HDC, r: &RECT, brush: HBRUSH, t: i32) {
+    for e in [
+        RECT { left: r.left, top: r.top, right: r.right, bottom: r.top + t },
+        RECT { left: r.left, top: r.bottom - t, right: r.right, bottom: r.bottom },
+        RECT { left: r.left, top: r.top, right: r.left + t, bottom: r.bottom },
+        RECT { left: r.right - t, top: r.top, right: r.right, bottom: r.bottom },
+    ] {
+        FillRect(hdc, &e, brush);
+    }
+}
+
+fn lparam_xy(lparam: LPARAM) -> (i32, i32) {
+    (
+        (lparam.0 & 0xFFFF) as i16 as i32,
+        ((lparam.0 >> 16) & 0xFFFF) as i16 as i32,
+    )
+}
 /// Handle thumbnail DWM yang sedang terpasang.
 static THUMBS: Mutex<Vec<isize>> = Mutex::new(Vec::new());
 static OV_HWND: AtomicIsize = AtomicIsize::new(0);
@@ -241,6 +487,15 @@ pub fn build(
                 title: titles.get(&it.id.0).cloned().unwrap_or_default(),
                 source: sources.get(&it.id.0).copied().unwrap_or(0),
                 label_band: None,
+                // dari bentuk peta: penuh lebar = hampir selebar strip; lajur kanan mulai
+                // jauh dari tepi kiri
+                span: if it.rect.w * 100 >= ov.width * 90 {
+                    Span::Full
+                } else if it.rect.x * 100 < ov.width * 12 {
+                    Span::Left
+                } else {
+                    Span::Right
+                },
             });
         }
         let vt = top + sc(ov.view_y);
@@ -377,9 +632,20 @@ unsafe fn paint(hwnd: HWND) {
         let edge = brush(mix(colors.box_fill, 0xFF_FFFF, 18));
         let edge_active = brush(colors.active);
         let edge_sel = brush(colors.selected);
-        let frame = brush(colors.view);
+        let frame_brush = brush(colors.view);
         let col_bg = brush(mix(colors.background, 0xFF_FFFF, 5));
         let col_bg_active = brush(mix(colors.background, 0xFF_FFFF, 11));
+        let col_hi = brush(mix(colors.background, colors.selected, 30));
+        let slot_fill = brush(mix(colors.background, colors.selected, 60));
+        // kolom di bawah kursor saat window diseret
+        let drop_col = DRAG
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().filter(|d| d.active).and_then(|d| d.over));
+        let drop_slot = DRAG
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().filter(|d| d.active).and_then(|d| d.slot));
 
         FillRect(hdc, &client, bg);
         let font = FONT.load(Ordering::Relaxed);
@@ -402,8 +668,31 @@ unsafe fn paint(hwnd: HWND) {
                 } else {
                     rgb(150, 158, 175)
                 };
-                for c in &d.columns {
-                    FillRect(hdc, &c.rect, if c.active { col_bg_active } else { col_bg });
+                for (ci, c) in d.columns.iter().enumerate() {
+                    let hi = drop_col == Some(ci);
+                    FillRect(
+                        hdc,
+                        &c.rect,
+                        if hi {
+                            col_hi
+                        } else if c.active {
+                            col_bg_active
+                        } else {
+                            col_bg
+                        },
+                    );
+                    if hi {
+                        // bingkai tebal di sekeliling kolom tujuan
+                        let r = c.rect;
+                        for edge_rect in [
+                            RECT { left: r.left, top: r.top, right: r.right, bottom: r.top + 3 },
+                            RECT { left: r.left, top: r.bottom - 3, right: r.right, bottom: r.bottom },
+                            RECT { left: r.left, top: r.top, right: r.left + 3, bottom: r.bottom },
+                            RECT { left: r.right - 3, top: r.top, right: r.right, bottom: r.bottom },
+                        ] {
+                            FillRect(hdc, &edge_rect, edge_sel);
+                        }
+                    }
                     let mut label: Vec<u16> = c.number.to_string().encode_utf16().collect();
                     let mut lr = RECT {
                         left: c.rect.left,
@@ -489,7 +778,7 @@ unsafe fn paint(hwnd: HWND) {
             for c in &d.columns {
                 let v = c.view;
                 let t = 3;
-                let brush = if c.active { frame } else { edge };
+                let brush = if c.active { frame_brush } else { edge };
                 for edge_rect in [
                     RECT {
                         left: v.left,
@@ -548,6 +837,20 @@ unsafe fn paint(hwnd: HWND) {
             }
         }
 
+        // penanda tujuan drop: di mana window yang diseret akan mendarat
+        if let Some(sl) = drop_slot {
+            match sl.kind {
+                SlotKind::Beside(_) => {
+                    FillRect(hdc, &sl.mark, slot_fill);
+                    frame(hdc, &sl.mark, edge_sel, 3);
+                }
+                SlotKind::Before(_) | SlotKind::After(_) => {
+                    FillRect(hdc, &sl.mark, edge_sel);
+                }
+                SlotKind::Swap(_) => frame(hdc, &sl.mark, edge_sel, 4),
+            }
+        }
+
         for b in [
             bg,
             fill,
@@ -555,9 +858,11 @@ unsafe fn paint(hwnd: HWND) {
             edge,
             edge_active,
             edge_sel,
-            frame,
+            frame_brush,
             col_bg,
             col_bg_active,
+            col_hi,
+            slot_fill,
         ] {
             let _ = DeleteObject(HGDIOBJ(b.0));
         }
@@ -592,30 +897,106 @@ unsafe extern "system" fn ov_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             } else if vk == VK_RETURN.0 {
                 post(WM_OV_ACCEPT, 0);
             } else if vk == VK_ESCAPE.0 {
-                post(WM_OV_CANCEL, 0);
+                // saat window sedang diseret, Esc hanya membatalkan seretan
+                let dragging = DRAG.lock().ok().map_or(false, |g| g.is_some());
+                if dragging {
+                    if let Ok(mut g) = DRAG.lock() {
+                        *g = None;
+                    }
+                    let _ = ReleaseCapture();
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                } else {
+                    post(WM_OV_CANCEL, 0);
+                }
             } else if vk == VK_TAB.0 {
                 let back = GetKeyState(VK_SHIFT.0 as i32) < 0;
                 post(WM_OV_CYCLE, if back { 0 } else { 1 });
             }
             LRESULT(0)
         }
+        WM_LBUTTONDOWN => {
+            let (x, y) = lparam_xy(lparam);
+            if let (_, _, Some(id)) = hit_at(x, y, 0) {
+                if let Ok(mut g) = DRAG.lock() {
+                    *g = Some(Drag {
+                        id,
+                        start: (x, y),
+                        active: false,
+                        over: None,
+                        slot: None,
+                    });
+                }
+                let _ = SetCapture(hwnd); // gerakan mouse tetap sampai ke sini saat diseret
+            }
+            LRESULT(0)
+        }
+        WM_MOUSEMOVE => {
+            let (x, y) = lparam_xy(lparam);
+            let src = DRAG.lock().ok().and_then(|g| g.as_ref().map(|d| d.id));
+            if let Some(src) = src {
+                let (col, _, _) = hit_at(x, y, src);
+                let slot = slot_for(x, y, src);
+                let mut repaint = false;
+                if let Ok(mut g) = DRAG.lock() {
+                    if let Some(d) = g.as_mut() {
+                        if !d.active
+                            && ((x - d.start.0).abs() > DRAG_START
+                                || (y - d.start.1).abs() > DRAG_START)
+                        {
+                            d.active = true;
+                            repaint = true;
+                        }
+                        if d.active && (d.over != col || !same_slot(&d.slot, &slot)) {
+                            d.over = col;
+                            d.slot = slot;
+                            repaint = true;
+                        }
+                    }
+                }
+                if repaint {
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                }
+            }
+            LRESULT(0)
+        }
+        WM_SETCURSOR => {
+            let active = DRAG
+                .lock()
+                .ok()
+                .map_or(false, |g| g.as_ref().map_or(false, |d| d.active));
+            if active {
+                if let Ok(c) = LoadCursorW(None, IDC_SIZEALL) {
+                    let _ = SetCursor(Some(c));
+                }
+                return LRESULT(1);
+            }
+            DefWindowProcW(hwnd, msg, wparam, lparam)
+        }
+        WM_CAPTURECHANGED => {
+            if let Ok(mut g) = DRAG.lock() {
+                *g = None;
+            }
+            let _ = InvalidateRect(Some(hwnd), None, false);
+            LRESULT(0)
+        }
         WM_LBUTTONUP => {
-            let x = (lparam.0 & 0xFFFF) as i16 as i32;
-            let y = ((lparam.0 >> 16) & 0xFFFF) as i16 as i32;
-            let hit = DRAW.lock().ok().and_then(|g| {
-                g.as_ref().and_then(|d| {
-                    d.items
-                        .iter()
-                        .find(|it| {
-                            x >= it.rect.left
-                                && x < it.rect.right
-                                && y >= it.rect.top
-                                && y < it.rect.bottom
-                        })
-                        .map(|it| it.id)
-                })
-            });
-            match hit {
+            let (x, y) = lparam_xy(lparam);
+            let drag = DRAG.lock().ok().and_then(|mut g| g.take());
+            let _ = ReleaseCapture();
+            if let Some(d) = drag.filter(|d| d.active) {
+                // dilepas setelah diseret: ke titik tujuan di bawah kursor; di tempat yang
+                // tidak berlaku, seretan batal begitu saja
+                if let Some(slot) = slot_for(x, y, d.id) {
+                    if let Ok(mut g) = DROP.lock() {
+                        *g = Some((d.id, slot));
+                    }
+                    post(WM_OV_DROP, 0);
+                }
+                let _ = InvalidateRect(Some(hwnd), None, false);
+                return LRESULT(0);
+            }
+            // klik biasa: loncat ke window di bawah kursor, atau batal kalau di ruang kosong
+            match hit_at(x, y, 0).2 {
                 Some(id) => post(WM_OV_PICK, id as usize),
                 None => post(WM_OV_CANCEL, 0),
             }
@@ -1081,5 +1462,123 @@ mod tests {
         let d = build_with(&opts(true, 70));
         assert!(!d.multi);
         assert_eq!(d.columns.len(), 1);
+    }
+
+    // ---- titik drop ----
+
+    fn item(id: u64, span: Span, l: i32, t: i32, r: i32, b: i32) -> DrawItem {
+        DrawItem {
+            id,
+            rect: RECT { left: l, top: t, right: r, bottom: b },
+            title: String::new(),
+            source: 0,
+            label_band: None,
+            span,
+        }
+    }
+
+    fn column(number: usize, l: i32, t: i32, r: i32, b: i32) -> DrawColumn {
+        let rect = RECT { left: l, top: t, right: r, bottom: b };
+        DrawColumn { number, rect, active: false, view: rect }
+    }
+
+    /// Kolom 1: A (kiri, atas), B (penuh, tengah), C (kiri, bawah). Kolom 2: D (penuh).
+    fn drop_draw() -> Draw {
+        Draw {
+            panel: Rect { x: 0, y: 0, w: 600, h: 500 },
+            items: vec![
+                item(1, Span::Left, 3, 53, 97, 203),
+                item(2, Span::Full, 3, 203, 197, 303),
+                item(3, Span::Left, 3, 303, 97, 447),
+                item(4, Span::Full, 303, 53, 497, 447),
+            ],
+            columns: vec![column(1, 0, 50, 200, 450), column(2, 300, 50, 500, 450)],
+            multi: true,
+            selected: 4,
+            focused: 4,
+            hint: false,
+            colors: OverviewColors::default(),
+        }
+    }
+
+    fn kind(d: &Draw, x: i32, y: i32) -> Option<(usize, SlotKind)> {
+        slot_at(d, x, y, 4).map(|s| (s.number, s.kind))
+    }
+
+    #[test]
+    fn dropping_on_a_half_width_window_goes_beside_it() {
+        let d = drop_draw();
+        assert_eq!(kind(&d, 50, 128), Some((1, SlotKind::Beside(1)))); // di A
+        assert_eq!(kind(&d, 150, 128), Some((1, SlotKind::Beside(1)))); // ruang kosong di sebelah A
+        assert_eq!(kind(&d, 50, 360), Some((1, SlotKind::Beside(3)))); // di C
+        // penanda: lajur seberang A, sejajar dengannya
+        let m = slot_at(&d, 150, 128, 4).unwrap().mark;
+        assert_eq!((m.left, m.top, m.bottom), (100, 53, 203));
+        assert_eq!(m.right, 200);
+    }
+
+    #[test]
+    fn dropping_at_the_top_or_bottom_edge_makes_it_full_width() {
+        let d = drop_draw();
+        assert_eq!(kind(&d, 50, 60), Some((1, SlotKind::Before(1)))); // zona atas A
+        assert_eq!(kind(&d, 150, 40), Some((1, SlotKind::Before(1)))); // di atas kolom (label)
+        assert_eq!(kind(&d, 50, 430), Some((1, SlotKind::After(3)))); // zona bawah C
+        assert_eq!(kind(&d, 150, 460), Some((1, SlotKind::After(3)))); // di bawah kolom
+        // penanda berupa garis selebar kolom
+        let m = slot_at(&d, 50, 60, 4).unwrap().mark;
+        assert_eq!((m.left, m.right), (0, 200));
+        assert!(m.bottom - m.top <= BAR + 1);
+    }
+
+    #[test]
+    fn dropping_on_a_full_width_window_splits_by_halves() {
+        let d = drop_draw();
+        assert_eq!(kind(&d, 100, 220), Some((1, SlotKind::Before(2)))); // separuh atas B
+        assert_eq!(kind(&d, 100, 290), Some((1, SlotKind::After(2)))); // separuh bawah B
+    }
+
+    #[test]
+    fn dropping_outside_any_column_has_no_target() {
+        let d = drop_draw();
+        assert_eq!(kind(&d, 250, 200), None); // celah antar kolom
+        assert_eq!(kind(&d, 550, 200), None);
+        assert_eq!(kind(&d, 100, 20), None); // jauh di atas
+    }
+
+    #[test]
+    fn inside_the_source_workspace_it_swaps() {
+        let d = drop_draw();
+        // window yang diseret A (kolom 1): di atas B -> tukar dengan B
+        let s = slot_at(&d, 100, 250, 1).unwrap();
+        assert_eq!((s.number, s.kind), (1, SlotKind::Swap(2)));
+        // di atas dirinya sendiri: tidak ada tujuan (ruang kosong: mengisi ruang itu)
+        assert!(slot_at(&d, 50, 128, 1).is_none());
+    }
+
+    #[test]
+    fn the_span_of_each_box_comes_from_the_overview_map() {
+        let ov = Overview {
+            items: vec![
+                OverviewItem { id: WindowId(1), rect: Rect { x: 0, y: 0, w: 960, h: 540 } },
+                OverviewItem { id: WindowId(2), rect: Rect { x: 960, y: 0, w: 960, h: 540 } },
+                OverviewItem { id: WindowId(3), rect: Rect { x: 0, y: 540, w: 1920, h: 540 } },
+            ],
+            width: 1920,
+            height: 1080,
+            view_y: 0,
+            view_h: 1080,
+        };
+        let m = Model { maps: vec![(0, ov)], first: 0, visible: 1, big: 0, active_ws: 0 };
+        let d = build(
+            &m,
+            &HashMap::new(),
+            &HashMap::new(),
+            1,
+            1,
+            Rect { x: 0, y: 0, w: 1920, h: 1080 },
+            &Options { hint: false, size_pct: 60, colors: OverviewColors::default() },
+        );
+        let spans: Vec<Span> = d.items.iter().map(|i| i.span).collect();
+        assert_eq!(spans, vec![Span::Left, Span::Right, Span::Full]);
     }
 }

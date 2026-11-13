@@ -192,6 +192,107 @@ impl Strip {
         self.ensure_visible();
     }
 
+    /// Sisipkan window baru `id` pada `at` (drag dari workspace lain di overview):
+    ///  - `Beside(x)`: lajur seberang `x`, sejajar dengannya (urutan ke-n di lajurnya),
+    ///    tinggi dan pembagi sama dengan `x`; hanya untuk `x` setengah lebar
+    ///  - `FullBefore(x)` / `FullAfter(x)`: penuh lebar di batas blok `x` (tidak pernah
+    ///    membelah blok), jadi pemisah blok baru
+    /// False kalau `id` sudah ada, `x` tidak dikenal / tersembunyi, atau `Beside` pada
+    /// window penuh lebar. Window baru menjadi yang fokus.
+    pub fn insert_window(&mut self, id: WindowId, at: InsertPosition) -> bool {
+        if self.index_of(id).is_some() {
+            return false;
+        }
+        let target = match at {
+            InsertPosition::Beside(t)
+            | InsertPosition::FullBefore(t)
+            | InsertPosition::FullAfter(t) => t,
+        };
+        let Some(i) = self.index_of(target) else {
+            return false;
+        };
+        let t = self.items[i];
+        if t.span == Span::Hidden {
+            return false;
+        }
+        let full = |id| Item {
+            id,
+            span: Span::Full,
+            height: Height::Full,
+            restore: Span::Full,
+            split: 500,
+        };
+        let (index, item) = match at {
+            InsertPosition::Beside(_) => {
+                if t.span == Span::Full {
+                    return false;
+                }
+                let (lo, hi) = self.run_bounds(i);
+                let (left, right) = self.lanes_in(lo, hi);
+                let (mine, other) = if t.span == Span::Left {
+                    (&left, &right)
+                } else {
+                    (&right, &left)
+                };
+                // urutan ke-n di lajurnya = sejajar; kalau lajur seberang lebih pendek,
+                // di ujung bawahnya
+                let rank = mine.iter().position(|&k| k == i).unwrap_or(0);
+                let index = other.get(rank).copied().unwrap_or(hi);
+                let span = if t.span == Span::Left {
+                    Span::Right
+                } else {
+                    Span::Left
+                };
+                (
+                    index,
+                    Item {
+                        id,
+                        span,
+                        height: t.height,
+                        restore: span,
+                        split: t.split,
+                    },
+                )
+            }
+            InsertPosition::FullBefore(_) => {
+                let index = if t.span == Span::Full {
+                    i
+                } else {
+                    self.run_bounds(i).0
+                };
+                (index, full(id))
+            }
+            InsertPosition::FullAfter(_) => {
+                let index = if t.span == Span::Full {
+                    i + 1
+                } else {
+                    self.run_bounds(i).1
+                };
+                (index, full(id))
+            }
+        };
+        self.items.insert(index, item);
+        self.focused = Some(id);
+        self.ensure_visible();
+        true
+    }
+
+    /// Pindahkan window `id` yang sudah ada ke `at` di strip yang sama (drag mouse ke
+    /// ruang kosong). Aturan penempatan sama dengan `insert_window`; kalau tidak
+    /// berlaku, susunan dikembalikan dan hasilnya false.
+    pub fn reinsert_window(&mut self, id: WindowId, at: InsertPosition) -> bool {
+        let Some(idx) = self.index_of(id) else {
+            return false;
+        };
+        let item = self.items.remove(idx);
+        if self.insert_window(id, at) {
+            true
+        } else {
+            self.items.insert(idx, item);
+            false
+        }
+    }
+
     pub fn remove_window(&mut self, id: WindowId) {
         let Some(idx) = self.index_of(id) else { return };
         self.items.remove(idx);
@@ -421,6 +522,30 @@ impl Strip {
         // mengikuti fokus): beri tahu app supaya bisa memberi isyarat gerak
         self.cue = (sa == Span::Full).then_some((id, dir));
         self.ensure_visible();
+    }
+
+    /// Tukar posisi dua window tertentu (drag mouse). Aturannya sama dengan `move_window`:
+    /// beda lajur -> tukar sisi, selain itu tukar urutan; ukuran tetap milik masing-masing
+    /// window. Fokus tidak berubah. False kalau salah satu tidak dikenal / tersembunyi.
+    pub fn swap_windows(&mut self, a: WindowId, b: WindowId) -> bool {
+        if a == b {
+            return false;
+        }
+        let (Some(i), Some(j)) = (self.index_of(a), self.index_of(b)) else {
+            return false;
+        };
+        let (sa, sb) = (self.items[i].span, self.items[j].span);
+        if sa == Span::Hidden || sb == Span::Hidden {
+            return false;
+        }
+        if sa != Span::Full && sb != Span::Full && sa != sb {
+            self.items[i].span = sb;
+            self.items[j].span = sa;
+        } else {
+            self.items.swap(i, j);
+        }
+        self.ensure_visible();
+        true
     }
 
     /// Ambil (dan hapus) isyarat tukar posisi terakhir: window penuh lebar yang baru

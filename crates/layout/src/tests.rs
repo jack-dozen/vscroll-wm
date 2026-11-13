@@ -671,6 +671,165 @@ fn cycle_skips_hidden_and_needs_two_windows() {
     assert_eq!(s.cycle_from(B, true), None); // tersembunyi
 }
 
+/// [A(kiri), B(penuh), C(kiri)]: dua blok dipisah B.
+fn blocks() -> Strip {
+    let mut s = strip();
+    s.add_window(A);
+    s.snap(Dir::Left);
+    s.add_window(B);
+    s.add_window(C);
+    s.snap(Dir::Left);
+    s
+}
+
+fn order(s: &Strip) -> Vec<(WindowId, Span)> {
+    s.items().iter().map(|i| (i.id, i.span)).collect()
+}
+
+#[test]
+fn insert_beside_takes_the_opposite_lane_of_that_block() {
+    let mut s = blocks();
+    assert_eq!(
+        order(&s),
+        vec![(A, Span::Left), (B, Span::Full), (C, Span::Left)]
+    );
+    assert!(s.insert_window(D, InsertPosition::Beside(A)));
+    assert_eq!(
+        order(&s),
+        vec![
+            (A, Span::Left),
+            (D, Span::Right),
+            (B, Span::Full),
+            (C, Span::Left)
+        ]
+    );
+    assert_eq!(s.focused(), Some(D));
+
+    // blok bawah: di sebelah C
+    let mut s = blocks();
+    assert!(s.insert_window(D, InsertPosition::Beside(C)));
+    assert_eq!(
+        order(&s),
+        vec![
+            (A, Span::Left),
+            (B, Span::Full),
+            (C, Span::Left),
+            (D, Span::Right)
+        ]
+    );
+}
+
+#[test]
+fn insert_beside_matches_the_row_when_the_other_lane_has_windows() {
+    // kiri: A, A2; kanan: E. Di sebelah A2 -> urutan ke-2 di lajur kanan (di bawah E)
+    let make_strip = || {
+        let item = |id, span| Item {
+            id,
+            span,
+            height: Height::Full,
+            restore: span,
+            split: 500,
+        };
+        let mut s = strip();
+        s.items = vec![
+            item(A, Span::Left),
+            item(B, Span::Left),
+            item(C, Span::Right),
+        ];
+        s.focused = Some(B);
+        s
+    };
+    let mut s = make_strip();
+    assert!(s.insert_window(D, InsertPosition::Beside(B)));
+    let right: Vec<WindowId> = s
+        .items()
+        .iter()
+        .filter(|i| i.span == Span::Right)
+        .map(|i| i.id)
+        .collect();
+    assert_eq!(right, vec![C, D]);
+    // di sebelah A -> urutan pertama, di atas C
+    let mut s2 = make_strip();
+    assert!(s2.insert_window(D, InsertPosition::Beside(A)));
+    let right: Vec<WindowId> = s2
+        .items()
+        .iter()
+        .filter(|i| i.span == Span::Right)
+        .map(|i| i.id)
+        .collect();
+    assert_eq!(right, vec![D, C]);
+}
+
+#[test]
+fn insert_full_goes_to_block_boundaries_without_splitting_blocks() {
+    // di atas blok pertama / di bawah blok terakhir
+    let mut s = blocks();
+    assert!(s.insert_window(D, InsertPosition::FullBefore(A)));
+    assert_eq!(s.items()[0].id, D);
+    assert_eq!(s.items()[0].span, Span::Full);
+    let mut s = blocks();
+    assert!(s.insert_window(D, InsertPosition::FullAfter(C)));
+    assert_eq!(s.items()[3].id, D);
+    assert_eq!(s.items()[3].span, Span::Full);
+    // di bawah blok A (window setengah lebar): sebelum B, bukan di tengah blok
+    let mut s = blocks();
+    assert!(s.insert_window(D, InsertPosition::FullAfter(A)));
+    assert_eq!(
+        order(&s),
+        vec![
+            (A, Span::Left),
+            (D, Span::Full),
+            (B, Span::Full),
+            (C, Span::Left)
+        ]
+    );
+    // relatif terhadap window penuh lebar
+    let mut s = blocks();
+    assert!(s.insert_window(D, InsertPosition::FullBefore(B)));
+    assert_eq!(s.items()[1].id, D);
+    let mut s = blocks();
+    assert!(s.insert_window(D, InsertPosition::FullAfter(B)));
+    assert_eq!(s.items()[2].id, D);
+}
+
+#[test]
+fn insert_rejects_invalid_requests() {
+    let mut s = blocks();
+    assert!(!s.insert_window(D, InsertPosition::Beside(B))); // B penuh lebar
+    assert!(!s.insert_window(D, InsertPosition::Beside(WindowId(99)))); // tidak dikenal
+    assert!(!s.insert_window(A, InsertPosition::FullAfter(C))); // sudah ada
+    assert_eq!(s.items().len(), 3);
+}
+
+#[test]
+fn swap_windows_exchanges_order_or_sides() {
+    // satu lajur penuh: tukar urutan
+    let mut s = strip();
+    s.add_window(A);
+    s.add_window(B);
+    s.add_window(C);
+    assert!(s.swap_windows(A, C));
+    let order: Vec<WindowId> = s.items().iter().map(|i| i.id).collect();
+    assert_eq!(order, vec![C, B, A]);
+    assert!(!s.swap_windows(A, A));
+    assert!(!s.swap_windows(A, D)); // tidak dikenal
+
+    // beda lajur: tukar sisi, urutan tetap
+    let mut s = strip();
+    s.add_window(A);
+    s.snap(Dir::Left);
+    s.add_window(B);
+    s.snap(Dir::Right);
+    assert!(s.swap_windows(A, B));
+    assert_eq!(s.items()[0].id, A);
+    assert_eq!(s.items()[0].span, Span::Right);
+    assert_eq!(s.items()[1].span, Span::Left);
+
+    // window tersembunyi tidak ikut
+    s.set_hidden(B, true);
+    assert!(!s.swap_windows(A, B));
+}
+
 #[test]
 fn wrap_neighbor_jumps_to_the_opposite_end() {
     // A kiri atas, B kanan atas, C penuh di bawah

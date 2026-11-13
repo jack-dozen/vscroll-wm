@@ -75,6 +75,23 @@ overview_label = title
 # overview_color_background = #14161C
 # overview_color_box = #2D3240
 
+# --- Mouse ---
+# on (default), using the normal Windows drag / resize:
+#   - drag a window (by its title bar) and drop it on another tiled window: the two swap
+#     places (same rules as bind.swap_*);
+#   - drag the edge of a window that borders the column divider (the right edge of a
+#     left-column window, the left edge of a right-column window): the divider moves;
+#   - in the overview, drag a window onto another workspace's column: it moves to that
+#     workspace. A marker shows where it will land before you let go:
+#       * over a half-width window (or the empty half next to it): it takes the other
+#         half of that block, next to that window;
+#       * over a full-width window (upper / lower half) or at the very top / bottom edge
+#         of the workspace: it becomes a full-width window above / below the block;
+#     dropping on another window of the same workspace swaps the two. Esc while dragging
+#     cancels the drag.
+# Any other drag still snaps the window back to its tile. off: no mouse handling.
+mouse_drag = on
+
 # --- Remember layout ---
 # on (default): the workspace layout (order, widths, heights, divider positions,
 # which window is on which workspace, the focused window) is saved automatically to
