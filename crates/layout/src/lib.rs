@@ -17,4 +17,4 @@ mod types;
 mod workspaces;
 
 pub use types::*;
-pub use workspaces::Workspaces;
+pub use workspaces::{SavedLayout, SavedStrip, Workspaces};

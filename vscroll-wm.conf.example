@@ -75,8 +75,17 @@ overview_label = title
 # overview_color_background = #14161C
 # overview_color_box = #2D3240
 
+# --- Remember layout ---
+# on (default): the workspace layout (order, widths, heights, divider positions,
+# which window is on which workspace, the focused window) is saved automatically to
+# %LOCALAPPDATA%\vscroll-wm\layout.state. If vscroll-wm is started again while those
+# windows are still open (restart, crash), the layout comes back. Windows are matched by
+# handle plus exe/class name, so after a reboot nothing is restored (apps get new
+# handles). off: never save or restore.
+remember_layout = on
+
 # --- Workspace indicator ---
-# on (default): a small panel appears in the middle of the screen for about a second
+# on (default): a small panel appears near the bottom of the screen for about a second
 # whenever the workspace changes ("Workspace 2" plus one box per workspace, the current
 # one highlighted). It never takes focus and ignores clicks. Colors follow the overview
 # colors below. off: no panel.

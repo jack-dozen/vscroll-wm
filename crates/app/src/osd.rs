@@ -1,4 +1,4 @@
-//! OSD workspace: panel kecil di tengah layar yang muncul sebentar setiap pindah
+//! OSD workspace: panel kecil di bagian bawah layar yang muncul sebentar setiap pindah
 //! workspace ("Workspace 2" + deretan kotak, yang aktif disorot), lalu hilang sendiri.
 //!
 //! Tidak pernah merebut fokus dan tidak menangkap klik. Warnanya mengikuti warna

@@ -32,6 +32,7 @@ mod cheatsheet;
 mod config;
 mod consts;
 mod hook;
+mod layout_state;
 mod osd;
 mod overview;
 mod rules;
@@ -184,6 +185,7 @@ fn main() {
         SetTimer(None, 1, poll_ms, None);
 
         println!("vscroll-wm jalan. Win+Arrow = snap, +Shift = fokus, Win+Enter = penuh, Win+Alt = tukar posisi, Win+Alt+F = float/tile, Win+Alt+I = info window, Win+Q = tutup, Win+M = minimize, Win+<overview_key> / Win+Alt+Space = overview, Win+<cheatsheet_key> = daftar pintasan (cadangan: Ctrl+Alt+...). Win+Ctrl+Esc atau Ctrl+C = keluar dan pulihkan semua window.");
+        app.restore_layout(); // susunan dari sesi sebelumnya, untuk window yang masih terbuka
         let changed = app.sync();
         app.restore_all_tabs(); // tombol taskbar yang tertinggal dari proses sebelumnya yang mati paksa
         if changed {
@@ -236,8 +238,11 @@ fn main() {
                                 app.schedule_sync(RECHECK_MS);
                             }
                         }
-                    } else if !paused && app.sync() {
-                        app.apply(); // jaring pengaman
+                    } else if !paused {
+                        if app.sync() {
+                            app.apply(); // jaring pengaman
+                        }
+                        app.save_layout(); // hanya menulis kalau susunan berubah
                     }
                 }
                 _ => {
@@ -248,7 +253,8 @@ fn main() {
             }
         }
 
-        // Keluar: kembalikan semua window ke posisi aslinya.
+        // Keluar: simpan susunan terakhir, lalu kembalikan semua window ke posisi aslinya.
+        app.save_layout();
         app.stop_anim_timer();
         app.stop_sync_timer();
         for h in event_hooks {

@@ -10,6 +10,21 @@
 
 use crate::types::*;
 
+/// Susunan satu workspace yang disimpan: item berurutan (lebar, tinggi, pembagi) dan
+/// window yang fokus.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SavedStrip {
+    pub items: Vec<Item>,
+    pub focused: Option<WindowId>,
+}
+
+/// Susunan seluruh workspace yang disimpan, dan nomor workspace yang aktif.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SavedLayout {
+    pub active: usize,
+    pub strips: Vec<SavedStrip>,
+}
+
 pub struct Workspaces {
     strips: Vec<Strip>,
     active: usize,
@@ -80,6 +95,71 @@ impl Workspaces {
             s.set_gap(self.gap);
             self.strips.push(s);
         }
+    }
+
+    /// Salinan susunan sekarang, untuk disimpan ke file.
+    pub fn snapshot(&self) -> SavedLayout {
+        SavedLayout {
+            active: self.active,
+            strips: self
+                .strips
+                .iter()
+                .map(|s| SavedStrip {
+                    items: s.items().to_vec(),
+                    focused: s.focused(),
+                })
+                .collect(),
+        }
+    }
+
+    /// Pulihkan susunan tersimpan untuk window yang masih ada (`live`). Hanya berlaku
+    /// selama semua workspace masih kosong (saat start). Item yang tidak `live` dibuang
+    /// (workspace yang jadi kosong ikut hilang); window yang tadinya tersembunyi
+    /// (minimize) kembali ke lebar semula.
+    pub fn restore(&mut self, saved: &SavedLayout, live: impl Fn(WindowId) -> bool) {
+        if self.strips.iter().any(|s| !s.items().is_empty()) {
+            return;
+        }
+        let mut strips: Vec<Strip> = Vec::new();
+        let mut active = 0;
+        let mut seen: Vec<WindowId> = Vec::new();
+        for (k, ss) in saved.strips.iter().enumerate() {
+            let mut s = Strip::new(self.viewport);
+            s.set_gap(self.gap);
+            for it in &ss.items {
+                if seen.contains(&it.id) || !live(it.id) {
+                    continue;
+                }
+                seen.push(it.id);
+                let mut item = *it;
+                if item.span == Span::Hidden {
+                    item.span = if item.restore == Span::Hidden {
+                        Span::Full
+                    } else {
+                        item.restore
+                    };
+                }
+                s.items.push(item);
+            }
+            if s.items.is_empty() {
+                continue;
+            }
+            s.focused = ss
+                .focused
+                .filter(|f| s.index_of(*f).is_some())
+                .or_else(|| s.items.first().map(|it| it.id));
+            s.ensure_visible();
+            if k == saved.active {
+                active = strips.len();
+            }
+            strips.push(s);
+        }
+        if strips.is_empty() {
+            return;
+        }
+        self.strips = strips;
+        self.active = active;
+        self.normalize();
     }
 
     /// Nomor workspace yang memuat `id`.
@@ -265,6 +345,7 @@ mod tests {
     const A: WindowId = WindowId(1);
     const B: WindowId = WindowId(2);
     const C: WindowId = WindowId(3);
+    const X: WindowId = WindowId(4);
 
     fn rect(w: i32, h: i32) -> Rect {
         Rect { x: 0, y: 0, w, h }
@@ -507,6 +588,42 @@ mod tests {
         w.add_window(B); // di bawahnya: pusat y = 1080
         assert_eq!(w.entry_window(0, true, 100), Some(A));
         assert_eq!(w.entry_window(0, false, 1200), Some(B));
+    }
+
+    #[test]
+    fn restore_brings_back_order_widths_focus_and_active_workspace() {
+        let mut w = ws();
+        w.add_window(A);
+        w.cur_mut().snap(Dir::Left);
+        w.add_window(B);
+        w.cur_mut().snap(Dir::Up);
+        w.switch_to(1);
+        w.add_window(C); // [A B] [C] []
+        let saved = w.snapshot();
+
+        let mut fresh = ws();
+        fresh.restore(&saved, |_| true);
+        assert_eq!(fresh.snapshot(), saved);
+        assert_eq!(fresh.active(), 1);
+
+        // window yang sudah tidak ada dibuang; workspace yang jadi kosong ikut hilang
+        let mut part = ws();
+        part.restore(&saved, |id| id != C);
+        assert_eq!(part.workspace_of(C), None);
+        assert_eq!(part.workspace_of(A), Some(0));
+        assert_eq!(part.active(), 0);
+
+        // tidak menimpa susunan yang sudah ada
+        let mut busy = ws();
+        busy.add_window(X);
+        busy.restore(&saved, |_| true);
+        assert_eq!(busy.workspace_of(A), None);
+        assert_eq!(busy.workspace_of(X), Some(0));
+
+        // tidak ada yang masih hidup: tidak berubah
+        let mut none = ws();
+        none.restore(&saved, |_| false);
+        assert!(none.overviews().is_empty());
     }
 
     #[test]

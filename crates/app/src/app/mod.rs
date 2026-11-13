@@ -4,6 +4,7 @@ mod actions;
 mod anim;
 mod events;
 mod overview_ctl;
+mod persist;
 mod workspace;
 
 use std::collections::{HashMap, HashSet};
@@ -81,6 +82,10 @@ pub(crate) struct App {
     pub(crate) sync_timer: usize,
     /// Ada window baru: jadwalkan satu pengecekan ulang.
     pub(crate) recheck: bool,
+    /// Susunan yang terakhir ditulis ke layout.state (persist.rs).
+    pub(crate) saved_layout: Option<layout::SavedLayout>,
+    /// Identitas (exe|class) window untuk layout.state, dihitung sekali per window.
+    pub(crate) idents: HashMap<WindowId, String>,
 }
 
 impl App {
@@ -100,6 +105,8 @@ impl App {
             anim_timer: 0,
             sync_timer: 0,
             recheck: false,
+            saved_layout: None,
+            idents: HashMap::new(),
             anim_ms: DEFAULT_ANIM_MS,
             focus_border: None,
             border_applied: None,

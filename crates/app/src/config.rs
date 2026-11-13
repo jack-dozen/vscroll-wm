@@ -22,7 +22,9 @@
 //!   overview_key = tab        tombol overview bersama Win: tab, space, grave, satu
 //!                     huruf/angka (bukan q/m), atau off. Win+Alt+Space selalu aktif.
 //!   overview_color_selected / _active / _view / _background / _box = #RRGGBB
-//!   workspace_osd = on        panel kecil sesaat di tengah layar setiap pindah workspace
+//!   remember_layout = on      simpan susunan workspace; dipulihkan kalau vscroll-wm dijalankan
+//!                     ulang selagi window-windownya masih terbuka
+//!   workspace_osd = on        panel kecil sesaat di bagian bawah layar setiap pindah workspace
 //!   overview_wrap = on        panah di overview berputar: dari ujung loncat ke ujung seberang
 //!   bind.<aksi> = win+q       ubah pintasan (daftar aksi: bindings.rs / vscroll-wm.conf.example).
 //!                     Beberapa tombol dipisah koma, off = dimatikan. overview_key dan
@@ -114,6 +116,8 @@ pub struct Config {
     pub overview_wrap: bool,
     /// Panel kecil sesaat setiap pindah workspace.
     pub workspace_osd: bool,
+    /// Simpan / pulihkan susunan workspace (layout.state).
+    pub remember_layout: bool,
     /// Tombol tiap aksi (bawaan + `bind.*` + overview_key / cheatsheet_key).
     pub bindings: Bindings,
 }
@@ -137,6 +141,7 @@ impl Default for Config {
             overview_colors: OverviewColors::default(),
             overview_wrap: true,
             workspace_osd: true,
+            remember_layout: true,
             bindings: Bindings::defaults(),
         }
     }
@@ -235,6 +240,10 @@ impl Config {
                 "overview_color_box" => {
                     color_setting(value, &mut cfg.overview_colors.box_fill, &key, n, &mut warnings)
                 }
+                "remember_layout" => match parse_bool(value) {
+                    Some(b) => cfg.remember_layout = b,
+                    None => warnings.push(format!("line {n}: remember_layout must be on/off")),
+                },
                 "workspace_osd" => match parse_bool(value) {
                     Some(b) => cfg.workspace_osd = b,
                     None => warnings.push(format!("line {n}: workspace_osd must be on/off")),
@@ -692,6 +701,16 @@ mod tests {
         assert_eq!(Config::parse("height_step = 9999").0.height_step, 400);
         let (cfg, w) = Config::parse("height_mode = pixel");
         assert_eq!((cfg.height_mode, w.len()), (HeightMode::Preset, 1));
+    }
+
+    #[test]
+    fn remember_layout_defaults_to_on() {
+        assert!(Config::default().remember_layout);
+        let (cfg, w) = Config::parse("remember_layout = off");
+        assert!(!cfg.remember_layout && w.is_empty());
+        let (cfg, w) = Config::parse("remember_layout = mungkin");
+        assert!(cfg.remember_layout);
+        assert_eq!(w.len(), 1);
     }
 
     #[test]
