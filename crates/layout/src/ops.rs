@@ -192,11 +192,37 @@ impl Strip {
         self.ensure_visible();
     }
 
+    /// Tempat window baru di lajur seberang item `i` (setengah lebar), sejajar dengannya:
+    /// (indeks sisip, lebar). Urutan ke-n di lajurnya = sejajar; kalau lajur seberang
+    /// lebih pendek, di ujung bawahnya.
+    fn beside_slot(&self, i: usize) -> (usize, Span) {
+        let t = self.items[i];
+        let (lo, hi) = self.run_bounds(i);
+        let (left, right) = self.lanes_in(lo, hi);
+        let (mine, other) = if t.span == Span::Left {
+            (&left, &right)
+        } else {
+            (&right, &left)
+        };
+        let rank = mine.iter().position(|&k| k == i).unwrap_or(0);
+        let index = other.get(rank).copied().unwrap_or(hi);
+        let span = if t.span == Span::Left {
+            Span::Right
+        } else {
+            Span::Left
+        };
+        (index, span)
+    }
+
     /// Sisipkan window baru `id` pada `at` (drag dari workspace lain di overview):
-    ///  - `Beside(x)`: lajur seberang `x`, sejajar dengannya (urutan ke-n di lajurnya),
-    ///    tinggi dan pembagi sama dengan `x`; hanya untuk `x` setengah lebar
+    ///  - `Beside(x)`: lajur seberang `x`, sejajar dengannya, tinggi dan pembagi sama
+    ///    dengan `x`; hanya untuk `x` setengah lebar
     ///  - `FullBefore(x)` / `FullAfter(x)`: penuh lebar di batas blok `x` (tidak pernah
     ///    membelah blok), jadi pemisah blok baru
+    ///  - `Split(x, first)`: membagi dua `x`. Penuh lebar -> berdampingan: `x` ke satu sisi,
+    ///    window baru di sisi lain, tinggi sama. Setengah lebar -> bertumpuk di lajur yang
+    ///    sama: tinggi `x` dan window baru masing-masing setengah dari tinggi `x`
+    ///    (Full -> 1/2, 1/2 -> 1/4, ...). `first` = window baru di kiri / atas.
     /// False kalau `id` sudah ada, `x` tidak dikenal / tersembunyi, atau `Beside` pada
     /// window penuh lebar. Window baru menjadi yang fokus.
     pub fn insert_window(&mut self, id: WindowId, at: InsertPosition) -> bool {
@@ -206,7 +232,8 @@ impl Strip {
         let target = match at {
             InsertPosition::Beside(t)
             | InsertPosition::FullBefore(t)
-            | InsertPosition::FullAfter(t) => t,
+            | InsertPosition::FullAfter(t)
+            | InsertPosition::Split(t, _) => t,
         };
         let Some(i) = self.index_of(target) else {
             return false;
@@ -227,22 +254,7 @@ impl Strip {
                 if t.span == Span::Full {
                     return false;
                 }
-                let (lo, hi) = self.run_bounds(i);
-                let (left, right) = self.lanes_in(lo, hi);
-                let (mine, other) = if t.span == Span::Left {
-                    (&left, &right)
-                } else {
-                    (&right, &left)
-                };
-                // urutan ke-n di lajurnya = sejajar; kalau lajur seberang lebih pendek,
-                // di ujung bawahnya
-                let rank = mine.iter().position(|&k| k == i).unwrap_or(0);
-                let index = other.get(rank).copied().unwrap_or(hi);
-                let span = if t.span == Span::Left {
-                    Span::Right
-                } else {
-                    Span::Left
-                };
+                let (index, span) = self.beside_slot(i);
                 (
                     index,
                     Item {
@@ -254,6 +266,44 @@ impl Strip {
                     },
                 )
             }
+            InsertPosition::Split(_, first) => match t.span {
+                Span::Full => {
+                    // lebar dibagi dua: target ke satu sisi, window baru di sisi lainnya
+                    let (mine, theirs) = if first {
+                        (Span::Right, Span::Left)
+                    } else {
+                        (Span::Left, Span::Right)
+                    };
+                    self.items[i].span = mine;
+                    self.items[i].restore = mine;
+                    let (index, _) = self.beside_slot(i);
+                    (
+                        index,
+                        Item {
+                            id,
+                            span: theirs,
+                            height: t.height,
+                            restore: theirs,
+                            split: t.split,
+                        },
+                    )
+                }
+                _ => {
+                    // tinggi dibagi dua, bertumpuk di lajur yang sama
+                    let h = t.height.halved();
+                    self.items[i].height = h;
+                    (
+                        if first { i } else { i + 1 },
+                        Item {
+                            id,
+                            span: t.span,
+                            height: h,
+                            restore: t.span,
+                            split: t.split,
+                        },
+                    )
+                }
+            },
             InsertPosition::FullBefore(_) => {
                 let index = if t.span == Span::Full {
                     i
@@ -277,9 +327,8 @@ impl Strip {
         true
     }
 
-    /// Pindahkan window `id` yang sudah ada ke `at` di strip yang sama (drag mouse ke
-    /// ruang kosong). Aturan penempatan sama dengan `insert_window`; kalau tidak
-    /// berlaku, susunan dikembalikan dan hasilnya false.
+    /// Pindahkan window `id` yang sudah ada ke `at` di strip yang sama.
+    /// Kalau penempatan tidak berlaku, susunan awal dikembalikan.
     pub fn reinsert_window(&mut self, id: WindowId, at: InsertPosition) -> bool {
         let Some(idx) = self.index_of(id) else {
             return false;

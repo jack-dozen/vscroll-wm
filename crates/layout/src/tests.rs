@@ -696,12 +696,7 @@ fn insert_beside_takes_the_opposite_lane_of_that_block() {
     assert!(s.insert_window(D, InsertPosition::Beside(A)));
     assert_eq!(
         order(&s),
-        vec![
-            (A, Span::Left),
-            (D, Span::Right),
-            (B, Span::Full),
-            (C, Span::Left)
-        ]
+        vec![(A, Span::Left), (D, Span::Right), (B, Span::Full), (C, Span::Left)]
     );
     assert_eq!(s.focused(), Some(D));
 
@@ -710,12 +705,7 @@ fn insert_beside_takes_the_opposite_lane_of_that_block() {
     assert!(s.insert_window(D, InsertPosition::Beside(C)));
     assert_eq!(
         order(&s),
-        vec![
-            (A, Span::Left),
-            (B, Span::Full),
-            (C, Span::Left),
-            (D, Span::Right)
-        ]
+        vec![(A, Span::Left), (B, Span::Full), (C, Span::Left), (D, Span::Right)]
     );
 }
 
@@ -723,20 +713,11 @@ fn insert_beside_takes_the_opposite_lane_of_that_block() {
 fn insert_beside_matches_the_row_when_the_other_lane_has_windows() {
     // kiri: A, A2; kanan: E. Di sebelah A2 -> urutan ke-2 di lajur kanan (di bawah E)
     let make_strip = || {
-        let item = |id, span| Item {
-            id,
-            span,
-            height: Height::Full,
-            restore: span,
-            split: 500,
-        };
         let mut s = strip();
-        s.items = vec![
-            item(A, Span::Left),
-            item(B, Span::Left),
-            item(C, Span::Right),
-        ];
-        s.focused = Some(B);
+        s.add_window(A);
+        s.snap(Dir::Left);
+        assert!(s.insert_window(B, InsertPosition::Split(A, false)));
+        assert!(s.insert_window(C, InsertPosition::Beside(A)));
         s
     };
     let mut s = make_strip();
@@ -776,12 +757,7 @@ fn insert_full_goes_to_block_boundaries_without_splitting_blocks() {
     assert!(s.insert_window(D, InsertPosition::FullAfter(A)));
     assert_eq!(
         order(&s),
-        vec![
-            (A, Span::Left),
-            (D, Span::Full),
-            (B, Span::Full),
-            (C, Span::Left)
-        ]
+        vec![(A, Span::Left), (D, Span::Full), (B, Span::Full), (C, Span::Left)]
     );
     // relatif terhadap window penuh lebar
     let mut s = blocks();
@@ -790,6 +766,85 @@ fn insert_full_goes_to_block_boundaries_without_splitting_blocks() {
     let mut s = blocks();
     assert!(s.insert_window(D, InsertPosition::FullAfter(B)));
     assert_eq!(s.items()[2].id, D);
+}
+
+#[test]
+fn split_halves_a_full_window_then_stacks_in_the_lane() {
+    // satu window penuh: drop di atasnya -> berdampingan, masing-masing setengah lebar
+    let mut s = strip();
+    s.add_window(A);
+    assert!(s.insert_window(B, InsertPosition::Split(A, false)));
+    assert_eq!(order(&s), vec![(A, Span::Left), (B, Span::Right)]);
+    assert_eq!(s.items()[0].height, Height::Full);
+    assert_eq!(s.items()[1].height, Height::Full);
+
+    // drop di sisi kanan (B): B dan window baru bertumpuk, masing-masing setengah tinggi
+    assert!(s.insert_window(C, InsertPosition::Split(B, false)));
+    assert_eq!(
+        order(&s),
+        vec![(A, Span::Left), (B, Span::Right), (C, Span::Right)]
+    );
+    assert_eq!(s.items()[1].height, Height::Half);
+    assert_eq!(s.items()[2].height, Height::Half);
+
+    // drop di A: empat window sama besar
+    assert!(s.insert_window(D, InsertPosition::Split(A, false)));
+    assert_eq!(
+        order(&s),
+        vec![
+            (A, Span::Left),
+            (D, Span::Left),
+            (B, Span::Right),
+            (C, Span::Right)
+        ]
+    );
+    assert!(s.items().iter().all(|i| i.height == Height::Half));
+}
+
+#[test]
+fn split_first_puts_the_new_window_left_or_above() {
+    let mut s = strip();
+    s.add_window(A);
+    assert!(s.insert_window(B, InsertPosition::Split(A, true)));
+    assert_eq!(order(&s), vec![(A, Span::Right), (B, Span::Left)]);
+
+    // di separuh atas window setengah lebar: window baru di atasnya
+    let mut s = strip();
+    s.add_window(A);
+    assert!(s.insert_window(B, InsertPosition::Split(A, false))); // A kiri, B kanan
+    assert!(s.insert_window(C, InsertPosition::Split(B, true)));
+    let right: Vec<WindowId> = s
+        .items()
+        .iter()
+        .filter(|i| i.span == Span::Right)
+        .map(|i| i.id)
+        .collect();
+    assert_eq!(right, vec![C, B]); // C di atas B
+}
+
+#[test]
+fn halving_goes_below_half_for_nested_splits() {
+    let mut s = strip();
+    s.add_window(A);
+    assert!(s.insert_window(B, InsertPosition::Split(A, false)));
+    assert!(s.insert_window(C, InsertPosition::Split(B, false))); // B, C: 1/2
+    assert!(s.insert_window(D, InsertPosition::Split(C, false))); // C, D: 1/4
+    let h = |id| s.items().iter().find(|i| i.id == id).unwrap().height;
+    assert_eq!(h(B), Height::Half);
+    assert_eq!(h(C), Height::Custom(250));
+    assert_eq!(h(D), Height::Custom(250));
+}
+
+#[test]
+fn split_rejects_unknown_and_hidden_targets() {
+    let mut s = strip();
+    s.add_window(A);
+    assert!(!s.insert_window(B, InsertPosition::Split(WindowId(99), false)));
+    assert!(!s.insert_window(A, InsertPosition::Split(A, false))); // sudah ada
+    s.add_window(C);
+    s.set_hidden(C, true);
+    assert!(!s.insert_window(B, InsertPosition::Split(C, false)));
+    assert_eq!(s.items().len(), 2);
 }
 
 #[test]

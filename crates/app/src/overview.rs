@@ -153,8 +153,9 @@ pub enum SlotKind {
     Before(u64),
     /// Penuh lebar di bawah blok window ini.
     After(u64),
-    /// Tukar posisi dengan window ini (di workspace yang sama).
-    Swap(u64),
+    /// Membagi dua window ini; `bool` = window baru di kiri / atas. Penuh lebar:
+    /// berdampingan; setengah lebar: bertumpuk di lajurnya, masing-masing setengah tinggi.
+    Split(u64, bool),
 }
 
 /// Titik tujuan drop: nomor workspace (mulai 1), jenisnya, dan area penandanya di panel.
@@ -199,10 +200,14 @@ fn beside_rect(x: &DrawItem, col: &RECT) -> RECT {
 }
 
 /// Titik tujuan untuk window `src` yang dijatuhkan di (x, y) panel. Murni (hanya membaca
-/// `d`), supaya bisa diuji.
-///  - kolom workspace yang sama dengan asalnya: tukar posisi dengan window di bawah kursor
-///  - kolom lain: di window setengah lebar = di sebelahnya (setengah lebar); di zona tepi
-///    atas / bawah strip, atau di window penuh lebar = penuh lebar di batas blok
+/// `d`), supaya bisa diuji. Berlaku sama untuk workspace asal maupun workspace lain
+/// (di atas window yang diseret sendiri: tidak ada tujuan):
+///  - di atas sebuah window: membaginya dua. Penuh lebar -> berdampingan (sisi
+///    tempat kursor); setengah lebar -> bertumpuk di lajurnya (separuh tempat kursor)
+///  - di ruang kosong di sebelah window setengah lebar: mengisi lajur seberang
+///  - di zona tepi atas / bawah kolom: penuh lebar di luar blok
+///  - di window penuh lebar yang diapit window setengah lebar (dibagi dua akan menyatukan
+///    blok-blok di sekitarnya): penuh lebar di atas / bawah window itu
 pub fn slot_at(d: &Draw, x: i32, y: i32, src: u64) -> Option<DropSlot> {
     let col = d.columns.iter().find(|c| {
         x >= c.rect.left
@@ -225,22 +230,14 @@ pub fn slot_at(d: &Draw, x: i32, y: i32, src: u64) -> Option<DropSlot> {
         .filter(in_col)
         .collect();
 
-    if src_here {
-        // di atas dirinya sendiri: tidak ada tujuan
-        if d.items
+    // di atas dirinya sendiri: tidak ada tujuan. Selain itu, workspace asal diperlakukan
+    // sama dengan workspace lain.
+    if src_here
+        && d.items
             .iter()
             .any(|it| it.id == src && point_in(&it.rect, x, y))
-        {
-            return None;
-        }
-        // di atas window lain: tukar; di ruang kosong: isi ruang itu (seperti workspace lain)
-        if let Some(t) = items.iter().find(|it| point_in(&it.rect, x, y)) {
-            return Some(DropSlot {
-                number: col.number,
-                kind: SlotKind::Swap(t.id),
-                mark: t.rect,
-            });
-        }
+    {
+        return None;
     }
 
     let top_item = items
@@ -294,13 +291,37 @@ pub fn slot_at(d: &Draw, x: i32, y: i32, src: u64) -> Option<DropSlot> {
                 }
             })
         })?;
+        let r = near.rect;
+        let inside = point_in(&r, x, y);
         match near.span {
+            Span::Full if inside && clean_full(&items, near) => {
+                let mid = (r.left + r.right) / 2;
+                let first = x < mid;
+                let mark = RECT {
+                    left: if first { r.left } else { mid },
+                    right: if first { mid } else { r.right },
+                    top: r.top,
+                    bottom: r.bottom,
+                };
+                (SlotKind::Split(near.id, first), mark)
+            }
             Span::Full => {
-                if y < (near.rect.top + near.rect.bottom) / 2 {
-                    (SlotKind::Before(near.id), bar(near.rect.top - MARGIN))
+                if y < (r.top + r.bottom) / 2 {
+                    (SlotKind::Before(near.id), bar(r.top - MARGIN))
                 } else {
-                    (SlotKind::After(near.id), bar(near.rect.bottom + MARGIN))
+                    (SlotKind::After(near.id), bar(r.bottom + MARGIN))
                 }
+            }
+            _ if inside => {
+                let mid = (r.top + r.bottom) / 2;
+                let first = y < mid;
+                let mark = RECT {
+                    left: r.left,
+                    right: r.right,
+                    top: if first { r.top } else { mid },
+                    bottom: if first { mid } else { r.bottom },
+                };
+                (SlotKind::Split(near.id, first), mark)
             }
             _ => (SlotKind::Beside(near.id), beside_rect(near, &col.rect)),
         }
@@ -309,6 +330,19 @@ pub fn slot_at(d: &Draw, x: i32, y: i32, src: u64) -> Option<DropSlot> {
         number: col.number,
         kind,
         mark,
+    })
+}
+
+/// Window penuh lebar `x` yang tetangga atas / bawahnya (kalau ada) juga penuh lebar:
+/// dibagi dua hanya memengaruhi barisnya sendiri. Kalau ada tetangga setengah lebar,
+/// blok-blok di sekitarnya akan menyatu, jadi tidak ditawarkan.
+fn clean_full(items: &[&DrawItem], x: &DrawItem) -> bool {
+    const ADJ: i32 = 10; // jarak antar kotak yang berdekatan
+    !items.iter().any(|o| {
+        o.id != x.id
+            && o.span != Span::Full
+            && ((o.rect.top < x.rect.top && o.rect.bottom + ADJ >= x.rect.top)
+                || (o.rect.bottom > x.rect.bottom && o.rect.top <= x.rect.bottom + ADJ))
     })
 }
 
@@ -840,14 +874,13 @@ unsafe fn paint(hwnd: HWND) {
         // penanda tujuan drop: di mana window yang diseret akan mendarat
         if let Some(sl) = drop_slot {
             match sl.kind {
-                SlotKind::Beside(_) => {
+                SlotKind::Beside(_) | SlotKind::Split(..) => {
                     FillRect(hdc, &sl.mark, slot_fill);
                     frame(hdc, &sl.mark, edge_sel, 3);
                 }
                 SlotKind::Before(_) | SlotKind::After(_) => {
                     FillRect(hdc, &sl.mark, edge_sel);
                 }
-                SlotKind::Swap(_) => frame(hdc, &sl.mark, edge_sel, 4),
             }
         }
 
@@ -1506,15 +1539,55 @@ mod tests {
     }
 
     #[test]
-    fn dropping_on_a_half_width_window_goes_beside_it() {
+    fn dropping_on_a_half_width_window_stacks_in_its_lane() {
         let d = drop_draw();
-        assert_eq!(kind(&d, 50, 128), Some((1, SlotKind::Beside(1)))); // di A
-        assert_eq!(kind(&d, 150, 128), Some((1, SlotKind::Beside(1)))); // ruang kosong di sebelah A
-        assert_eq!(kind(&d, 50, 360), Some((1, SlotKind::Beside(3)))); // di C
-        // penanda: lajur seberang A, sejajar dengannya
+        // A (kiri, 53..203): separuh atas -> window baru di atas A, separuh bawah -> di bawah
+        assert_eq!(kind(&d, 50, 100), Some((1, SlotKind::Split(1, true))));
+        assert_eq!(kind(&d, 50, 180), Some((1, SlotKind::Split(1, false))));
+        let m = slot_at(&d, 50, 180, 4).unwrap().mark; // separuh bawah A
+        assert_eq!((m.left, m.right, m.bottom), (3, 97, 203));
+        assert_eq!(m.top, 128);
+        // C (kiri, 303..447)
+        assert_eq!(kind(&d, 50, 340), Some((1, SlotKind::Split(3, true))));
+        assert_eq!(kind(&d, 50, 400), Some((1, SlotKind::Split(3, false))));
+    }
+
+    #[test]
+    fn the_empty_half_next_to_a_window_is_filled_beside_it() {
+        let d = drop_draw();
+        assert_eq!(kind(&d, 150, 128), Some((1, SlotKind::Beside(1)))); // sebelah A
+        assert_eq!(kind(&d, 150, 360), Some((1, SlotKind::Beside(3)))); // sebelah C
         let m = slot_at(&d, 150, 128, 4).unwrap().mark;
-        assert_eq!((m.left, m.top, m.bottom), (100, 53, 203));
-        assert_eq!(m.right, 200);
+        assert_eq!((m.left, m.top, m.bottom, m.right), (100, 53, 203, 200));
+    }
+
+    #[test]
+    fn dropping_on_a_lone_full_window_splits_it_side_by_side() {
+        // kolom 1 hanya berisi E (penuh); window yang diseret D ada di kolom 2
+        let mut d = drop_draw();
+        d.items = vec![
+            item(5, Span::Full, 3, 53, 197, 447),
+            item(4, Span::Full, 303, 53, 497, 447),
+        ];
+        assert_eq!(kind(&d, 50, 250), Some((1, SlotKind::Split(5, true)))); // sisi kiri
+        assert_eq!(kind(&d, 150, 250), Some((1, SlotKind::Split(5, false)))); // sisi kanan
+        let m = slot_at(&d, 150, 250, 4).unwrap().mark;
+        assert_eq!((m.left, m.right, m.top, m.bottom), (100, 197, 53, 447));
+        // tepinya tetap penuh lebar di luar window
+        assert_eq!(kind(&d, 100, 60), Some((1, SlotKind::Before(5))));
+        assert_eq!(kind(&d, 100, 440), Some((1, SlotKind::After(5))));
+    }
+
+    #[test]
+    fn a_full_window_between_full_windows_can_be_split_too() {
+        let mut d = drop_draw();
+        d.items = vec![
+            item(5, Span::Full, 3, 53, 197, 163),
+            item(6, Span::Full, 3, 163, 197, 303),
+            item(7, Span::Full, 3, 303, 197, 447),
+            item(4, Span::Full, 303, 53, 497, 447),
+        ];
+        assert_eq!(kind(&d, 50, 230), Some((1, SlotKind::Split(6, true))));
     }
 
     #[test]
@@ -1546,13 +1619,16 @@ mod tests {
     }
 
     #[test]
-    fn inside_the_source_workspace_it_swaps() {
+    fn inside_the_source_workspace_behaves_like_other_workspaces() {
         let d = drop_draw();
-        // window yang diseret A (kolom 1): di atas B -> tukar dengan B
-        let s = slot_at(&d, 100, 250, 1).unwrap();
-        assert_eq!((s.number, s.kind), (1, SlotKind::Swap(2)));
-        // di atas dirinya sendiri: tidak ada tujuan (ruang kosong: mengisi ruang itu)
-        assert!(slot_at(&d, 50, 128, 1).is_none());
+        // window yang diseret C (kolom 1): di atas A (setengah lebar) -> membagi A
+        let s = slot_at(&d, 50, 100, 3).unwrap();
+        assert_eq!((s.number, s.kind), (1, SlotKind::Split(1, true)));
+        // ruang kosong di sebelah A -> mengisi lajur seberang
+        let s = slot_at(&d, 150, 128, 3).unwrap();
+        assert_eq!(s.kind, SlotKind::Beside(1));
+        // di atas dirinya sendiri: tidak ada tujuan
+        assert!(slot_at(&d, 50, 360, 3).is_none());
     }
 
     #[test]

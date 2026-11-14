@@ -244,10 +244,10 @@ impl App {
     }
 
     /// Window diseret lalu dilepas di overview (lihat `overview::take_drop`):
-    ///  - di kolom workspace lain: pindah ke sana, di tempat yang ditunjuk penanda:
-    ///    di sebelah window setengah lebar (setengah lebar, sejajar), atau penuh lebar di
-    ///    atas / bawah blok (pemisah blok baru)
-    ///  - di window lain pada workspace yang sama: tukar posisi
+    ///  - di workspace mana pun (termasuk asalnya): pindah ke tempat yang ditunjuk penanda:
+    ///    membagi dua window di bawah kursor (penuh lebar -> berdampingan, setengah lebar ->
+    ///    bertumpuk), mengisi lajur kosong di sebelah window setengah lebar, atau penuh
+    ///    lebar di atas / bawah blok (pemisah blok baru)
     /// Tiling nyata ikut diperbarui; panel digambar ulang dan tetap terbuka.
     pub(crate) unsafe fn overview_drop(&mut self) {
         let Some((src, slot)) = overview::take_drop() else {
@@ -262,17 +262,15 @@ impl App {
         };
         let to = slot.number.saturating_sub(1);
         let at = match slot.kind {
-            overview::SlotKind::Beside(t) => Some(InsertPosition::Beside(WindowId(t))),
-            overview::SlotKind::Before(t) => Some(InsertPosition::FullBefore(WindowId(t))),
-            overview::SlotKind::After(t) => Some(InsertPosition::FullAfter(WindowId(t))),
-            overview::SlotKind::Swap(_) => None,
+            overview::SlotKind::Beside(t) => InsertPosition::Beside(WindowId(t)),
+            overview::SlotKind::Before(t) => InsertPosition::FullBefore(WindowId(t)),
+            overview::SlotKind::After(t) => InsertPosition::FullAfter(WindowId(t)),
+            overview::SlotKind::Split(t, first) => InsertPosition::Split(WindowId(t), first),
         };
-        let changed = match (to != from, at, slot.kind) {
-            (true, Some(p), _) => self.ws.move_window_at(src, to, p),
-            (true, None, _) => self.ws.move_window_to(src, to),
-            (false, _, overview::SlotKind::Swap(t)) => self.ws.swap_windows(src, WindowId(t)),
-            (false, Some(p), _) => self.ws.reposition_window(src, p),
-            (false, None, _) => false,
+        let changed = if to != from {
+            self.ws.move_window_at(src, to, at)
+        } else {
+            self.ws.reposition_window(src, at)
         };
         if changed {
             self.apply(); // parkir / penataan mengikuti susunan baru

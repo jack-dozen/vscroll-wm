@@ -40,6 +40,16 @@ impl Height {
             _ => Height::Third,
         }
     }
+    /// Setengah dari tinggi ini (membagi dua window yang bertumpuk): Full -> Half, Half ->
+    /// 1/4, selebihnya permil / 2 (minimal 15%).
+    pub(crate) fn halved(self) -> Self {
+        match self {
+            Height::Full => Height::Half,
+            Height::Half => Height::Custom(250),
+            Height::Third => Height::Custom(166),
+            Height::Custom(p) => Height::Custom((p / 2).max(150)),
+        }
+    }
     pub(crate) fn pixels(self, viewport_h: i32) -> i32 {
         match self {
             Height::Third => viewport_h / 3,
@@ -110,6 +120,10 @@ pub enum InsertPosition {
     FullBefore(WindowId),
     /// Penuh lebar, di bawah blok window ini (pemisah blok).
     FullAfter(WindowId),
+    /// Membagi dua window ini; `bool` = window baru di sisi pertama (kiri / atas).
+    ///  - window penuh lebar: lebarnya dibagi dua, berdampingan (tinggi tetap)
+    ///  - window setengah lebar: tingginya dibagi dua, bertumpuk di lajur yang sama
+    Split(WindowId, bool),
 }
 
 /// Satu window di peta overview (koordinat strip, tanpa scroll).

@@ -154,8 +154,8 @@ fn fixed_rows(cfg: &Config) -> Vec<(&'static str, String, String)> {
         ));
         rows.push(row(
             bindings::G_OVERVIEW,
-            "Drop beside a window",
-            "half width, next to that window",
+            "Drop onto a window",
+            "split it in half (side by side, or stacked)",
         ));
         rows.push(row(
             bindings::G_OVERVIEW,
