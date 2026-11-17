@@ -61,6 +61,9 @@ Reload config anytime from the tray menu → **Reload configuration**.
 | `overview_key` | `tab` | Key used with Win for overview (`tab`, `space`, `grave`, single letter/number, or `off`). `Win+Alt+Space` is always available |
 | `overview_size` | `70` | Overview panel size as % of work area (30–100) |
 | `mouse_drag` | `on` | Drag a window onto another to swap; drag the edge next to the column divider to move it; in the overview, drag a window onto another workspace to move it |
+| `snap_layouts` | `on` | Drag a window to the top edge of the screen: a menu of preset layouts appears; drop the window on a zone to put it there (see *Snap layouts* below) |
+| `snap_layout.<name>` | *(built-ins)* | Your own preset, e.g. `snap_layout.focus = split=70, L, R:1/2, R:1/2`; `off` removes a built-in one |
+| `snap_layouts_defaults` / `snap_assist` / `snap_trigger` | `on` / `on` / `24` | Include the built-in presets / list open windows for the empty zones / height (px) of the top-edge band that opens the menu |
 | `remember_layout` | `on` | Save the layout automatically and restore it when vscroll-wm is restarted while the windows are still open (not after a reboot) |
 | `workspace_osd` | `on` | Small indicator near the bottom of the screen for ~1 second whenever the workspace changes |
 | `overview_wrap` | `on` | Arrow keys in the overview wrap around at the ends (Up on the top row → bottom row, Left/Right → first/last workspace) |
@@ -133,6 +136,39 @@ A chord is one or more modifiers (`win`, `ctrl`, `alt`, `shift`; at least one) j
 followed by a key. The full list of actions, key names and defaults is in
 `vscroll-wm.conf.example`. If two actions claim the same chord, the explicitly configured
 one wins and a warning is printed. Reload with the tray menu → **Reload configuration**.
+
+### Snap layouts
+
+Like Windows 11 Snap Layouts: start dragging a window and move the cursor to the top edge of the
+screen. A menu of preset layouts drops down; move over a zone (it lights up) and release to put
+the window there. The other zones of that preset show a card for every open window (live
+thumbnail + title): click one to fill that zone. `Esc`, the × button, a right click, clicking another window or
+any shortcut closes the list; zones you leave empty stay empty. Esc during the drag cancels it.
+
+Built-in presets: `full`, `halves`, `wide-left`, `wide-right`, `main-stack`, `stack-main`,
+`quarters`, `top-split`, `rows`, `thirds`.
+
+Presets live in `vscroll-wm.conf`, one line each: a comma-separated list of zones in reading
+order (top to bottom, left to right):
+
+```
+snap_layout.focus = split=70, L, R:1/2, R:1/2   # 70% left column, right column split in two
+snap_layout.review = F:1/2, L:1/2, R:1/2        # full-width top half, two windows below
+snap_layout.quarters = off                      # remove a built-in preset
+snap_layouts_defaults = off                     # or start from an empty list
+```
+
+`L` / `R` / `F` = left column / right column / full width. `:height` = `full` (default), `1/2`,
+`1/3`, `2/3`, `40%`. `split=NN` = width of the left column in percent (15–85, default 50).
+A layout is limited to the engine's model: two columns plus full-width rows (so "three columns"
+is not possible, "three rows" is). At most 8 zones.
+
+How it fits the strip: the preset replaces the arrangement of the screen the window was on; the
+other windows of that screen become full-size windows right below it (they are the first cards
+in the list). Every zone is an ordinary strip slot afterwards, so all the usual shortcuts work.
+
+Tip: turn off *Settings → System → Multitasking → "Show snap layouts when I drag a window to the top
+of the screen"* (and "Snap windows"), otherwise Windows shows its own menu at the same place.
 
 ---
 
