@@ -1,25 +1,25 @@
-//! Beberapa strip (workspace) ala GNOME. Murni logika, tanpa Win32.
+//! Multiple strips (workspaces), like in GNOME. Pure logic, without Win32.
 //!
-//! Aturan: selalu ada tepat satu workspace kosong di ujung kanan. Workspace kosong
-//! di tengah dihapus begitu ditinggalkan (nomor di kanannya bergeser). Workspace
-//! aktif boleh kosong selama masih ditempati. "Kosong" berarti tidak ada item di
-//! strip; window yang di-minimize tetap dihitung sebagai isi.
+//! Rule: there is always exactly one empty workspace at the far right. An empty
+//! workspace in the middle is removed as soon as it is left (the numbers to its right
+//! shift). The active workspace may be empty while occupied. "Empty" means there are
+//! no items in the strip; minimized windows still count as contents.
 //!
-//! Tambah/hapus window dan pindah workspace HARUS lewat method di sini (bukan
-//! `cur_mut().add_window()` dsb.), supaya aturan di atas selalu dirapikan.
+//! Adding/removing windows and switching workspaces MUST go through the methods here
+//! (not `cur_mut().add_window()`, etc.) so the rules above are always maintained.
 
 use crate::snap::SnapPreset;
 use crate::types::*;
 
-/// Susunan satu workspace yang disimpan: item berurutan (lebar, tinggi, pembagi) dan
-/// window yang fokus.
+/// Saved arrangement of one workspace: ordered items (width, height, split ratio) and
+/// the focused window.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SavedStrip {
     pub items: Vec<Item>,
     pub focused: Option<WindowId>,
 }
 
-/// Susunan seluruh workspace yang disimpan, dan nomor workspace yang aktif.
+/// Saved arrangements for all workspaces and the active workspace number.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SavedLayout {
     pub active: usize,
@@ -55,7 +55,7 @@ impl Workspaces {
         &self.strips[self.active]
     }
 
-    /// Untuk operasi yang tidak mengubah isi (snap, fokus, geser, ...).
+    /// For operations that do not change contents (snap, focus, move, ...).
     pub fn cur_mut(&mut self) -> &mut Strip {
         &mut self.strips[self.active]
     }
@@ -78,7 +78,7 @@ impl Workspaces {
         }
     }
 
-    /// Hapus workspace kosong selain yang aktif, lalu pastikan yang terakhir kosong.
+    /// Remove empty workspaces other than the active one, then ensure the last one is empty.
     fn normalize(&mut self) {
         let old = std::mem::take(&mut self.strips);
         let mut new_active = 0;
@@ -98,7 +98,7 @@ impl Workspaces {
         }
     }
 
-    /// Salinan susunan sekarang, untuk disimpan ke file.
+    /// Copy of the current arrangement, for saving to a file.
     pub fn snapshot(&self) -> SavedLayout {
         SavedLayout {
             active: self.active,
@@ -106,7 +106,7 @@ impl Workspaces {
                 .strips
                 .iter()
                 .map(|s| SavedStrip {
-                    // slot snap layout hanya sementara: tidak ikut disimpan
+                    // Snap layout slots are temporary and are not saved.
                     items: s
                         .items()
                         .iter()
@@ -119,10 +119,10 @@ impl Workspaces {
         }
     }
 
-    /// Pulihkan susunan tersimpan untuk window yang masih ada (`live`). Hanya berlaku
-    /// selama semua workspace masih kosong (saat start). Item yang tidak `live` dibuang
-    /// (workspace yang jadi kosong ikut hilang); window yang tadinya tersembunyi
-    /// (minimize) kembali ke lebar semula.
+    /// Restore the saved arrangement for windows that still exist (`live`). Only applies
+    /// while all workspaces are empty (at startup). Items not in `live` are discarded
+    /// (workspaces that become empty are also removed); previously hidden (minimized)
+    /// windows regain their original width.
     pub fn restore(&mut self, saved: &SavedLayout, live: impl Fn(WindowId) -> bool) {
         if self.strips.iter().any(|s| !s.items().is_empty()) {
             return;
@@ -169,21 +169,21 @@ impl Workspaces {
         self.normalize();
     }
 
-    /// Nomor workspace yang memuat `id`.
+    /// Workspace number containing `id`.
     pub fn workspace_of(&self, id: WindowId) -> Option<usize> {
         self.strips
             .iter()
             .position(|s| s.items().iter().any(|it| it.id == id))
     }
 
-    /// Semua window (termasuk yang tersembunyi) di workspace `n`.
+    /// All windows (including hidden ones) in workspace `n`.
     pub fn window_ids(&self, n: usize) -> Vec<WindowId> {
         self.strips
             .get(n)
             .map_or_else(Vec::new, |s| s.items().iter().map(|it| it.id).collect())
     }
 
-    /// Window baru masuk ke workspace aktif.
+    /// Add a new window to the active workspace.
     pub fn add_window(&mut self, id: WindowId) {
         if self.workspace_of(id).is_some() {
             return;
@@ -192,7 +192,7 @@ impl Workspaces {
         self.normalize();
     }
 
-    /// Hapus window dari workspace mana pun.
+    /// Remove a window from any workspace.
     pub fn remove_window(&mut self, id: WindowId) {
         if let Some(n) = self.workspace_of(id) {
             self.strips[n].remove_window(id);
@@ -200,7 +200,7 @@ impl Workspaces {
         }
     }
 
-    /// Minimize / cloaked: slot diingat di workspace pemiliknya.
+    /// Minimized / cloaked: keep the slot in its owning workspace.
     pub fn set_hidden(&mut self, id: WindowId, hide: bool) -> bool {
         match self.workspace_of(id) {
             Some(n) => self.strips[n].set_hidden(id, hide),
@@ -208,8 +208,8 @@ impl Workspaces {
         }
     }
 
-    /// Pindah ke workspace `n`. False kalau `n` di luar jangkauan atau sudah aktif.
-    /// Nomor workspace lain bisa bergeser kalau yang ditinggalkan kosong.
+    /// Switch to workspace `n`. Returns false if `n` is out of range or already active.
+    /// Other workspace numbers may shift if the one left behind was empty.
     pub fn switch_to(&mut self, n: usize) -> bool {
         if n == self.active || n >= self.strips.len() {
             return false;
@@ -219,16 +219,16 @@ impl Workspaces {
         true
     }
 
-    /// Workspace sebelumnya (`delta` < 0) / berikutnya (> 0). Tidak berputar.
+    /// Previous workspace (`delta` < 0) / next workspace (> 0). Does not wrap.
     pub fn switch_rel(&mut self, delta: i32) -> bool {
         let n = self.active as i64 + delta as i64;
         usize::try_from(n).map_or(false, |n| self.switch_to(n))
     }
 
-    /// Kirim window yang fokus ke workspace `n` (boleh workspace kosong di ujung).
-    /// Pengguna tetap di workspace aktif; fokus pindah ke tetangga window itu.
-    /// Window masuk sebagai penuh lebar & tinggi di tujuan; ukuran minimum yang
-    /// sudah terukur ikut dibawa.
+    /// Send the focused window to workspace `n` (which may be the empty workspace at the end).
+    /// The user stays in the active workspace; focus moves to that window's neighbor.
+    /// The window enters the destination at full width and height; its measured minimum
+    /// size is carried over.
     pub fn move_focused_to(&mut self, n: usize) -> Option<WindowId> {
         let a = self.active;
         if n == a || n >= self.strips.len() {
@@ -251,15 +251,15 @@ impl Workspaces {
         Some(id)
     }
 
-    /// Pindahkan window `id` (bukan hanya yang fokus) ke workspace `n`; workspace aktif
-    /// tidak berubah. Aturannya sama dengan `move_focused_to`. False kalau `id` tidak
-    /// dikenal, sudah di `n`, atau `n` di luar jangkauan.
+    /// Move window `id` (not only the focused one) to workspace `n`; the active workspace
+    /// does not change. Same rules as `move_focused_to`. Returns false if `id` is unknown,
+    /// already in `n`, or `n` is out of range.
     pub fn move_window_to(&mut self, id: WindowId, n: usize) -> bool {
         self.move_window_with(id, n, None)
     }
 
-    /// Seperti `move_window_to`, tapi window disisipkan pada `at` di workspace tujuan
-    /// (lihat `Strip::insert_window`); kalau `at` tidak berlaku, masuk seperti biasa.
+    /// Like `move_window_to`, but insert the window at `at` in the destination workspace
+    /// (see `Strip::insert_window`); if `at` is invalid, add it as usual.
     pub fn move_window_at(&mut self, id: WindowId, n: usize, at: InsertPosition) -> bool {
         self.move_window_with(id, n, Some(at))
     }
@@ -289,7 +289,7 @@ impl Workspaces {
         true
     }
 
-    /// Pindahkan window ke tempat `at` di workspace-nya sendiri (drag ke ruang kosong).
+    /// Move a window to `at` in its own workspace (drag into an empty space).
     pub fn reposition_window(&mut self, id: WindowId, at: InsertPosition) -> bool {
         let Some(n) = self.workspace_of(id) else {
             return false;
@@ -301,7 +301,7 @@ impl Workspaces {
         ok
     }
 
-    /// Tukar posisi dua window yang berada di workspace yang sama (drag mouse).
+    /// Swap the positions of two windows in the same workspace (mouse drag).
     pub fn swap_windows(&mut self, a: WindowId, b: WindowId) -> bool {
         match (self.workspace_of(a), self.workspace_of(b)) {
             (Some(x), Some(y)) if x == y => self.strips[x].swap_windows(a, b),
@@ -309,10 +309,10 @@ impl Workspaces {
         }
     }
 
-    /// Gabungkan window `src` ke `target`, baik di workspace yang sama maupun lintas
-    /// workspace. Kalau lintas workspace, `src` dipindahkan ke workspace `target`,
-    /// workspace itu menjadi aktif, dan workspace lama dirapikan kalau jadi kosong.
-    /// False (tidak ada yang berubah) kalau penempatan ditolak.
+    /// Join window `src` to `target`, whether in the same or a different workspace.
+    /// If they are in different workspaces, move `src` to `target`'s workspace, make
+    /// that workspace active, and tidy up the old workspace if it becomes empty.
+    /// Returns false (without changes) if the insertion is rejected.
     pub fn join_into(&mut self, src: WindowId, target: WindowId) -> bool {
         let (Some(from), Some(to)) = (self.workspace_of(src), self.workspace_of(target)) else {
             return false;
@@ -339,14 +339,15 @@ impl Workspaces {
         true
     }
 
-    /// Seperti `move_focused_to`, ke workspace sebelumnya / berikutnya (tidak berputar).
+    /// Like `move_focused_to`, to the previous / next workspace (does not wrap).
     pub fn move_focused_rel(&mut self, delta: i32) -> Option<WindowId> {
         let n = self.active as i64 + delta as i64;
         usize::try_from(n).ok().and_then(|n| self.move_focused_to(n))
     }
 
-    /// Peta overview tiap workspace yang punya window terlihat, urut dari kiri, berikut
-    /// nomornya (0 = pertama). Workspace kosong / hanya berisi window tersembunyi dilewati.
+    /// Overview maps for each workspace with visible windows, ordered from left to right,
+    /// followed by their numbers (0 = first). Empty workspaces / those containing only
+    /// hidden windows are skipped.
     pub fn overviews(&self) -> Vec<(usize, Overview)> {
         self.strips
             .iter()
@@ -356,7 +357,7 @@ impl Workspaces {
             .collect()
     }
 
-    /// Workspace terdekat dari `from` ke arah `forward` yang punya window terlihat.
+    /// Nearest workspace with visible windows from `from` in the `forward` direction.
     pub fn adjacent_workspace(&self, from: usize, forward: bool) -> Option<usize> {
         let has = |n: usize| {
             self.strips
@@ -370,9 +371,9 @@ impl Workspaces {
         }
     }
 
-    /// Seperti `adjacent_workspace`, tapi berputar: dari ujung terakhir (`forward`) lanjut
-    /// ke workspace pertama yang punya window terlihat, dan sebaliknya. None kalau tidak
-    /// ada workspace lain yang punya window terlihat.
+    /// Like `adjacent_workspace`, but wraps: from the last end (`forward`), continue to
+    /// the first workspace with visible windows, and vice versa. Returns None if no other
+    /// workspace has visible windows.
     pub fn wrapped_workspace(&self, from: usize, forward: bool) -> Option<usize> {
         let has = |n: usize| {
             self.strips
@@ -387,8 +388,8 @@ impl Workspaces {
         target.filter(|&n| n != from)
     }
 
-    /// Window wakil workspace `n`: yang fokus, atau yang pertama terlihat. None kalau
-    /// workspace itu tidak ada / tidak punya window terlihat.
+    /// Representative window for workspace `n`: the focused one, or the first visible one.
+    /// Returns None if the workspace does not exist / has no visible windows.
     pub fn representative(&self, n: usize) -> Option<WindowId> {
         let s = self.strips.get(n)?;
         let ov = s.overview();
@@ -397,11 +398,11 @@ impl Workspaces {
             .or_else(|| ov.items.first().map(|it| it.id))
     }
 
-    /// Window tempat kursor masuk saat menyeberang ke workspace `n` dari samping.
-    /// `from_left`: masuk dari tepi kiri (menekan Kanan). Dipilih window di tepi itu
-    /// yang paling dekat secara vertikal dengan `y` (koordinat strip).
+    /// Window where the cursor enters when crossing into workspace `n` from the side.
+    /// `from_left`: enter from the left edge (pressing Right). Choose the window at that
+    /// edge that is vertically closest to `y` (strip coordinate).
     pub fn entry_window(&self, n: usize, from_left: bool, y: i32) -> Option<WindowId> {
-        const SLACK: i32 = 2; // lebar lajur dibulatkan: toleransi beberapa piksel
+        const SLACK: i32 = 2; // Rounded lane widths: allow a few pixels of tolerance.
         let ov = self.strips.get(n)?.overview();
         let edge = if from_left {
             ov.items.iter().map(|i| i.rect.x).min()?
@@ -421,9 +422,9 @@ impl Workspaces {
             .map(|i| i.id)
     }
 
-    /// Pasang preset snap layout di workspace aktif: `id` mengisi zona `zone`, zona lain
-    /// jadi slot kosong (lihat `Strip::apply_snap`). Kosong kalau `id` bukan di workspace
-    /// aktif.
+    /// Apply a snap layout preset in the active workspace: `id` fills zone `zone`, and
+    /// the other zones become empty slots (see `Strip::apply_snap`). Returns empty if
+    /// `id` is not in the active workspace.
     pub fn apply_snap(&mut self, id: WindowId, preset: &SnapPreset, zone: usize) -> Vec<WindowId> {
         if self.workspace_of(id) != Some(self.active) {
             return Vec::new();
@@ -431,9 +432,9 @@ impl Workspaces {
         self.cur_mut().apply_snap(id, preset, zone)
     }
 
-    /// Isi slot di workspace aktif dengan window `id` dari workspace mana pun (ia
-    /// dikeluarkan dulu dari tempat lamanya dan pindah ke workspace aktif). False kalau
-    /// slot tidak ada, `id` tidak dikenal atau sedang tersembunyi; tidak ada yang berubah.
+    /// Fill a slot in the active workspace with window `id` from any workspace (first
+    /// remove it from its previous location and move it to the active workspace).
+    /// Returns false without changes if the slot does not exist, `id` is unknown, or it is hidden.
     pub fn fill_slot(&mut self, slot: WindowId, id: WindowId) -> bool {
         let a = self.active;
         if id.is_slot() || self.strips[a].index_of(slot).is_none() {
@@ -452,13 +453,13 @@ impl Workspaces {
         self.strips[from].remove_window(id);
         let ok = self.strips[a].fill_slot(slot, id);
         if !ok {
-            self.strips[a].add_window(id); // tidak boleh sampai window hilang dari strip
+            self.strips[a].add_window(id); // The window must not be lost from the strip.
         }
         self.normalize();
         ok
     }
 
-    /// Buang semua slot kosong di semua workspace. True kalau ada yang dibuang.
+    /// Remove all empty slots from all workspaces. True if any were removed.
     pub fn clear_slots(&mut self) -> bool {
         let mut any = false;
         for s in &mut self.strips {
@@ -470,15 +471,15 @@ impl Workspaces {
         any
     }
 
-    /// Ada slot kosong yang menunggu diisi?
+    /// Are there any empty slots waiting to be filled?
     pub fn has_slots(&self) -> bool {
         self.strips
             .iter()
             .any(|s| s.items().iter().any(|it| it.id.is_slot()))
     }
 
-    /// Fokuskan `id` di workspace pemiliknya; kalau bukan yang aktif, pindah ke sana.
-    /// True kalau workspace aktif berubah.
+    /// Focus `id` in its owning workspace; switch to it if it is not active.
+    /// True if the active workspace changed.
     pub fn focus_window(&mut self, id: WindowId) -> bool {
         let Some(n) = self.workspace_of(id) else {
             return false;
@@ -545,7 +546,7 @@ mod tests {
         w.switch_to(1);
         w.add_window(B); // [A] [B] []
         w.remove_window(B);
-        // yang aktif boleh kosong selama masih ditempati; dia jadi kosong di ujung
+        // The active workspace may be empty while occupied; it becomes the empty one at the end.
         assert_eq!((w.count(), w.active()), (2, 1));
         assert!(w.switch_to(0));
         assert_eq!((w.count(), w.active()), (2, 0)); // [A] []
@@ -557,7 +558,7 @@ mod tests {
         w.add_window(A);
         w.switch_to(1);
         w.add_window(B); // aktif = 1
-        w.remove_window(A); // workspace 0 kosong -> dihapus
+        w.remove_window(A); // Workspace 0 is empty -> removed.
         assert_eq!((w.count(), w.active()), (2, 0));
         assert_eq!(w.workspace_of(B), Some(0));
     }
@@ -567,11 +568,11 @@ mod tests {
         let mut w = ws();
         w.add_window(A);
         assert!(!w.switch_rel(-1));
-        assert!(w.switch_rel(1)); // ke workspace kosong di ujung
+        assert!(w.switch_rel(1)); // Switch to the empty workspace at the end.
         assert_eq!((w.count(), w.active()), (2, 1));
         assert!(!w.switch_rel(1));
         assert!(w.switch_rel(-1));
-        assert!(!w.switch_to(0)); // sudah aktif
+        assert!(!w.switch_to(0)); // Already active.
         assert!(!w.switch_to(9));
     }
 
@@ -591,7 +592,7 @@ mod tests {
         w.add_window(A);
         assert!(w.set_hidden(A, true));
         w.switch_to(1);
-        assert_eq!(w.workspace_of(A), Some(0)); // workspace 0 tidak dihapus
+        assert_eq!(w.workspace_of(A), Some(0)); // Workspace 0 is not removed.
         assert_eq!(w.count(), 2);
     }
 
@@ -599,13 +600,13 @@ mod tests {
     fn move_focused_sends_the_window_and_stays_put() {
         let mut w = ws();
         w.add_window(A);
-        w.add_window(B); // B fokus
+        w.add_window(B); // B is focused.
         assert_eq!(w.move_focused_to(1), Some(B));
         assert_eq!(w.active(), 0);
         assert_eq!(w.cur().focused(), Some(A));
         assert_eq!((w.workspace_of(A), w.workspace_of(B)), (Some(0), Some(1)));
         assert_eq!(w.count(), 3); // [A] [B] []
-        assert_eq!(w.move_focused_to(0), None); // tujuan = workspace aktif
+        assert_eq!(w.move_focused_to(0), None); // Destination is the active workspace.
         assert_eq!(w.move_focused_to(7), None);
     }
 
@@ -625,12 +626,12 @@ mod tests {
     fn move_focused_rel_follows_neighbours_and_has_no_wrap() {
         let mut w = ws();
         w.add_window(A);
-        assert_eq!(w.move_focused_rel(-1), None); // sudah paling kiri
+        assert_eq!(w.move_focused_rel(-1), None); // Already at the far left.
         w.switch_to(1);
         w.add_window(B); // [A] [B] []
         assert_eq!(w.move_focused_rel(-1), Some(B));
         assert_eq!(w.workspace_of(B), Some(0));
-        assert_eq!(w.move_focused_rel(1), None); // workspace aktif kini kosong
+        assert_eq!(w.move_focused_rel(1), None); // The active workspace is now empty.
     }
 
     #[test]
@@ -655,7 +656,7 @@ mod tests {
         assert!(w.focus_window(A));
         assert_eq!(w.active(), 0);
         assert_eq!(w.cur().focused(), Some(A));
-        assert!(!w.focus_window(A)); // sudah di sana
+        assert!(!w.focus_window(A)); // Already there.
         assert!(!w.focus_window(WindowId(99)));
     }
 
@@ -669,7 +670,7 @@ mod tests {
         let r = w.cur().layout()[0].rect;
         assert_eq!((r.x, r.w), (20, 1880));
         w.set_viewport(rect(1280, 720));
-        w.switch_to(2); // workspace kosong di ujung
+        w.switch_to(2); // Empty workspace at the end.
         w.add_window(C);
         assert_eq!(w.cur().layout()[0].rect.w, 1240);
         w.switch_to(1);
@@ -684,7 +685,7 @@ mod tests {
         w.add_window(B); // [A] [B] []
         let idx: Vec<usize> = w.overviews().iter().map(|(n, _)| *n).collect();
         assert_eq!(idx, vec![0, 1]);
-        w.set_hidden(B, true); // hanya window tersembunyi -> tidak ada yang bisa dipilih
+        w.set_hidden(B, true); // Only hidden windows -> nothing can be selected.
         let idx: Vec<usize> = w.overviews().iter().map(|(n, _)| *n).collect();
         assert_eq!(idx, vec![0]);
     }
@@ -698,10 +699,10 @@ mod tests {
         w.switch_to(2);
         w.add_window(C); // [A] [B] [C] []
         assert_eq!(w.adjacent_workspace(0, true), Some(1));
-        assert_eq!(w.adjacent_workspace(2, true), None); // yang kosong di ujung dilewati
+        assert_eq!(w.adjacent_workspace(2, true), None); // The empty workspace at the end is skipped.
         assert_eq!(w.adjacent_workspace(0, false), None);
         assert_eq!(w.adjacent_workspace(2, false), Some(1));
-        // workspace aktif kosong di tengah: tetap bisa menyeberang
+        // The active workspace is empty in the middle: it can still be crossed.
         w.switch_to(1);
         w.remove_window(B); // [A] [] [C] ...
         assert_eq!(w.adjacent_workspace(1, true), Some(2));
@@ -716,7 +717,7 @@ mod tests {
         assert_eq!(w.representative(0), Some(B));
         w.cur_mut().set_focus(A);
         assert_eq!(w.representative(0), Some(A));
-        assert_eq!(w.representative(1), None); // kosong di ujung
+        assert_eq!(w.representative(1), None); // Empty at the end.
         assert_eq!(w.representative(9), None);
     }
 
@@ -726,17 +727,17 @@ mod tests {
         w.add_window(A);
         w.cur_mut().snap(Dir::Left);
         w.add_window(B);
-        w.cur_mut().snap(Dir::Right); // [A kiri] [B kanan]
-        assert_eq!(w.entry_window(0, true, 500), Some(A)); // masuk dari kiri
-        assert_eq!(w.entry_window(0, false, 500), Some(B)); // masuk dari kanan
-        assert_eq!(w.entry_window(5, true, 0), None); // workspace tidak ada
-        assert_eq!(w.entry_window(1, true, 0), None); // kosong di ujung
+        w.cur_mut().snap(Dir::Right); // [A left] [B right]
+        assert_eq!(w.entry_window(0, true, 500), Some(A)); // Enter from the left.
+        assert_eq!(w.entry_window(0, false, 500), Some(B)); // Enter from the right.
+        assert_eq!(w.entry_window(5, true, 0), None); // Workspace does not exist.
+        assert_eq!(w.entry_window(1, true, 0), None); // Empty at the end.
 
-        // dua window lebar penuh bertumpuk: yang setinggi kursor menang
+        // Two full-width windows are stacked: the one at the cursor's height wins.
         let mut w = ws();
         w.add_window(A);
-        w.cur_mut().snap(Dir::Up); // setengah tinggi: pusat y = 270
-        w.add_window(B); // di bawahnya: pusat y = 1080
+        w.cur_mut().snap(Dir::Up); // Half-height: center y = 270.
+        w.add_window(B); // Below it: center y = 1080.
         assert_eq!(w.entry_window(0, true, 100), Some(A));
         assert_eq!(w.entry_window(0, false, 1200), Some(B));
     }
@@ -748,18 +749,18 @@ mod tests {
         w.add_window(B);
         w.switch_to(1);
         w.add_window(C); // [A B] [C] []
-        assert!(w.move_window_to(A, 1)); // bukan window yang fokus
+        assert!(w.move_window_to(A, 1)); // Not the focused window.
         assert_eq!(w.workspace_of(A), Some(1));
         assert_eq!(w.workspace_of(B), Some(0));
         assert_eq!(w.active(), 1);
-        assert!(!w.move_window_to(A, 1)); // sudah di sana
-        assert!(!w.move_window_to(A, 99)); // di luar jangkauan
-        assert!(!w.move_window_to(X, 0)); // tidak dikenal
-        // boleh ke workspace kosong di ujung; yang lama yang kosong dibuang
+        assert!(!w.move_window_to(A, 1)); // Already there.
+        assert!(!w.move_window_to(A, 99)); // Out of range.
+        assert!(!w.move_window_to(X, 0)); // Unknown.
+        // Moving to the empty workspace at the end is allowed; remove the old one if it is empty.
         let last = w.count() - 1;
         assert!(w.move_window_to(B, last));
         assert!(w.workspace_of(B).is_some());
-        assert_ne!(w.workspace_of(B), w.workspace_of(C)); // workspace sendiri
+        assert_ne!(w.workspace_of(B), w.workspace_of(C)); // Separate workspaces.
     }
 
     #[test]
@@ -775,7 +776,7 @@ mod tests {
         assert_eq!((items[0].id, items[0].span), (A, Span::Left));
         assert_eq!((items[1].id, items[1].span), (X, Span::Right));
 
-        // penempatan yang tidak berlaku (target tidak ada): tetap masuk ke workspace itu
+        // Invalid insertion point (target does not exist): still add it to that workspace.
         let mut w = ws();
         w.add_window(A);
         w.switch_to(1);
@@ -793,8 +794,8 @@ mod tests {
         w.add_window(C); // [A B] [C]
         assert!(w.swap_windows(A, B));
         assert_eq!(w.strip(0).unwrap().items()[0].id, B);
-        assert!(!w.swap_windows(A, C)); // beda workspace
-        assert!(!w.swap_windows(A, X)); // tidak dikenal
+        assert!(!w.swap_windows(A, C)); // Different workspaces.
+        assert!(!w.swap_windows(A, X)); // Unknown.
     }
 
     #[test]
@@ -813,21 +814,21 @@ mod tests {
         assert_eq!(fresh.snapshot(), saved);
         assert_eq!(fresh.active(), 1);
 
-        // window yang sudah tidak ada dibuang; workspace yang jadi kosong ikut hilang
+        // Windows that no longer exist are discarded; workspaces that become empty are also removed.
         let mut part = ws();
         part.restore(&saved, |id| id != C);
         assert_eq!(part.workspace_of(C), None);
         assert_eq!(part.workspace_of(A), Some(0));
         assert_eq!(part.active(), 0);
 
-        // tidak menimpa susunan yang sudah ada
+        // Does not overwrite an existing arrangement.
         let mut busy = ws();
         busy.add_window(X);
         busy.restore(&saved, |_| true);
         assert_eq!(busy.workspace_of(A), None);
         assert_eq!(busy.workspace_of(X), Some(0));
 
-        // tidak ada yang masih hidup: tidak berubah
+        // Nothing is still alive: no changes.
         let mut none = ws();
         none.restore(&saved, |_| false);
         assert!(none.overviews().is_empty());
@@ -841,10 +842,10 @@ mod tests {
         w.add_window(B);
         w.switch_to(2);
         w.add_window(C); // [A] [B] [C] []
-        assert_eq!(w.wrapped_workspace(2, true), Some(0)); // setelah yang terakhir: pertama
-        assert_eq!(w.wrapped_workspace(0, false), Some(2)); // sebelum yang pertama: terakhir
-        assert_eq!(w.wrapped_workspace(1, true), Some(0)); // selalu ke ujung seberang
-        // hanya satu workspace berisi: tidak ada tujuan lain
+        assert_eq!(w.wrapped_workspace(2, true), Some(0)); // After the last: first.
+        assert_eq!(w.wrapped_workspace(0, false), Some(2)); // Before the first: last.
+        assert_eq!(w.wrapped_workspace(1, true), Some(0)); // Always wrap to the opposite end.
+        // Only one workspace has contents: there is no other destination.
         let mut w = ws();
         w.add_window(A);
         assert_eq!(w.wrapped_workspace(0, true), None);
@@ -857,7 +858,7 @@ mod tests {
         w.add_window(A); // ws 0: [A]
         w.switch_to(1);
         w.add_window(B); // ws 1: [B]
-        // A (dari kiri) digabung ke B (ws 1): A di kiri, B di kanan; ws 0 kosong -> dirapikan
+        // Join A (from the left) to B (ws 1): A on the left, B on the right; clean up empty ws 0.
         assert!(w.join_into(A, B));
         assert_eq!(w.active(), 0);
         assert_eq!(w.workspace_of(A), Some(0));
@@ -868,7 +869,7 @@ mod tests {
         assert_eq!(rect_of(B), Rect { x: 960, y: 0, w: 960, h: 1080 });
         assert_eq!(w.cur().focused(), Some(A));
 
-        // Gabung C dari ws 1 (kanan) ke B (lajur kanan ws 0) -> bertumpuk di bawah B
+        // Join C from ws 1 (right) to B (right lane of ws 0) -> stack below B.
         w.switch_to(1);
         w.add_window(C);
         assert!(w.join_into(C, B));
@@ -886,12 +887,12 @@ mod tests {
         let mut w = ws();
         w.add_window(A);
         w.add_window(B);
-        assert!(w.cur_mut().join(Dir::Up)); // A kiri, B kanan
+        assert!(w.cur_mut().join(Dir::Up)); // A left, B right.
         w.cur_mut().set_min_height(B, 600);
         w.switch_to(1);
         w.add_window(C);
         assert!(!w.join_into(C, B));
-        // C tetap di ws 1, tidak berpindah
+        // C stays in ws 1; it does not move.
         assert_eq!(w.workspace_of(C), Some(1));
         assert_eq!(w.workspace_of(B), Some(0));
     }

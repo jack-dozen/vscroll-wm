@@ -1,14 +1,14 @@
-//! Layout engine: strip vertikal dengan dua lajur. Murni logika, tanpa Win32.
+//! Layout engine: a vertical strip with two lanes. Pure logic, without Win32.
 //!
-//! Tiap window punya lebar (`Span`: penuh, lajur kiri, lajur kanan) dan tinggi
-//! sendiri (1/3, 1/2, penuh). Window disusun berurutan seperti aliran teks:
-//!  - window `Full` ditaruh di bawah kedua lajur,
-//!  - window `Left` / `Right` ditumpuk di lajur masing-masing.
-//! Tinggi tiap window independen. Viewport meng-scroll mengikuti fokus.
+//! Each window has its own width (`Span`: full, left lane, right lane) and height
+//! (1/3, 1/2, full). Windows are arranged in sequence like lines of text:
+//!  - `Full` windows are placed below both lanes,
+//!  - `Left` / `Right` windows are stacked in their respective lanes.
+//! Each window's height is independent. The viewport scrolls to follow focus.
 //!
-//! Aksi: snap (tinggi / sisi), maximize, focus, dan move_window (tukar posisi
-//! dengan tetangga di arah tertentu, apa pun ukurannya). Snap layout (preset zona
-//! yang dipasang lewat drag) ada di `snap`.
+//! Actions: snap (height / side), maximize, focus, and move_window (swap positions
+//! with a neighbor in a given direction, regardless of size). Snap layouts (zone
+//! presets applied by dragging) are in `snap`.
 
 mod flow;
 mod ops;

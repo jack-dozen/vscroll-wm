@@ -1,4 +1,4 @@
-//! Penanganan hotkey, event Windows, dan timer debounce.
+//! Handle hotkeys, Windows events, and the debounce timer.
 
 use std::sync::atomic::Ordering;
 use std::time::Instant;
@@ -25,7 +25,7 @@ use crate::config::HeightMode;
 use layout::{Dir, Rect, WindowId};
 
 impl App {
-    /// Jadwalkan sync + apply dalam `ms` milidetik (digabung kalau sudah terjadwal).
+    /// Schedule sync + apply in `ms` milliseconds (coalesce if already scheduled).
     pub(crate) unsafe fn schedule_sync(&mut self, ms: u32) {
         if self.sync_timer == 0 {
             self.sync_timer = SetTimer(None, 0, ms, None);
@@ -39,8 +39,8 @@ impl App {
         }
     }
 
-    /// Event Windows: hanya yang menyangkut window yang kita kelola (atau
-    /// kandidat baru) yang memicu penataan ulang.
+    /// Windows events: only those involving windows we manage (or new
+    /// candidates) trigger rearrangement.
     pub(crate) unsafe fn on_event(&mut self, event: u32, hwnd: HWND) {
         let known = self.map.contains_key(&wid(hwnd));
         let relevant = match event {
@@ -56,12 +56,12 @@ impl App {
             _ => false,
         };
         if event == EVENT_SYSTEM_MOVESIZESTART && known {
-            // drag dimulai: pantau kursor untuk menu snap layouts (snap.rs)
+            // Drag started: track the cursor for the snap layouts menu (snap.rs).
             self.snap_drag_start(hwnd);
         }
         if event == EVENT_SYSTEM_MOVESIZEEND && known {
-            // drag / tarik tepi window selesai: pasang preset snap layout kalau dilepas di
-            // zona menu (snap.rs), selain itu tukar posisi atau geser pembagi (mouse.rs)
+            // Window drag / edge resize ended: apply a snap layout preset if released
+            // over a menu zone (snap.rs); otherwise swap positions or move the divider (mouse.rs).
             if !self.snap_drag_end(hwnd) {
                 self.on_drag_end(hwnd);
             }
@@ -76,7 +76,7 @@ impl App {
             return;
         }
         if self.snap_assist.is_some() {
-            self.snap_assist_end(true); // pintasan apa pun menutup daftar window snap layouts
+            self.snap_assist_end(true); // Any shortcut closes the snap layouts window list.
         }
         if id == HOTKEY_PICK {
             self.toggle_pick();
@@ -86,8 +86,8 @@ impl App {
             self.pick_cancel();
         }
         if (HOTKEY_JOIN_LEFT..=HOTKEY_JOIN_DOWN).contains(&id) {
-            // Quick join langsung ke tetangga; ganti ke `join_step` (+ aktifkan JOIN_ACTIVE
-            // di hook.rs) kalau ingin kembali ke mode tahan-modifier.
+            // Quick join goes straight to the neighbor; switch to `join_step` (and enable
+            // JOIN_ACTIVE in hook.rs) to return to modifier-hold mode.
             self.join_quick(DIRS[(id - HOTKEY_JOIN_LEFT) as usize].1);
             return;
         }
@@ -102,7 +102,7 @@ impl App {
         }
         self.sync();
         match id {
-            // mode step: Win+↑/↓ menggeser tinggi per langkah, bukan lompat preset
+            // Step mode: Win+↑/↓ adjusts height incrementally instead of jumping between presets.
             3 | 4 if self.cfg.height_mode == HeightMode::Step => {
                 let step = self.cfg.height_step;
                 self.ws.cur_mut().adjust_height(if id == 3 { -step } else { step });
@@ -118,7 +118,7 @@ impl App {
                 self.toggle_overview();
                 return;
             }
-            // pembagi lajur digeser; penataan ulang oleh apply() di bawah
+            // The column divider moved; apply() below rearranges the windows.
             HOTKEY_SPLIT_RIGHT => {
                 self.ws.cur_mut().adjust_split(self.cfg.resize_step);
             }
@@ -142,7 +142,7 @@ impl App {
             }
             HOTKEY_FLOAT => {
                 self.toggle_float();
-                self.sync(); // window yang baru di-tile masuk strip
+                self.sync(); // Add the newly tiled window to the strip.
             }
             10..=13 => self.ws.cur_mut().move_window(DIRS[(id - 10) as usize].1),
             HOTKEY_WS_PREV => {
@@ -181,8 +181,8 @@ impl App {
         }
     }
 
-    /// Quick join (`Win+Alt+Shift+Arrow`): langsung gabungkan window fokus ke tetangga
-    /// di arah `dir` dengan animasi luncur.
+    /// Quick join (`Win+Alt+Shift+Arrow`): immediately join the focused window
+    /// with its neighbor in direction `dir`, using a slide animation.
     unsafe fn join_quick(&mut self, dir: Dir) {
         self.sync();
         let Some(src) = self.ws.cur().focused() else {
@@ -196,7 +196,7 @@ impl App {
         self.animate_join_slide(src, false, false, old_rect);
     }
 
-    /// Animasi luncur untuk window `src` yang baru selesai di-join / di-drop.
+    /// Slide animation for window `src` after it has just been joined / dropped.
     pub(super) unsafe fn animate_join_slide(
         &mut self,
         src: WindowId,
@@ -235,9 +235,9 @@ impl App {
         }
     }
 
-    /// Cari target berikutnya dari `from` ke arah `dir`. Kalau di tepi kiri/kanan strip,
-    /// menyeberang ke workspace sebelah yang berisi window terlihat.
-    /// Mengembalikan `(target, workspace_baru_jika_pindah)`.
+    /// Find the next target from `from` in direction `dir`. At the left/right
+    /// edge of the strip, cross to the neighboring workspace with visible windows.
+    /// Returns `(target, new_workspace_if_switched)`.
     #[allow(dead_code)]
     fn join_next_target(&self, from: WindowId, dir: Dir) -> Option<(WindowId, Option<usize>)> {
         if let Some(next) = self.ws.cur().neighbor_of(from, dir) {
@@ -264,10 +264,10 @@ impl App {
         Some((next, Some(next_ws)))
     }
 
-    /// Satu langkah membidik `join`: mulai dari window fokus (pertama kali) atau geser
-    /// bidikan ke tetangga di arah `dir` (bisa menyeberang ke workspace sebelah lewat
-    /// Kiri/Kanan). Viewport menggulung ke target dan border-nya disorot sampai modifier
-    /// dilepas (`join_commit`) atau dibatalkan (`join_cancel`).
+    /// One `join` targeting step: start at the focused window (first time) or move
+    /// the target to a neighbor in direction `dir` (Left/Right can cross to the
+    /// neighboring workspace). Scroll the viewport to the target and highlight its
+    /// border until the modifier is released (`join_commit`) or canceled (`join_cancel`).
     #[allow(dead_code)]
     unsafe fn join_step(&mut self, dir: Dir) {
         let (src, from) = match self.join_aim {
@@ -297,7 +297,7 @@ impl App {
         }
     }
 
-    /// Kembalikan viewport & workspace ke window asal `src` (dipakai saat batal / gagal).
+    /// Restore the viewport and workspace to source window `src` (on cancel / failure).
     pub(super) unsafe fn join_restore_src(&mut self, src: WindowId) {
         let mut switched = false;
         if let Some(src_ws) = self.ws.workspace_of(src) {
@@ -316,8 +316,8 @@ impl App {
         }
     }
 
-    /// Modifier dilepas: gabungkan window asal ke target terakhir (termasuk lintas
-    /// workspace) dengan animasi luncur ke posisi barunya.
+    /// Modifier released: join the source window to the last target (including across
+    /// workspaces), sliding it to its new position.
     pub(crate) unsafe fn join_commit(&mut self) {
         let Some(aim) = self.join_aim.take() else {
             return;
@@ -345,7 +345,7 @@ impl App {
         }
     }
 
-    /// Esc ditekan saat membidik: batalkan tanpa mengubah layout.
+    /// Esc pressed while targeting: cancel without changing the layout.
     pub(crate) unsafe fn join_cancel(&mut self) {
         let Some(aim) = self.join_aim.take() else {
             return;

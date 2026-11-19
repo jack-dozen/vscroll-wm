@@ -1,13 +1,13 @@
-//! Menu snap layouts: panel preset di tengah tepi atas layar yang muncul selama window
-//! diseret ke atas (seperti Snap Layouts di Windows 11). Tiap preset digambar sebagai
-//! kotak kecil berisi zonanya; zona di bawah kursor disorot. Window yang dilepas di
-//! sebuah zona mengisi zona itu (lihat app/snap.rs).
+//! Snap layouts menu: a preset panel centered along the top edge of the screen that
+//! appears while a window is dragged upward (like Snap Layouts in Windows 11). Each
+//! preset is drawn as a small box containing its zones; the zone under the cursor is
+//! highlighted. A window released over a zone fills it (see app/snap.rs).
 //!
-//! Selama seretan, kursor ditangkap oleh window yang sedang diseret, jadi panel ini
-//! tidak menerima mouse sama sekali: letak kursor dibaca oleh app dan dicocokkan ke
-//! `MenuLayout` lewat `hit` / `inside`. Panel tidak pernah merebut fokus. Geometri
-//! (`layout_menu`, `hit`, `inside`) murni hitungan dan dipakai bersama oleh penggambar
-//! dan pencocok klik, jadi yang tampak selalu sama dengan yang dikenai.
+//! During a drag, the dragged window captures the cursor, so this panel receives no
+//! mouse input: the app reads the cursor position and matches it against `MenuLayout`
+//! via `hit` / `inside`. The panel never takes focus. Geometry (`layout_menu`, `hit`,
+//! `inside`) is pure calculation shared by the renderer and hit tester, so what is
+//! shown always matches the clickable areas.
 
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::Mutex;
@@ -27,21 +27,21 @@ use crate::config::OverviewColors;
 use crate::theme::{self, Canvas, Palette};
 use crate::winutil::animations_enabled;
 
-/// Ukuran dasar (piksel pada 96 dpi); dikalikan skala dpi layar.
+/// Base size (pixels at 96 dpi); multiplied by the screen DPI scale.
 const THUMB_W: i32 = 128;
 const THUMB_H: i32 = 80;
 const LABEL_H: i32 = 24;
 const PAD: i32 = 14;
 const GAP: i32 = 12;
-/// Jarak panel dari tepi atas area kerja.
+/// Panel distance from the top edge of the work area.
 const TOP_MARGIN: i32 = 8;
-/// Jarak isi kotak preset dari tepinya.
+/// Inset between preset box contents and its edge.
 const INSET: i32 = 6;
-/// Jarak antar zona di dalam satu kotak preset.
+/// Spacing between zones inside a preset box.
 const ZONE_GAP: i32 = 4;
 
-/// Satu zona di menu: `cell` = daerah yang dikenai kursor, `draw` = yang digambar
-/// (sedikit lebih kecil supaya batas antar zona terlihat).
+/// A menu zone: `cell` = cursor hit area, `draw` = rendered area
+/// (slightly smaller so the boundaries between zones remain visible).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ZoneBox {
     pub cell: Rect,
@@ -50,16 +50,16 @@ pub struct ZoneBox {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Thumb {
-    /// Kotak preset (koordinat layar).
+    /// Preset box (screen coordinates).
     pub rect: Rect,
-    /// Tempat nama preset.
+    /// Preset name position.
     pub label: Rect,
     pub zones: Vec<ZoneBox>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MenuLayout {
-    /// Panel seluruhnya (koordinat layar).
+    /// Entire panel (screen coordinates).
     pub panel: Rect,
     pub thumbs: Vec<Thumb>,
 }
@@ -68,7 +68,7 @@ fn contains(r: &Rect, x: i32, y: i32) -> bool {
     x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h
 }
 
-/// Susun panel untuk `presets` di tengah tepi atas `work`. `scale` = dpi / 96.
+/// Arrange the panel for `presets` at the top center of `work`. `scale` = dpi / 96.
 pub fn layout_menu(work: Rect, presets: &[SnapPreset], scale: f32) -> MenuLayout {
     let s = |v: i32| ((v as f32) * scale).round() as i32;
     let (tw, th, lh, pad, gap) = (s(THUMB_W), s(THUMB_H), s(LABEL_H), s(PAD), s(GAP));
@@ -85,7 +85,7 @@ pub fn layout_menu(work: Rect, presets: &[SnapPreset], scale: f32) -> MenuLayout
             thumbs: Vec::new(),
         };
     }
-    // sebanyak mungkin kotak per baris dalam 90% lebar layar
+    // Fit as many boxes per row as possible within 90% of the screen width.
     let max_w = work.w * 9 / 10;
     let cols = ((max_w - 2 * pad + gap) / (tw + gap)).clamp(1, n);
     let rows = (n + cols - 1) / cols;
@@ -137,7 +137,7 @@ pub fn layout_menu(work: Rect, presets: &[SnapPreset], scale: f32) -> MenuLayout
     MenuLayout { panel, thumbs }
 }
 
-/// Zona di titik (x, y): (nomor preset, nomor zona).
+/// Zone at point (x, y): (preset number, zone number).
 pub fn hit(l: &MenuLayout, x: i32, y: i32) -> Option<(usize, usize)> {
     if !contains(&l.panel, x, y) {
         return None;
@@ -152,7 +152,7 @@ pub fn hit(l: &MenuLayout, x: i32, y: i32) -> Option<(usize, usize)> {
     None
 }
 
-/// Titik (x, y) di dalam panel yang diperlebar `margin` piksel?
+/// Is point (x, y) inside the panel expanded by `margin` pixels?
 pub fn inside(l: &MenuLayout, x: i32, y: i32, margin: i32) -> bool {
     let p = l.panel;
     x >= p.x - margin && x < p.x + p.w + margin && y >= p.y - margin && y < p.y + p.h + margin
@@ -324,13 +324,13 @@ unsafe extern "system" fn menu_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
             tick_anim(hwnd);
             LRESULT(0)
         }
-        WM_NCHITTEST => LRESULT(-1), // HTTRANSPARENT: klik menembus panel
+        WM_NCHITTEST => LRESULT(-1), // HTTRANSPARENT: clicks pass through the panel.
         WM_MOUSEACTIVATE => LRESULT(3), // MA_NOACTIVATE
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
 }
 
-/// Buat jendela panel (tersembunyi) sekali di awal. `scale` = dpi / 96 untuk huruf.
+/// Create the (hidden) panel window once at startup. `scale` = dpi / 96 for text.
 pub unsafe fn init(scale: f32) -> bool {
     let Ok(hmod) = GetModuleHandleW(None) else {
         return false;
@@ -375,7 +375,7 @@ fn hwnd() -> HWND {
     HWND(MENU_HWND.load(Ordering::Relaxed) as *mut _)
 }
 
-/// Tampilkan panel `layout` dengan nama-nama preset `names`.
+/// Show the `layout` panel with preset names `names`.
 pub unsafe fn show(layout: MenuLayout, names: Vec<String>, colors: OverviewColors) {
     if MENU_HWND.load(Ordering::Relaxed) == 0 {
         return;
@@ -420,7 +420,7 @@ pub unsafe fn show(layout: MenuLayout, names: Vec<String>, colors: OverviewColor
     }
 }
 
-/// Sorot zona (nomor preset, nomor zona) di bawah kursor; None = tidak ada.
+/// Highlight the zone (preset number, zone number) under the cursor; None = none.
 pub unsafe fn set_hover(hover: Option<(usize, usize)>) {
     if let Ok(mut g) = STATE.lock() {
         if let Some(st) = g.as_mut() {
@@ -508,7 +508,7 @@ mod tests {
         assert!(l.panel.w <= 500);
         let rows: std::collections::BTreeSet<i32> = l.thumbs.iter().map(|t| t.rect.y).collect();
         assert!(rows.len() > 1);
-        // tidak ada kotak yang keluar dari panel
+        // No boxes extend beyond the panel.
         for t in &l.thumbs {
             assert!(t.rect.x >= l.panel.x && t.rect.x + t.rect.w <= l.panel.x + l.panel.w);
             assert!(t.label.y + t.label.h <= l.panel.y + l.panel.h);
@@ -532,7 +532,7 @@ mod tests {
                 assert_eq!(hit(&l, cx, cy), Some((pi, zi)), "{} zona {zi}", ps[pi].name);
             }
         }
-        // di luar panel
+        // Outside the panel.
         assert_eq!(hit(&l, 0, 1000), None);
         assert_eq!(hit(&l, l.panel.x - 5, l.panel.y + 5), None);
     }

@@ -1,4 +1,4 @@
-//! Tipe data publik layout engine.
+//! Public data types for the layout engine.
 
 use std::collections::HashMap;
 
@@ -18,7 +18,7 @@ pub enum Height {
     Third,
     Half,
     Full,
-    /// Tinggi bebas dari mode `step`: permil tinggi area konten (15-100%).
+    /// Custom height from `step` mode: thousandths of the content area height (15-100%).
     Custom(i32),
 }
 
@@ -36,12 +36,12 @@ impl Height {
             Height::Full => Height::Half,
             Height::Custom(p) if p > 500 => Height::Half,
             Height::Custom(p) if p > 333 => Height::Third,
-            Height::Custom(_) => self, // sudah di bawah 1/3: tidak ada preset lebih kecil
+            Height::Custom(_) => self, // Already below 1/3: there is no smaller preset.
             _ => Height::Third,
         }
     }
-    /// Setengah dari tinggi ini (membagi dua window yang bertumpuk): Full -> Half, Half ->
-    /// 1/4, selebihnya permil / 2 (minimal 15%).
+    /// Half of this height (splitting a stacked window in two): Full -> Half, Half ->
+    /// 1/4, otherwise thousandths / 2 (minimum 15%).
     pub(crate) fn halved(self) -> Self {
         match self {
             Height::Full => Height::Half,
@@ -65,8 +65,8 @@ pub enum Span {
     Full,
     Left,
     Right,
-    /// Tersembunyi (di-minimize, cloaked, dll): tidak ikut layout, tapi slotnya
-    /// (urutan, lebar `restore`, tinggi) diingat sampai muncul lagi.
+    /// Hidden (minimized, cloaked, etc.): excluded from the layout, but its slot
+    /// (order, `restore` width, height) is remembered until it reappears.
     Hidden,
 }
 
@@ -94,15 +94,15 @@ pub struct Item {
     pub id: WindowId,
     pub span: Span,
     pub height: Height,
-    /// Lebar yang dipulihkan saat window muncul lagi (dipakai kalau `span` = Hidden).
+    /// Width to restore when the window reappears (used when `span` = Hidden).
     pub restore: Span,
-    /// Lebar lajur kiri dalam permil (500 = 50%). Berlaku untuk seluruh blok;
-    /// yang dipakai adalah nilai item lajur pertama di blok itu.
+    /// Left lane width in thousandths (500 = 50%). Applies to the entire block;
+    /// the value from the first lane item in the block is used.
     pub split: i32,
 }
 
-/// Hasil layout untuk satu window. `visible = false` berarti seluruhnya
-/// di luar viewport (platform layer bebas menyembunyikan / memarkir window itu).
+/// Layout result for one window. `visible = false` means it is entirely
+/// outside the viewport (the platform layer may hide or park the window).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Placement {
     pub id: WindowId,
@@ -110,37 +110,37 @@ pub struct Placement {
     pub visible: bool,
 }
 
-/// Tempat window disisipkan ke sebuah strip (drag di overview). Selalu relatif terhadap
-/// window yang sudah ada di strip itu.
+/// Where to insert a window into a strip (drag in the overview). Always relative to
+/// a window already in that strip.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InsertPosition {
-    /// Di lajur seberang window setengah lebar ini, sejajar dengannya (satu blok).
+    /// In the opposite lane from this half-width window, aligned with it (same block).
     Beside(WindowId),
-    /// Penuh lebar, di atas blok window ini (pemisah blok).
+    /// Full width, above this window's block (block separator).
     FullBefore(WindowId),
-    /// Penuh lebar, di bawah blok window ini (pemisah blok).
+    /// Full width, below this window's block (block separator).
     FullAfter(WindowId),
-    /// Membagi dua window ini; `bool` = window baru di sisi pertama (kiri / atas).
-    ///  - window penuh lebar: lebarnya dibagi dua, berdampingan (tinggi tetap)
-    ///  - window setengah lebar: tingginya dibagi dua, bertumpuk di lajur yang sama
+    /// Split this window in two; `bool` = the new window goes on the first side (left / top).
+    ///  - full-width window: split the width, side by side (height stays the same)
+    ///  - half-width window: split the height, stacked in the same lane
     Split(WindowId, bool),
 }
 
-/// Satu window di peta overview (koordinat strip, tanpa scroll).
+/// One window in the overview map (strip coordinates, without scrolling).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OverviewItem {
     pub id: WindowId,
     pub rect: Rect,
 }
 
-/// Peta seluruh strip untuk tampilan overview.
+/// Map of the entire strip for the overview.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Overview {
     pub items: Vec<OverviewItem>,
-    /// Lebar dan tinggi total strip.
+    /// Total strip width and height.
     pub width: i32,
     pub height: i32,
-    /// Bagian strip yang sedang tampil di layar: mulai dari `view_y`, setinggi `view_h`.
+    /// The part of the strip currently shown on screen: starts at `view_y`, with height `view_h`.
     pub view_y: i32,
     pub view_h: i32,
 }
@@ -150,12 +150,12 @@ pub struct Strip {
     pub(crate) focused: Option<WindowId>,
     pub(crate) scroll_y: i32,
     pub(crate) viewport: Rect,
-    /// Tinggi minimum yang diukur dari window asli (app menolak dikecilkan).
+    /// Minimum height measured from the original window (the app refuses to be resized smaller).
     pub(crate) min_heights: HashMap<WindowId, i32>,
-    /// Lebar minimum yang diukur dari window asli (app menolak dipersempit).
+    /// Minimum width measured from the original window (the app refuses to be narrowed).
     pub(crate) min_widths: HashMap<WindowId, i32>,
-    /// Jarak antar window dan ke tepi layar (piksel).
+    /// Spacing between windows and from the screen edge (pixels).
     pub(crate) gap: i32,
-    /// Tukar posisi terakhir window penuh lebar, belum diambil app (lihat `take_move_cue`).
+    /// Most recent swap of a full-width window, not yet retrieved by the app (see `take_move_cue`).
     pub(crate) cue: Option<(WindowId, Dir)>,
 }

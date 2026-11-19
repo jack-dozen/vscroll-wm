@@ -1,4 +1,4 @@
-//! Pengendali overview (sisi aplikasi; gambarnya ada di overview.rs).
+//! Overview controller (application side; rendering is in overview.rs).
 
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
@@ -18,7 +18,7 @@ use crate::winutil::{title, wid, work_area};
 use crate::{config, overview, rules, safety};
 
 impl App {
-    /// Win+Alt+Space: buka / tutup overview.
+    /// Win+Alt+Space: open / close the overview.
     pub(crate) unsafe fn toggle_overview(&mut self) {
         if self.overview.is_some() {
             self.close_overview(false);
@@ -29,14 +29,14 @@ impl App {
 
     pub(crate) unsafe fn open_overview(&mut self) {
         if !self.try_open_overview() {
-            // gagal membuka: batalkan status "terbuka" yang mungkin sudah diset hook
+            // Failed to open: undo the "open" state that the hook may have set.
             OV_OPEN.store(false, Ordering::Relaxed);
             OV_MOVED.store(false, Ordering::Relaxed);
         }
     }
 
-    /// Semua workspace berisi window terlihat + 1 workspace kosong di ujung (supaya
-    /// selalu bisa melihat & drag window ke workspace baru meski baru 1 yang terisi).
+    /// All workspaces with visible windows + one empty workspace at the end (so a
+    /// window can always be dragged to a new workspace, even when only one is occupied).
     fn overview_maps(&self) -> Vec<(usize, layout::Overview)> {
         let mut maps = self.ws.overviews();
         if maps.is_empty() {
@@ -55,12 +55,12 @@ impl App {
         if !overview::available() {
             return false;
         }
-        self.snap_reset(true); // slot kosong tidak boleh ikut masuk peta overview
+        self.snap_reset(true); // Empty slots must not appear in the overview map.
         let maps = self.overview_maps();
         if maps.is_empty() {
             return false;
         }
-        // Kolom tengah = workspace aktif (atau yang terdekat yang punya window).
+        // Center column = active workspace (or the nearest one with windows).
         let active = self.ws.active();
         let center = maps
             .iter()
@@ -132,9 +132,8 @@ impl App {
         }
     }
 
-    /// Pindahkan kursor ke `n`. Kalau workspace-nya berbeda, kolom itu jadi yang besar
-    /// dan jendela kolom digeser seperlunya (panel digambar ulang); selain itu cukup
-    /// menyorot.
+    /// Move the cursor to `n`. If it is in another workspace, make that column the
+    /// large one and shift columns as needed (redraw the panel); otherwise just highlight it.
     unsafe fn overview_select(&mut self, n: WindowId) {
         let opts = self.overview_options();
         let thumbs = self.cfg.overview_thumbnails;
@@ -170,8 +169,8 @@ impl App {
         overview::show(draw, thumbs);
     }
 
-    /// Tab di overview: kursor ke window berikutnya / sebelumnya, hanya di dalam
-    /// workspace window yang sedang dipilih (urutan baca).
+    /// Tab in the overview: move the cursor to the next / previous window, only
+    /// within the workspace of the currently selected window (reading order).
     pub(crate) unsafe fn overview_cycle(&mut self, forward: bool) {
         let Some(sel) = self.overview.as_ref().map(|s| s.selected) else {
             return;
@@ -186,12 +185,12 @@ impl App {
         }
     }
 
-    /// Panah di overview: geser kursor ke tetangga di workspace yang sama (window
-    /// belum berpindah fokus). Kiri/Kanan di tepi workspace lanjut ke workspace
-    /// tetangga, masuk dari tepi yang berhadapan, ke window yang setinggi kursor.
-    /// Kalau sudah di ujung dan `overview_wrap` aktif, kursor berputar ke ujung seberang
-    /// (workspace pertama / terakhir untuk Kiri/Kanan; baris terbawah / teratas untuk
-    /// Atas/Bawah; kalau hanya ada satu workspace, Kiri/Kanan berputar di dalamnya).
+    /// Arrows in the overview: move the cursor to a neighbor in the same workspace
+    /// (the window does not take focus yet). Left/Right at a workspace edge continue
+    /// into the neighboring workspace, entering from the opposite edge at the window
+    /// nearest the cursor's height. If at an endpoint and `overview_wrap` is enabled,
+    /// wrap to the opposite end (first / last workspace for Left/Right; bottom / top
+    /// row for Up/Down; if there is only one workspace, Left/Right wrap within it).
     pub(crate) unsafe fn overview_move(&mut self, dir_index: usize) {
         let Some(dir) = DIRS.get(dir_index).map(|d| d.1) else {
             return;
@@ -219,8 +218,9 @@ impl App {
         }
     }
 
-    /// Kiri/Kanan melewati tepi workspace: window tujuan di workspace tetangga (`wrap` =
-    /// berputar ke workspace di ujung seberang), setinggi kursor. None untuk Atas/Bawah.
+    /// Left/Right cross a workspace edge: choose the target window in the neighboring
+    /// workspace (`wrap` = wrap to the workspace at the opposite end), nearest the
+    /// cursor's height. None for Up/Down.
     fn overview_cross(&self, from: usize, sel: WindowId, dir: Dir, wrap: bool) -> Option<WindowId> {
         if !matches!(dir, Dir::Left | Dir::Right) {
             return None;
@@ -242,9 +242,9 @@ impl App {
         self.ws.entry_window(target, forward, y)
     }
 
-    /// Win+Ctrl+Kiri/Kanan, angka, klik dock, atau hover dock saat drag: pindah stage
-    /// ke workspace lain (termasuk workspace kosong di ujung).
-    /// `code`: 0 sebelumnya, 1 berikutnya, n >= 2 workspace nomor n - 2 (mulai 0).
+    /// Win+Ctrl+Left/Right, number keys, dock click, or dock hover during a drag:
+    /// switch the stage to another workspace (including the empty one at the end).
+    /// `code`: 0 previous, 1 next, n >= 2 workspace number n - 2 (zero-based).
     pub(crate) unsafe fn overview_workspace(&mut self, code: usize) {
         let Some(cur_big) = self.overview.as_ref().map(|s| s.model.big) else {
             return;
@@ -272,7 +272,7 @@ impl App {
         if let Some(w) = self.ws.representative(ws_num) {
             self.overview_select(w);
         } else {
-            // Workspace kosong di ujung: tampilkan stage kosongnya agar bisa di-drop
+            // Empty workspace at the end: show its empty stage as a drop target.
             let opts = self.overview_options();
             let thumbs = self.cfg.overview_thumbnails;
             let Some(s) = self.overview.as_mut() else {
@@ -293,8 +293,8 @@ impl App {
         }
     }
 
-    /// Zoom stage diubah (Ctrl+Wheel / +/-/0): bangun ulang panel pada skala baru
-    /// sambil mempertahankan posisi scroll yang sedang dilihat.
+    /// Stage zoom changed (Ctrl+Wheel / +/-/0): rebuild the panel at the new scale
+    /// while preserving the current scroll position.
     pub(crate) unsafe fn overview_zoom(&mut self) {
         let opts = self.overview_options();
         let thumbs = self.cfg.overview_thumbnails;
@@ -317,12 +317,12 @@ impl App {
         overview::show(draw, thumbs);
     }
 
-    /// Window diseret lalu dilepas di overview (lihat `overview::take_drop`):
-    ///  - di workspace mana pun (termasuk asalnya): pindah ke tempat yang ditunjuk penanda:
-    ///    membagi dua window di bawah kursor (penuh lebar -> berdampingan, setengah lebar ->
-    ///    bertumpuk), mengisi lajur kosong di sebelah window setengah lebar, atau penuh
-    ///    lebar di atas / bawah blok (pemisah blok baru)
-    /// Tiling nyata ikut diperbarui; panel digambar ulang dan tetap terbuka.
+    /// A window is dragged and dropped in the overview (see `overview::take_drop`):
+    ///  - in any workspace (including its original one), move it to the marked target:
+    ///    split the window under the cursor (full-width -> side-by-side, half-width ->
+    ///    stacked), fill the empty column beside a half-width window, or place it
+    ///    full-width above / below a block (creating a new block separator).
+    /// The actual tiling is updated; redraw the panel and keep it open.
     pub(crate) unsafe fn overview_drop(&mut self) {
         let Some((src, slot)) = overview::take_drop() else {
             return;
@@ -359,12 +359,12 @@ impl App {
             }
         };
         if changed {
-            self.apply(); // parkir / penataan mengikuti susunan baru
+            self.apply(); // Park / arrange according to the new layout.
             self.overview_rebuild(src);
         }
     }
 
-    /// Susun ulang panel dari data layout sekarang (setelah window dipindah), kursor di
+    /// Rebuild the panel from the current layout (after moving the window), with the cursor at
     /// `selected`.
     unsafe fn overview_rebuild(&mut self, selected: WindowId) {
         let opts = self.overview_options();
@@ -409,8 +409,8 @@ impl App {
         self.close_overview(true);
     }
 
-    /// Tutup overview. `accept` = loncat ke window yang dipilih; kalau tidak,
-    /// fokus dikembalikan ke window sebelumnya.
+    /// Close the overview. `accept` = jump to the selected window; otherwise,
+    /// restore focus to the previous window.
     pub(crate) unsafe fn close_overview(&mut self, accept: bool) {
         OV_OPEN.store(false, Ordering::Relaxed);
         OV_MOVED.store(false, Ordering::Relaxed);
@@ -421,7 +421,7 @@ impl App {
         if accept {
             let old = self.ws.active();
             if self.ws.focus_window(s.selected) {
-                // window itu ada di workspace lain: pindah dengan animasi geser
+                // The window is in another workspace: switch with a slide animation.
                 self.slide = Some(Slide::switching(slide_dir(old, self.ws.active())));
                 self.update_workspace_tip();
             }
@@ -430,7 +430,7 @@ impl App {
                 let _ = SetForegroundWindow(h);
                 self.last_fg = Some(wid(h));
             }
-            self.schedule_sync(EVENT_DEBOUNCE_MS); // border dan penataan setelah aktivasi
+            self.schedule_sync(EVENT_DEBOUNCE_MS); // Update borders and layout after activation.
         } else if safety::alive(s.prev_fg) {
             let _ = SetForegroundWindow(s.prev_fg);
         }

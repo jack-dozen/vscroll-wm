@@ -1,9 +1,9 @@
-//! Cheatsheet: daftar pintasan keyboard dalam panel di tengah layar (Win+/).
+//! Cheatsheet: keyboard shortcut list in a centered panel (Win+/).
 //!
-//! Daftarnya DIHASILKAN dari tabel aksi (bindings.rs) dan konfigurasi yang sedang
-//! berlaku, jadi tombol hasil `bind.*` / overview_key / resize_step selalu tertulis benar.
-//! Aksi baru cukup ditambah di `bindings::ACTIONS`; yang perlu diperbarui di sini hanya
-//! baris tetap (yang tidak bisa diubah): `fixed_rows()`.
+//! The list is generated from the action table (bindings.rs) and current config,
+//! so keys from `bind.*` / overview_key / resize_step are always shown correctly.
+//! New actions only need to be added to `bindings::ACTIONS`; the only items to
+//! update here are the fixed (non-configurable) rows in `fixed_rows()`.
 
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::Mutex;
@@ -31,7 +31,7 @@ const TITLE_TEXT: &str = "Keyboard shortcuts";
 const FOOTER_TEXT: &str = "press any key, or click, to close";
 
 const PAD: i32 = 28;
-/// Lebar kolom tombol: minimal ini, melebar sesuai teks terpanjang sampai KEYS_W_MAX.
+/// Key-column width: at least this wide, expanding to the longest text up to KEYS_W_MAX.
 const KEYS_W: i32 = 250;
 const KEYS_W_MAX: i32 = 300;
 const DESC_W: i32 = 520;
@@ -44,11 +44,11 @@ const FOOTER_H: i32 = 50;
 
 pub struct Group {
     pub title: String,
-    /// (tombol, keterangan)
+    /// (key, description)
     pub rows: Vec<(String, String)>,
 }
 
-/// Isi keterangan: placeholder diganti nilai konfigurasi.
+/// Description content: placeholders are replaced with config values.
 fn describe(desc: &str, cfg: &Config) -> String {
     let height_note = if cfg.height_mode == HeightMode::Step {
         format!(" (±{} px)", cfg.height_step)
@@ -59,7 +59,7 @@ fn describe(desc: &str, cfg: &Config) -> String {
         .replace("{height_note}", &height_note)
 }
 
-/// Tambah satu baris ke kelompok berjudul `group` (dibuat di akhir kalau belum ada).
+/// Add a row to the group titled `group` (create it at the end if it does not exist).
 fn push_row(out: &mut Vec<Group>, group: &str, keys: String, desc: String) {
     match out.iter_mut().find(|g| g.title == group) {
         Some(g) => g.rows.push((keys, desc)),
@@ -70,8 +70,8 @@ fn push_row(out: &mut Vec<Group>, group: &str, keys: String, desc: String) {
     }
 }
 
-/// Baris yang tidak bisa diubah lewat `bind.*`: tombol terkunci, tombol di dalam
-/// overview, dan cadangan. (kelompok, tombol, keterangan)
+/// Rows that cannot be changed through `bind.*`: reserved keys, keys inside the
+/// overview, and fallback shortcuts. (group, key, description)
 fn fixed_rows(cfg: &Config) -> Vec<(&'static str, String, String)> {
     let row = |g: &'static str, k: &str, d: &str| (g, k.to_string(), d.to_string());
     let cycle_keys = "Tab";
@@ -165,11 +165,12 @@ fn fixed_rows(cfg: &Config) -> Vec<(&'static str, String, String)> {
     rows
 }
 
-/// Semua pintasan, dikelompokkan, sesuai konfigurasi sekarang. Baris bisa diikat
-/// dihasilkan dari `bindings::ACTIONS`; aksi se-kelompok dengan keterangan sama digabung
-/// jadi satu baris, tombol ke-2 dst. dari satu aksi jadi baris "(alternate)".
+/// All shortcuts, grouped according to the current config. Bindable rows are
+/// generated from `bindings::ACTIONS`; actions in the same group with the same
+/// description are combined into one row, and a second or later key for one
+/// action gets an "(alternate)" row.
 pub fn groups(cfg: &Config) -> Vec<Group> {
-    // (kelompok, keterangan, indeks aksi) dengan urutan kemunculan di tabel
+    // (group, description, action index), in table order.
     let mut specs: Vec<(&str, &str, Vec<usize>)> = Vec::new();
     for (i, a) in bindings::ACTIONS.iter().enumerate() {
         match specs.iter_mut().find(|s| s.0 == a.group && s.1 == a.desc) {
@@ -187,7 +188,7 @@ pub fn groups(cfg: &Config) -> Vec<Group> {
             .unwrap_or(0);
         let text = describe(desc, cfg);
         if slots == 0 {
-            // tanpa tombol: hanya cheatsheet yang tetap ditampilkan (lewat menu tray)
+            // No shortcut: only the cheatsheet remains available (via the tray menu).
             if idxs.iter().any(|&i| bindings::ACTIONS[i].name == "cheatsheet") {
                 push_row(&mut out, group, "tray menu".to_string(), text);
             }
@@ -216,7 +217,7 @@ pub fn groups(cfg: &Config) -> Vec<Group> {
 pub enum CellKind {
     Title,
     Header,
-    /// Garis tipis di bawah judul kelompok.
+    /// Thin line below the group title.
     Rule,
     Keys,
     Desc,
@@ -226,7 +227,7 @@ pub enum CellKind {
 pub struct Cell {
     pub kind: CellKind,
     pub text: String,
-    /// Relatif terhadap sudut kiri atas panel.
+    /// Relative to the panel's top-left corner.
     pub rect: RECT,
 }
 
@@ -241,8 +242,8 @@ fn group_height(g: &Group, row_h: i32) -> i32 {
     HEADER_H + g.rows.len() as i32 * row_h + GROUP_GAP
 }
 
-/// Bagi kelompok ke `n` kolom (yang terpendek dulu). Mengembalikan tinggi tiap kolom
-/// dan isinya (indeks kelompok).
+/// Split groups into `n` columns (shortest first). Returns each column's height
+/// and contents (group indices).
 fn assign(groups: &[Group], n: i32, row_h: i32) -> (Vec<i32>, Vec<Vec<usize>>) {
     let n = n.max(1) as usize;
     let mut heights = vec![0; n];
@@ -255,9 +256,9 @@ fn assign(groups: &[Group], n: i32, row_h: i32) -> (Vec<i32>, Vec<Vec<usize>>) {
     (heights, members)
 }
 
-/// Hitung panel dan posisi semua teks. Dua kolom kalau lebar layar cukup
-/// (tampil lebih ringkas); satu kolom kalau tidak. Kalau masih melebihi batas tinggi
-/// layar, jarak baris dipersempit (sampai batas terbaca) supaya tetap muat.
+/// Calculate the panel and all text positions. Use two columns if the screen is wide
+/// enough (more compact); otherwise use one. If it still exceeds the screen height,
+/// tighten row spacing (to a readable minimum) so everything fits.
 pub fn compute(groups: &[Group], work: Rect) -> Sheet {
     let longest = groups
         .iter()
@@ -380,7 +381,7 @@ pub fn compute(groups: &[Group], work: Rect) -> Sheet {
     }
 }
 
-// ------------------------------------------------------------------- jendela
+// ------------------------------------------------------------------- window
 
 const ANIM_TIMER_ID: usize = 1;
 const ANIM_TICK_MS: u32 = 16;
@@ -541,7 +542,7 @@ unsafe fn paint(hwnd: HWND) {
                         canvas.fill_rect(line, pal.divider, 255);
                     }
                     CellKind::Keys => {
-                        // Lencana keycap membulat khas Windows 11 Settings / PowerToys
+                        // Rounded keycap badge like the one in Windows 11 Settings / PowerToys.
                         let wide: Vec<u16> = cell.text.encode_utf16().collect();
                         SelectObject(canvas.hdc(), HGDIOBJ(f_key.0));
                         let mut sz = SIZE::default();
@@ -645,7 +646,7 @@ unsafe extern "system" fn cs_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             LRESULT(0)
         }
         WM_ACTIVATE => {
-            // pindah ke window lain: tutup tanpa merebut fokus kembali
+            // Switching to another window: close without reclaiming focus.
             if (wparam.0 & 0xFFFF) == 0 {
                 close(false);
             }
@@ -655,7 +656,7 @@ unsafe extern "system" fn cs_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     }
 }
 
-/// Buat jendela cheatsheet (tersembunyi) sekali di awal.
+/// Create the (hidden) cheatsheet window once at startup.
 pub unsafe fn init() -> bool {
     let Ok(hmod) = GetModuleHandleW(None) else {
         return false;
@@ -699,7 +700,7 @@ pub unsafe fn init() -> bool {
     true
 }
 
-/// Buka cheatsheet, atau tutup kalau sedang terbuka.
+/// Open the cheatsheet, or close it if already open.
 pub unsafe fn toggle(work: Rect, cfg: &Config) {
     if VISIBLE.load(Ordering::Relaxed) {
         close(true);
@@ -741,7 +742,7 @@ pub unsafe fn toggle(work: Rect, cfg: &Config) {
     }
 }
 
-/// Tutup tanpa mengembalikan fokus (mis. saat dijeda).
+/// Close without restoring focus (e.g. when paused).
 pub unsafe fn hide() {
     VISIBLE.store(false, Ordering::Relaxed);
     finish_close();
@@ -781,7 +782,7 @@ mod tests {
         assert!(rows
             .iter()
             .any(|(k, d)| k == "Ctrl + Alt + X" && d == "close the window"));
-        assert!(!rows.iter().any(|(_, d)| d == "minimize the window")); // dimatikan: tidak tampil
+        assert!(!rows.iter().any(|(_, d)| d == "minimize the window")); // Disabled: not shown.
         assert!(!rows.iter().any(|(k, _)| k == "Win + Q"));
     }
 
@@ -793,7 +794,7 @@ mod tests {
             let desc = describe(a.desc, &cfg);
             let hit = rows.iter().any(|(_, d)| d.starts_with(&desc));
             assert!(hit, "{} tidak muncul di cheatsheet", a.name);
-            // dan tombol bawaannya tertulis di baris itu
+            // And the default key appears in that row.
             for c in cfg.bindings.chords(i) {
                 let label = match c.key {
                     bindings::Key::Vk(v) => bindings::vk_label(v),
@@ -910,7 +911,7 @@ mod tests {
         let rows = groups.iter().map(|g| g.rows.len()).sum::<usize>();
         let keys = s.cells.iter().filter(|c| c.kind == CellKind::Keys).count();
         let descs = s.cells.iter().filter(|c| c.kind == CellKind::Desc).count();
-        assert_eq!((keys, descs), (rows, rows)); // semua baris tampil
+        assert_eq!((keys, descs), (rows, rows)); // All rows are shown.
     }
 
     #[test]

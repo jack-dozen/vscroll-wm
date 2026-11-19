@@ -1,6 +1,6 @@
-//! File layout.state: susunan workspace yang disimpan supaya, kalau vscroll-wm dijalankan
-//! ulang selagi window-window itu masih terbuka, urutan / lebar / tinggi / workspace-nya
-//! kembali seperti semula. Teks biasa, satu baris per item:
+//! layout.state file: saved workspace layouts are restored when vscroll-wm is
+//! restarted while its windows are still open, preserving their order / width /
+//! height / workspace. Plain text, one line per item:
 //!
 //!   vscroll-layout 1
 //!   active 1
@@ -8,9 +8,9 @@
 //!   focus 197634
 //!   item 197634 left half full 500 chrome.exe|Chrome_WidgetWin_1
 //!
-//! Window dikenali lewat handle-nya (valid selama window itu terbuka) ditambah identitas
-//! `exe|class`, supaya handle yang dipakai ulang oleh window lain (mis. setelah komputer
-//! di-restart) tidak salah tempat.
+//! Windows are identified by their handles (valid while the window is open) plus
+//! an `exe|class` identity, so a handle reused by another window (e.g. after a
+//! computer restart) does not restore the layout to the wrong window.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -19,7 +19,7 @@ use layout::{Height, Item, SavedLayout, SavedStrip, Span, WindowId};
 
 const HEADER: &str = "vscroll-layout 1";
 
-/// %LOCALAPPDATA%\vscroll-wm\layout.state (atau di samping exe kalau tidak ada).
+/// %LOCALAPPDATA%\vscroll-wm\layout.state (or next to the executable if unavailable).
 pub fn path() -> Option<PathBuf> {
     let base = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
@@ -68,8 +68,8 @@ fn parse_height(s: &str) -> Option<Height> {
     })
 }
 
-/// Susunan -> teks. `ident` memberi identitas tiap window; yang tidak punya (None)
-/// tidak disimpan.
+/// Layout -> text. `ident` provides each window's identity; windows without one
+/// (None) are not saved.
 pub fn encode(saved: &SavedLayout, ident: impl Fn(WindowId) -> Option<String>) -> String {
     let mut body = String::new();
     let mut kept = 0usize;
@@ -109,7 +109,7 @@ pub fn encode(saved: &SavedLayout, ident: impl Fn(WindowId) -> Option<String>) -
     format!("{HEADER}\nactive {active}\n{body}")
 }
 
-/// Teks -> susunan + identitas tiap window. None kalau formatnya tidak dikenal / rusak.
+/// Text -> layout + each window's identity. None if the format is unknown / invalid.
 pub fn decode(text: &str) -> Option<(SavedLayout, HashMap<u64, String>)> {
     let mut lines = text.lines();
     if lines.next()?.trim() != HEADER {
@@ -198,9 +198,9 @@ mod tests {
         let text = encode(&sample(), ident);
         let (back, idents) = decode(&text).expect("decodes");
         let mut want = sample();
-        want.strips.pop(); // workspace kosong tidak disimpan
+        want.strips.pop(); // Empty workspaces are not saved.
         assert_eq!(back, want);
-        assert_eq!(idents[&10], "app10.exe|Some Class 10"); // spasi di identitas selamat
+        assert_eq!(idents[&10], "app10.exe|Some Class 10"); // Spaces in the identity are preserved.
         assert_eq!(idents.len(), 3);
     }
 
@@ -209,13 +209,13 @@ mod tests {
         let text = encode(&sample(), |id| (id.0 != 11).then(|| "a|b".to_string()));
         let (back, _) = decode(&text).unwrap();
         assert_eq!(back.strips[0].items.len(), 1);
-        assert_eq!(back.strips[0].focused, None); // window fokusnya tidak ikut
+        assert_eq!(back.strips[0].focused, None); // Focused window is not included.
         assert_eq!(back.active, 1);
     }
 
     #[test]
     fn active_index_follows_dropped_workspaces() {
-        // workspace 0 tidak punya window yang dikenal: aktif (tadinya 1) jadi 0
+        // Workspace 0 has no known windows: the active workspace (previously 1) becomes 0.
         let text = encode(&sample(), |id| (id.0 == 12).then(|| "a|b".to_string()));
         let (back, _) = decode(&text).unwrap();
         assert_eq!(back.strips.len(), 1);
@@ -226,8 +226,8 @@ mod tests {
     fn rejects_unknown_or_broken_files() {
         assert!(decode("").is_none());
         assert!(decode("something else\n").is_none());
-        assert!(decode("vscroll-layout 1\nactive 0\n").is_none()); // tanpa workspace
-        assert!(decode("vscroll-layout 1\nitem 1 full full full 500 a|b\n").is_none()); // item tanpa strip
+        assert!(decode("vscroll-layout 1\nactive 0\n").is_none()); // No workspace.
+        assert!(decode("vscroll-layout 1\nitem 1 full full full 500 a|b\n").is_none()); // Item without a strip.
         assert!(decode("vscroll-layout 1\nstrip\nitem x full full full 500 a|b\n").is_none());
         assert!(decode("vscroll-layout 1\nstrip\nitem 1 wide full full 500 a|b\n").is_none());
         assert!(decode("vscroll-layout 1\nstrip\nbogus line\n").is_none());

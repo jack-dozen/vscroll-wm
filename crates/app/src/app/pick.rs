@@ -1,4 +1,4 @@
-//! Mode angkat-dan-jatuhkan (`pick`) langsung di desktop dengan marker overlay.
+//! Lift-and-drop (`pick`) mode directly on the desktop with an overlay marker.
 
 use std::sync::atomic::Ordering;
 
@@ -14,14 +14,14 @@ use crate::winutil::work_area;
 
 pub(crate) struct PickSession {
     pub(crate) src: WindowId,
-    /// Ikon app `src` (HICON sebagai isize; 0 = tidak ada), diambil sekali saat angkat.
+    /// App icon for `src` (HICON as isize; 0 = none), captured once when picked up.
     pub(crate) icon: isize,
     pub(crate) slots: Vec<PickSlot>,
     pub(crate) idx: usize,
 }
 
 impl App {
-    /// Masuk / keluar mode angkat-dan-jatuhkan untuk window yang sedang fokus.
+    /// Enter / exit lift-and-drop mode for the focused window.
     pub(crate) unsafe fn toggle_pick(&mut self) {
         if self.pick.is_some() {
             self.pick_cancel();
@@ -50,7 +50,7 @@ impl App {
         self.pick_show_current();
     }
 
-    /// Gulung viewport ke slot terpilih dan tampilkan marker overlay di posisinya.
+    /// Scroll the viewport to the selected slot and show the overlay marker there.
     unsafe fn pick_show_current(&mut self) {
         let Some((slot, icon)) = self
             .pick
@@ -85,8 +85,8 @@ impl App {
         pick_overlay::show(screen, color, icon);
     }
 
-    /// Geser marker overlay ke arah panah (`dir_idx` = indeks di `DIRS`).
-    /// Di tepi kiri / kanan strip, menyeberang ke workspace sebelah (termasuk workspace kosong).
+    /// Move the overlay marker in the arrow direction (`dir_idx` = index in `DIRS`).
+    /// At the strip's left / right edge, cross to the neighboring workspace (including an empty one).
     pub(crate) unsafe fn pick_move(&mut self, dir_idx: usize) {
         let Some(&(_, dir)) = DIRS.get(dir_idx) else {
             return;
@@ -134,7 +134,7 @@ impl App {
         self.pick_show_current();
     }
 
-    /// Jatuhkan window di marker terpilih (`Enter` / `Space`).
+    /// Drop the window at the selected marker (`Enter` / `Space`).
     pub(crate) unsafe fn pick_accept(&mut self) {
         let Some(sess) = self.pick.take() else {
             return;
@@ -173,7 +173,7 @@ impl App {
             return;
         }
         if cross_ws {
-            // pastikan workspace tujuan tetap aktif setelah normalize()
+            // Ensure the destination workspace remains active after normalize().
             let _ = self.ws.focus_window(src);
         }
         self.apply();
@@ -187,7 +187,7 @@ impl App {
         }
     }
 
-    /// Batalkan mode angkat-dan-jatuhkan (`Esc` atau tekan tombol pick lagi).
+    /// Cancel lift-and-drop mode (`Esc` or press the pick key again).
     pub(crate) unsafe fn pick_cancel(&mut self) {
         let Some(sess) = self.pick.take() else {
             return;

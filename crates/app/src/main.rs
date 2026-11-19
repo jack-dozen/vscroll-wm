@@ -1,30 +1,30 @@
-//! v1: satu monitor. Tracking window lewat event Windows (SetWinEventHook) plus
-//! polling lambat 1 detik sebagai jaring pengaman.
+//! v1: single monitor. Track windows via Windows events (SetWinEventHook) plus
+//! slow polling every second as a safety net.
 //!
-//! Win+Arrow             -> snap window aktif (hook, menelan Win+Arrow bawaan)
-//! Win+Shift+Arrow       -> pindah fokus
-//! Win+Enter             -> kembalikan window aktif ke penuh
-//! Win+Alt+Arrow         -> tukar posisi dengan window tetangga
-//! Win+Alt+Shift+Arrow   -> gabung cepat ke window tetangga (split / bertumpuk)
-//! Win+Alt+Space         -> angkat window & pilih tempat mendarat (panah + marker overlay)
-//! Win+Alt+F             -> float / tile window aktif
-//! Win+Alt+I             -> cetak info window aktif (class / exe / title) di console
-//! Win+Tab               -> overview: peta strip (tombol: overview_key)
-//! Win+] / Win+[         -> lebarkan / sempitkan lajur window aktif (geser pembagi)
-//! Win+\                 -> kembalikan pembagi lajur ke 50/50
-//! Win+/                 -> cheatsheet pintasan keyboard (tombol: cheatsheet_key)
-//! Win+Q                 -> tutup window aktif
-//! Win+M                 -> minimize window aktif
-//! Win+Ctrl+Kiri/Kanan   -> workspace sebelumnya / berikutnya (+Shift: kirim window aktif)
-//! Win+Ctrl+1..9         -> pindah ke workspace n (+Shift: kirim window aktif ke sana)
-//! Win+Ctrl+Esc          -> keluar dan kembalikan semua window (juga Ctrl+C)
-//! Ctrl+Alt+... (cadangan, aksi yang sama)
+//! Win+Arrow             -> snap the active window (hook swallows built-in Win+Arrow)
+//! Win+Shift+Arrow       -> move focus
+//! Win+Enter             -> restore the active window to full size
+//! Win+Alt+Arrow         -> swap positions with a neighboring window
+//! Win+Alt+Shift+Arrow   -> quickly join a neighboring window (split / stack)
+//! Win+Alt+Space         -> lift a window and choose a destination (arrows + overlay marker)
+//! Win+Alt+F             -> float / tile the active window
+//! Win+Alt+I             -> print active window info (class / exe / title) to the console
+//! Win+Tab               -> overview: strip map (key: overview_key)
+//! Win+] / Win+[         -> widen / narrow the active window's column (move divider)
+//! Win+\                 -> reset the column divider to 50/50
+//! Win+/                 -> keyboard shortcuts cheatsheet (key: cheatsheet_key)
+//! Win+Q                 -> close the active window
+//! Win+M                 -> minimize the active window
+//! Win+Ctrl+Left/Right   -> previous / next workspace (+Shift: send active window)
+//! Win+Ctrl+1..9         -> switch to workspace n (+Shift: send active window there)
+//! Win+Ctrl+Esc          -> exit and restore all windows (also Ctrl+C)
+//! Ctrl+Alt+... (fallback, same actions)
 //!
-//! Aslinya:
-//! Ctrl+Alt+Arrow        -> snap window aktif
-//! Ctrl+Alt+Shift+Arrow  -> pindah fokus
-//! Ctrl+Alt+Enter        -> kembalikan window aktif ke penuh (lebar + tinggi)
-//! Tutup dengan Ctrl+C di console.
+//! Original bindings:
+//! Ctrl+Alt+Arrow        -> snap the active window
+//! Ctrl+Alt+Shift+Arrow  -> move focus
+//! Ctrl+Alt+Enter        -> restore the active window to full size (width + height)
+//! Exit with Ctrl+C in the console.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -197,20 +197,20 @@ fn main() {
                 event_hooks.push(h);
             }
         }
-        // Dengan event hook, polling cuma jaring pengaman (mis. window yang baru
-        // diberi judul setelah muncul). Tanpa hook, kembali ke polling cepat.
+        // With event hooks, polling is only a safety net (e.g. for windows titled
+        // shortly after appearing). Without hooks, use frequent polling instead.
         let poll_ms = if event_hooks.is_empty() { 300 } else { 1000 };
         SetTimer(None, 1, poll_ms, None);
 
         println!("vscroll-wm jalan. Win+Arrow = snap, +Shift = fokus, Win+Enter = penuh, Win+Alt = tukar posisi, Win+Alt+F = float/tile, Win+Alt+I = info window, Win+Q = tutup, Win+M = minimize, Win+<overview_key> / Win+Alt+Space = overview, Win+<cheatsheet_key> = daftar pintasan (cadangan: Ctrl+Alt+...). Win+Ctrl+Esc atau Ctrl+C = keluar dan pulihkan semua window.");
-        app.restore_layout(); // susunan dari sesi sebelumnya, untuk window yang masih terbuka
+        app.restore_layout(); // Layout from the previous session, for windows that are still open.
         let changed = app.sync();
-        app.restore_all_tabs(); // tombol taskbar yang tertinggal dari proses sebelumnya yang mati paksa
+        app.restore_all_tabs(); // Taskbar buttons left behind by a force-killed previous process.
         if changed {
             app.apply();
         }
 
-        app::show_config_problems(&report); // salah ketik di config langsung terlihat
+        app::show_config_problems(&report); // Show config typos immediately.
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
             match msg.message {
@@ -246,7 +246,7 @@ fn main() {
                     }
                 }
                 WM_TIMER if !msg.hwnd.0.is_null() => {
-                    // timer milik sebuah jendela (osd workspace): serahkan ke window proc-nya
+                    // Timer owned by a window (workspace OSD): forward it to that window's procedure.
                     let _ = TranslateMessage(&msg);
                     DispatchMessageW(&msg);
                 }
@@ -269,20 +269,20 @@ fn main() {
                         }
                     } else if !paused {
                         if app.sync() {
-                            app.apply(); // jaring pengaman
+                            app.apply(); // Safety net.
                         }
-                        app.save_layout(); // hanya menulis kalau susunan berubah
+                        app.save_layout(); // Write only if the layout changed.
                     }
                 }
                 _ => {
-                    // pesan untuk window tray (menu, dll)
+                    // Message for the tray window (menu, etc.).
                     let _ = TranslateMessage(&msg);
                     DispatchMessageW(&msg);
                 }
             }
         }
 
-        // Keluar: simpan susunan terakhir, lalu kembalikan semua window ke posisi aslinya.
+        // Exit: save the final layout, then restore all windows to their original positions.
         app.save_layout();
         app.stop_anim_timer();
         app.stop_sync_timer();

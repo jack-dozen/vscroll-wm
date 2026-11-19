@@ -1,49 +1,49 @@
-//! Konfigurasi: file teks `vscroll-wm.conf` berisi baris `kunci = nilai`.
-//! Lokasi: env VSCROLL_CONFIG, atau di samping exe, atau di folder kerja.
-//! Env VSCROLL_GAP / VSCROLL_ANIM_MS (kalau ada) menimpa isi file.
+//! Configuration: the `vscroll-wm.conf` text file contains `key = value` lines.
+//! Location: VSCROLL_CONFIG environment variable, next to the executable, or in the working directory.
+//! VSCROLL_GAP / VSCROLL_ANIM_MS environment variables (if set) override the file values.
 //!
-//! Kunci yang dikenal:
-//!   gap      = 16     jarak antar window dan ke tepi layar (piksel, 0-200)
-//!   anim_ms  = 160    durasi animasi (ms, 0 = mati). Kosong = bawaan; otomatis
-//!                     mati kalau "Animation effects" Windows dimatikan.
-//!   focus_border = #4FA8F5   warna border window yang fokus (Windows 11).
-//!                     Kosong / off = tidak diubah.
-//!   overview_hint = on        petunjuk tombol di bagian bawah overview
-//!   overview_thumbnails = on  tampilan mini tiap window di overview
-//!   overview_label = title    isi label kotak: title (judul penuh), app (nama app
-//!                     saja), reverse ("judul - Vivaldi" jadi "Vivaldi - judul")
-//!   alias.code = VS Code      nama tampilan untuk mode `app` (nama exe tanpa .exe)
-//!   cheatsheet_key = slash    tombol cheatsheet bersama Win: slash (/), f1-f12, tab,
-//!                     space, grave, satu huruf/angka, atau off. Beda dari overview_key.
-//!   resize_step = 80          langkah Win+[ dan Win+] (piksel, 10-400)
-//!   height_mode = preset      Win+↑/↓: preset (1/3, 1/2, penuh) atau step (per langkah)
-//!   height_step = 80          langkah Win+↑/↓ di mode step (piksel, 10-400)
-//!   overview_size = 70        ukuran panel overview, persen dari area kerja (30-100)
-//!   overview_key = tab        tombol overview bersama Win: tab, space, grave, satu
-//!                     huruf/angka (bukan q/m), atau off. Win+Alt+Space selalu aktif.
+//! Recognized keys:
+//!   gap      = 16     gap between windows and from the screen edge (pixels, 0-200)
+//!   anim_ms  = 160    animation duration (ms, 0 = off). Empty = default; automatically
+//!                     off when Windows "Animation effects" is disabled.
+//!   focus_border = #4FA8F5   border color for the focused window (Windows 11).
+//!                     Empty / off = unchanged.
+//!   overview_hint = on        key hints at the bottom of the overview
+//!   overview_thumbnails = on  thumbnail of each window in the overview
+//!   overview_label = title    box label: title (full title), app (app name only),
+//!                     reverse ("title - Vivaldi" becomes "Vivaldi - title")
+//!   alias.code = VS Code      display name for `app` mode (executable name without .exe)
+//!   cheatsheet_key = slash    cheatsheet key with Win: slash (/), f1-f12, tab,
+//!                     space, grave, a letter/number, or off. Differs from overview_key.
+//!   resize_step = 80          Win+[ and Win+] step size (pixels, 10-400)
+//!   height_mode = preset      Win+↑/↓: preset (1/3, 1/2, full) or step (incremental)
+//!   height_step = 80          Win+↑/↓ step size in step mode (pixels, 10-400)
+//!   overview_size = 70        overview panel size, percent of work area (30-100)
+//!   overview_key = tab        overview key with Win: tab, space, grave, a
+//!                     letter/number (not q/m), or off. Win+Alt+Space is always active.
 //!   overview_color_selected / _active / _view / _background / _box = #RRGGBB
-//!   mouse_drag = on           seret window ke window lain = tukar posisi; tarik tepi window yang
-//!                     berbatasan dengan pembagi lajur = geser pembagi; di overview, seret
-//!                     window ke kolom workspace lain = pindah workspace
-//!   remember_layout = on      simpan susunan workspace; dipulihkan kalau vscroll-wm dijalankan
-//!                     ulang selagi window-windownya masih terbuka
-//!   workspace_osd = on        panel kecil sesaat di bagian bawah layar setiap pindah workspace
-//!   workspace_osd_dots = off  tampilkan indikator titik/pil jumlah workspace di bawah teks OSD
-//!   overview_wrap = on        panah di overview berputar: dari ujung loncat ke ujung seberang
-//!   snap_layouts = on         menu preset layout muncul saat window diseret ke tepi atas layar;
-//!                     lepas di sebuah zona = window mengisi zona itu
-//!   snap_layouts_defaults = on  sertakan preset bawaan (halves, quarters, ...)
-//!   snap_trigger = 24         lebar pita (piksel) di tepi atas layar yang memunculkan menu
-//!   snap_assist = on          setelah window masuk zona, zona lain menampilkan daftar window
-//!                     yang terbuka untuk diklik
-//!   snap_layout.<nama> = split=67, L, R:1/2, R:1/2   preset sendiri (atau `off` untuk
-//!                     membuang preset bawaan dengan nama itu); lihat vscroll-wm.conf.example
-//!   bind.<aksi> = win+q       ubah pintasan (daftar aksi: bindings.rs / vscroll-wm.conf.example).
-//!                     Beberapa tombol dipisah koma, off = dimatikan. overview_key dan
-//!                     cheatsheet_key tetap berlaku sebagai tombol bawaan bind.overview /
+//!   mouse_drag = on           drag a window onto another to swap positions; drag a window edge
+//!                     next to the column divider to move it; in overview, drag a window
+//!                     to another workspace column to switch workspaces
+//!   remember_layout = on      save workspace layout; restore it when vscroll-wm is restarted
+//!                     while its windows are still open
+//!   workspace_osd = on        brief panel at the bottom of the screen on each workspace switch
+//!   workspace_osd_dots = off  show workspace-count dots/pill below the OSD text
+//!   overview_wrap = on        overview arrows wrap from one end to the other
+//!   snap_layouts = on         show preset layouts when a window is dragged to the top edge;
+//!                     release over a zone to place the window there
+//!   snap_layouts_defaults = on  include built-in presets (halves, quarters, ...)
+//!   snap_trigger = 24         trigger band width (pixels) at the top edge of the screen
+//!   snap_assist = on          after a window enters a zone, other zones show a list of
+//!                     open windows to choose from
+//!   snap_layout.<name> = split=67, L, R:1/2, R:1/2   custom preset (or `off` to
+//!                     remove the built-in preset with that name); see vscroll-wm.conf.example
+//!   bind.<action> = win+q     change a shortcut (action list: bindings.rs / vscroll-wm.conf.example).
+//!                     Separate multiple keys with commas; off = disabled. overview_key and
+//!                     cheatsheet_key remain the defaults for bind.overview /
 //!                     bind.cheatsheet.
 //!
-//! Komentar hanya berlaku untuk baris yang diawali #.
+//! Comments apply only to lines beginning with #.
 
 use std::path::PathBuf;
 
@@ -51,19 +51,19 @@ use crate::bindings::{self, Bindings, Chord, WIN};
 
 pub const DEFAULT_GAP: i32 = 16;
 
-/// COLORREF (0x00BBGGRR) dari komponen RGB.
+/// COLORREF (0x00BBGGRR) from RGB components.
 pub const fn rgb(r: u32, g: u32, b: u32) -> u32 {
     r | (g << 8) | (b << 16)
 }
 
-/// Warna di overview.
+/// Overview colors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OverviewColors {
-    /// Kursor overview: window yang akan dituju.
+    /// Overview cursor: the window to focus.
     pub selected: u32,
-    /// Window yang sedang aktif sekarang.
+    /// The currently active window.
     pub active: u32,
-    /// Bingkai bagian strip (baris) yang sedang tampil di layar.
+    /// Frame around the strip section (row) currently visible on screen.
     pub view: u32,
     pub background: u32,
     pub box_fill: u32,
@@ -81,70 +81,70 @@ impl Default for OverviewColors {
     }
 }
 
-/// Isi label kotak di overview.
+/// Content of an overview box label.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LabelMode {
-    /// Judul window apa adanya.
+    /// Window title as-is.
     Title,
-    /// Nama app saja (dari nama exe).
+    /// App name only (from the executable name).
     App,
-    /// Bagian setelah " - " dipindah ke depan: "judul - Vivaldi" jadi "Vivaldi - judul".
+    /// Move the part after " - " to the front: "title - Vivaldi" becomes "Vivaldi - title".
     Reverse,
 }
 
-/// Cara Win+↑/↓ mengubah tinggi window.
+/// How Win+↑/↓ changes the window height.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HeightMode {
-    /// Lompat antar preset 1/3, 1/2, penuh.
+    /// Jump among the 1/3, 1/2, and full presets.
     Preset,
-    /// Geser `height_step` piksel per tekan.
+    /// Move by `height_step` pixels per press.
     Step,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     pub gap: i32,
-    /// None = bawaan (160 ms, atau mati bila animasi sistem dimatikan).
+    /// None = default (160 ms, or off when system animations are disabled).
     pub anim_ms: Option<f32>,
-    /// Warna border fokus sebagai COLORREF (0x00BBGGRR). None = tidak diubah.
+    /// Focus border color as COLORREF (0x00BBGGRR). None = unchanged.
     pub focus_border: Option<u32>,
-    /// Warna border target saat membidik `join` (COLORREF). None = ikut `focus_border`.
+    /// Target border color while aiming in `join` mode (COLORREF). None = use `focus_border`.
     pub join_border: Option<u32>,
     pub overview_hint: bool,
     pub overview_thumbnails: bool,
     pub overview_label: LabelMode,
-    /// Nama tampilan untuk mode `app`: (nama exe tanpa .exe, huruf kecil) -> nama.
+    /// Display name for `app` mode: (lowercase executable name without .exe) -> name.
     pub aliases: Vec<(String, String)>,
-    /// Langkah pergeseran pembagi lajur per tekan Win+[ / Win+] (piksel).
+    /// Column divider movement per Win+[ / Win+] press (pixels).
     pub resize_step: i32,
     pub height_mode: HeightMode,
     pub height_step: i32,
-    /// Kode virtual-key tombol cheatsheet (bersama Win). 0 = dimatikan.
+    /// Virtual-key code for the cheatsheet key (with Win). 0 = disabled.
     pub cheatsheet_key: u16,
-    /// Ukuran panel overview dalam persen area kerja.
+    /// Overview panel size as a percentage of the work area.
     pub overview_size: i32,
-    /// Kode virtual-key tombol overview (bersama Win). 0 = dimatikan.
+    /// Virtual-key code for the overview key (with Win). 0 = disabled.
     pub overview_key: u16,
     pub overview_colors: OverviewColors,
-    /// Panah di overview berputar (dari ujung loncat ke ujung seberang).
+    /// Overview arrows wrap (jump from one end to the other).
     pub overview_wrap: bool,
-    /// Panel kecil sesaat setiap pindah workspace.
+    /// Brief panel shown on each workspace switch.
     pub workspace_osd: bool,
-    /// Tampilkan deretan titik/pil indikator workspace di OSD (bawaan: mati).
+    /// Show workspace indicator dots/pill in the OSD (default: off).
     pub workspace_osd_dots: bool,
-    /// Simpan / pulihkan susunan workspace (layout.state).
+    /// Save / restore the workspace layout (layout.state).
     pub remember_layout: bool,
-    /// Drag mouse: tukar posisi, geser pembagi (di layar) dan pindah workspace (di overview).
+    /// Mouse drag: swap positions, move the divider (on the desktop), and switch workspaces (in overview).
     pub mouse_drag: bool,
-    /// Menu snap layouts saat window diseret ke tepi atas layar.
+    /// Snap layouts menu when a window is dragged to the top edge of the screen.
     pub snap_layouts_enabled: bool,
-    /// Tinggi pita pemicu menu di tepi atas area kerja (piksel).
+    /// Height of the menu trigger band at the top of the work area (pixels).
     pub snap_trigger: i32,
-    /// Daftar window untuk mengisi zona yang masih kosong setelah snap.
+    /// Window list for filling zones left empty after snapping.
     pub snap_assist: bool,
-    /// Preset yang ditawarkan menu, urut seperti ditampilkan (bawaan, lalu buatan sendiri).
+    /// Presets offered by the menu, in display order (built-in, then custom).
     pub snap_layouts: Vec<layout::SnapPreset>,
-    /// Tombol tiap aksi (bawaan + `bind.*` + overview_key / cheatsheet_key).
+    /// Keys for each action (defaults + `bind.*` + overview_key / cheatsheet_key).
     pub bindings: Bindings,
 }
 
@@ -181,14 +181,14 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Baca isi file. Mengembalikan konfigurasi dan peringatan untuk baris bermasalah.
+    /// Read the file contents. Returns the config and warnings for problematic lines.
     pub fn parse(text: &str) -> (Config, Vec<String>) {
         let mut cfg = Config::default();
         let mut warnings = Vec::new();
         let mut binds = Bindings::defaults();
-        // aksi yang diatur lewat bind.* (urutan file = urutan prioritas saat bentrok)
+        // Actions configured via bind.* (file order = conflict priority).
         let mut explicit: Vec<usize> = Vec::new();
-        // preset snap layout buatan sendiri (None = buang preset bawaan bernama itu)
+        // Custom snap layout presets (None = remove the built-in preset with that name).
         let mut snap_defaults = true;
         let mut snap_user: Vec<(String, Option<layout::SnapPreset>)> = Vec::new();
         for (n, raw) in text.lines().enumerate() {
@@ -364,8 +364,8 @@ impl Config {
                 .push("cheatsheet_key equals overview_key: cheatsheet key disabled".to_string());
             cfg.cheatsheet_key = 0;
         }
-        // overview_key / cheatsheet_key (cara lama) = tombol bawaan kedua aksi itu,
-        // kecuali kalau sudah diatur lewat bind.*
+        // overview_key / cheatsheet_key (legacy settings) = the default keys for those actions,
+        // unless configured via bind.*
         if let Some(i) = bindings::find_action("overview").filter(|i| !explicit.contains(i)) {
             let list = if cfg.overview_key != 0 {
                 vec![Chord::new(WIN, cfg.overview_key)]
@@ -384,7 +384,7 @@ impl Config {
         }
         warnings.extend(binds.resolve_conflicts(&explicit));
         cfg.bindings = binds;
-        // preset: bawaan dulu, lalu yang buatan sendiri (nama sama = menimpa di tempatnya)
+        // Presets: built-in first, then custom (matching names override in place).
         let mut presets = if snap_defaults {
             layout::builtin_presets()
         } else {
@@ -404,8 +404,8 @@ impl Config {
     }
 }
 
-/// "#RRGGBB" / "RRGGBB" -> Some(Some(COLORREF)); "off"/"none"/kosong -> Some(None);
-/// selain itu None (tidak valid).
+/// "#RRGGBB" / "RRGGBB" -> Some(Some(COLORREF)); "off"/"none"/empty -> Some(None);
+/// otherwise None (invalid).
 fn parse_color(v: &str) -> Option<Option<u32>> {
     let v = v.trim();
     if v.is_empty() || v.eq_ignore_ascii_case("off") || v.eq_ignore_ascii_case("none") {
@@ -427,8 +427,8 @@ fn color_setting(value: &str, target: &mut u32, name: &str, n: usize, warnings: 
     }
 }
 
-/// Nama tombol -> kode virtual-key. "off" = 0 (dimatikan). None = tidak valid
-/// atau bentrok dengan tombol Win+... lain yang sudah dipakai (Q tutup, M minimize).
+/// Key name -> virtual-key code. "off" = 0 (disabled). None = invalid
+/// or conflicts with another used Win+... key (Q close, M minimize).
 fn parse_key(v: &str) -> Option<u16> {
     let v = v.trim().to_lowercase();
     let code: u16 = match v.as_str() {
@@ -464,7 +464,7 @@ fn parse_bool(v: &str) -> Option<bool> {
     }
 }
 
-/// Nama tampilan bawaan untuk exe yang namanya kurang enak dibaca.
+/// Default display name for executables with awkward names.
 const BUILTIN_ALIASES: &[(&str, &str)] = &[
     ("code", "VS Code"),
     ("windowsterminal", "Windows Terminal"),
@@ -482,8 +482,8 @@ const BUILTIN_ALIASES: &[(&str, &str)] = &[
     ("wezterm-gui", "WezTerm"),
 ];
 
-/// Nama app dari nama exe (mis. "vivaldi.exe" -> "Vivaldi"). None kalau tidak
-/// informatif (host UWP), supaya pemanggil memakai judul window.
+/// App name from the executable name (e.g. "vivaldi.exe" -> "Vivaldi"). None if
+/// uninformative (UWP host), so the caller uses the window title.
 pub fn app_name(exe: &str, aliases: &[(String, String)]) -> Option<String> {
     let lower = exe.trim().to_lowercase();
     let stem = lower.strip_suffix(".exe").unwrap_or(&lower).to_string();
@@ -501,7 +501,7 @@ pub fn app_name(exe: &str, aliases: &[(String, String)]) -> Option<String> {
     Some(first.to_uppercase().collect::<String>() + chars.as_str())
 }
 
-/// "judul - bagian - Vivaldi" -> "Vivaldi - judul - bagian" (pemisah terakhir).
+/// "title - section - Vivaldi" -> "Vivaldi - title - section" (split at the last separator).
 fn swap_around_separator(title: &str) -> String {
     let mut best: Option<(usize, &str)> = None;
     for sep in [" - ", " — ", " – "] {
@@ -524,7 +524,7 @@ fn swap_around_separator(title: &str) -> String {
     }
 }
 
-/// Label kotak overview menurut mode yang dipilih.
+/// Overview box label for the selected mode.
 pub fn label(
     mode: LabelMode,
     title: &str,
@@ -556,15 +556,15 @@ fn find_file() -> Option<PathBuf> {
     p.exists().then_some(p)
 }
 
-/// Hasil memuat konfigurasi: isinya, masalah yang ditemukan (untuk ditampilkan ke
-/// pengguna), dan file yang dibaca.
+/// Result of loading configuration: its contents, any issues found (to display
+/// to the user), and the file that was read.
 pub struct LoadReport {
     pub cfg: Config,
     pub problems: Vec<String>,
     pub path: Option<PathBuf>,
 }
 
-/// Muat konfigurasi: bawaan, lalu file, lalu environment variable.
+/// Load configuration: defaults, then file, then environment variables.
 pub fn load() -> LoadReport {
     let mut cfg = Config::default();
     let mut problems = Vec::new();
@@ -628,7 +628,7 @@ mod tests {
         let (cfg, w) = Config::parse("# komentar\nGap = 24\nanim_ms=200\nfocus_border = #4FA8F5\n");
         assert_eq!(cfg.gap, 24);
         assert_eq!(cfg.anim_ms, Some(200.0));
-        assert_eq!(cfg.focus_border, Some(0x00F5_A84F)); // BGR untuk RGB #4FA8F5
+        assert_eq!(cfg.focus_border, Some(0x00F5_A84F)); // BGR for RGB #4FA8F5.
         assert!(w.is_empty());
     }
 
@@ -761,8 +761,8 @@ mod tests {
         assert_eq!(parse_key("Z"), Some(0x5A));
         assert_eq!(parse_key("3"), Some(0x33));
         assert_eq!(parse_key("off"), Some(0));
-        assert_eq!(parse_key("q"), None); // dipakai: tutup window
-        assert_eq!(parse_key("m"), None); // dipakai: minimize
+        assert_eq!(parse_key("q"), None); // Reserved: close window.
+        assert_eq!(parse_key("m"), None); // Reserved: minimize.
         assert_eq!(parse_key("enter"), None);
     }
 
@@ -796,7 +796,7 @@ mod tests {
         assert_eq!(Config::parse("cheatsheet_key = h").0.cheatsheet_key, 0x48);
         assert_eq!(Config::parse("cheatsheet_key = off").0.cheatsheet_key, 0);
         assert_eq!(parse_key("f13"), None);
-        assert_eq!(parse_key("f"), Some(0x46)); // huruf F, bukan F-key
+        assert_eq!(parse_key("f"), Some(0x46)); // Letter F, not the F-key.
         let (cfg, w) = Config::parse("overview_key = z\ncheatsheet_key = z\n");
         assert_eq!(cfg.cheatsheet_key, 0); // bentrok: cheatsheet mengalah
         assert_eq!(w.len(), 1);
@@ -861,13 +861,13 @@ mod tests {
         assert!(w.is_empty(), "{w:?}");
         let b = &cfg.bindings;
         assert_eq!(b.lookup(WIN, 0x58), Some(crate::consts::HOTKEY_CLOSE));
-        assert_eq!(b.lookup(WIN, 0x51), None); // Win+Q tidak lagi menutup
-        assert_eq!(b.lookup(WIN, 0x4D), None); // minimize dimatikan
+        assert_eq!(b.lookup(WIN, 0x51), None); // Win+Q no longer closes the window.
+        assert_eq!(b.lookup(WIN, 0x4D), None); // Minimize is disabled.
         assert_eq!(
             b.lookup(bindings::CTRL | ALT, 0x4F),
             Some(crate::consts::HOTKEY_OVERVIEW)
         );
-        assert_eq!(b.lookup(WIN, 0x09), None); // Win+Tab dilepas (bind.overview menggantikan semuanya)
+        assert_eq!(b.lookup(WIN, 0x09), None); // Win+Tab is unbound (bind.overview replaces it).
     }
 
     #[test]
@@ -892,11 +892,11 @@ mod tests {
         assert_eq!(cfg.bindings.lookup(WIN, 0x70), Some(crate::consts::HOTKEY_CHEATSHEET));
         assert_eq!(cfg.bindings.lookup(WIN | ALT, 0x20), Some(crate::consts::HOTKEY_PICK));
         assert_eq!(cfg.bindings.lookup(WIN, 0x09), None);
-        // bind.* menang atas overview_key
+        // bind.* takes precedence over overview_key
         let (cfg, _) = Config::parse("overview_key = z\nbind.overview = win+o\n");
         assert_eq!(cfg.bindings.lookup(WIN, 0x4F), Some(crate::consts::HOTKEY_OVERVIEW));
         assert_eq!(cfg.bindings.lookup(WIN, 0x5A), None);
-        // overview_key = off: overview tanpa tombol
+        // overview_key = off: overview has no key
         let (cfg, _) = Config::parse("overview_key = off\n");
         assert_eq!(cfg.bindings.lookup(WIN, 0x09), None);
         assert_eq!(cfg.bindings.overview_cycle_vk(), 0);
@@ -926,7 +926,7 @@ mod tests {
         let n = layout::builtin_presets().len();
         assert_eq!(cfg.snap_layouts.len(), n + 1);
         let p = cfg.snap_layouts.last().unwrap();
-        assert_eq!(p.name, "focus"); // kunci konfigurasi tidak peka huruf besar
+        assert_eq!(p.name, "focus"); // Config keys are case-insensitive.
         assert_eq!(p.split, 700);
         assert_eq!(p.zones.len(), 3);
     }
@@ -948,7 +948,7 @@ mod tests {
         assert!(w.is_empty(), "{w:?}");
         assert!(!names(&cfg).contains(&"quarters") && names(&cfg).contains(&"halves"));
 
-        // urutan baris tidak penting untuk snap_layouts_defaults
+        // Line order does not matter for snap_layouts_defaults.
         let (cfg, w) = Config::parse("snap_layout.mine = L, R\nsnap_layouts_defaults = off\n");
         assert!(w.is_empty(), "{w:?}");
         assert_eq!(names(&cfg), vec!["mine"]);

@@ -1,15 +1,14 @@
-//! Sembunyikan / tampilkan tombol taskbar window milik proses lain lewat ITaskbarList.
+//! Hide / show taskbar buttons for windows owned by other processes via ITaskbarList.
 //!
-//! Mengikuti LeopardWM (crates/platform_win32/src/taskbar.rs): DWM cloak ditolak
-//! (E_ACCESSDENIED) untuk window proses lain dan memarkir di luar layar saja tidak
-//! menghapus tombolnya, jadi DeleteTab / AddTab satu-satunya cara yang jalan.
-//! ITaskbarList berjenis apartment-threaded, jadi satu thread STA khusus
-//! memilikinya dan menerima perintah lewat kanal. Best-effort: kalau gagal, semua
-//! fungsi di sini tidak berbuat apa-apa (window tetap bisa dipakai, hanya tombolnya
-//! tetap tampil).
+//! Following LeopardWM (crates/platform_win32/src/taskbar.rs): DWM cloak is rejected
+//! (E_ACCESSDENIED) for windows in other processes, and parking them off-screen does not
+//! remove their buttons, so DeleteTab / AddTab are the only methods that work.
+//! ITaskbarList is apartment-threaded, so a dedicated STA thread owns it and
+//! receives commands over a channel. Best-effort: on failure, all functions here
+//! do nothing (windows remain usable; only their taskbar buttons stay visible).
 //!
-//! TEBAKAN (belum diverifikasi di sini): perilaku DeleteTab untuk window proses lain,
-//! dan apakah Explorer menambahkan tombolnya kembali saat window berubah state.
+//! GUESS (not verified here): how DeleteTab behaves for windows in other processes,
+//! and whether Explorer adds their buttons back when a window's state changes.
 
 use std::collections::HashSet;
 use std::ffi::c_void;
@@ -25,15 +24,15 @@ use windows::Win32::System::Com::{
 use windows::Win32::UI::Shell::{ITaskbarList, TaskbarList};
 
 enum Cmd {
-    /// Hapus tombol (hanya sekali per window sampai ditampilkan lagi).
+    /// Remove the button (only once per window until it is shown again).
     Hide(isize),
-    /// Kembalikan tombol, hanya kalau kita yang menyembunyikannya.
+    /// Restore the button only if we hid it.
     Show(isize),
-    /// Kembalikan tombol tanpa syarat (sisa dari proses sebelumnya yang mati paksa).
+    /// Restore the button unconditionally (left over from a previous process that was force-killed).
     Restore(isize),
-    /// Window sudah ditutup: lupakan tanpa AddTab (HWND bisa didaur ulang).
+    /// The window has closed: forget it without AddTab (the HWND may be reused).
     Forget(isize),
-    /// Kembalikan semua tombol yang kita sembunyikan (jeda).
+    /// Restore all buttons we hid (pause).
     ShowAll,
 }
 
@@ -44,7 +43,7 @@ struct Worker {
 
 static WORKER: Mutex<Option<Worker>> = Mutex::new(None);
 
-/// Mulai thread COM. Panggil sekali saat start.
+/// Start the COM thread. Call once at startup.
 pub fn init() {
     let (tx, rx) = mpsc::channel();
     match std::thread::Builder::new()
@@ -88,12 +87,12 @@ pub fn show_all() {
     send(Cmd::ShowAll);
 }
 
-/// Hentikan thread; semua tombol yang kita sembunyikan dikembalikan dulu. Menunggu
-/// maksimal ~500 ms. Aman dipanggil dari panic hook (try_lock) dan berulang kali.
+/// Stop the thread; first restore all buttons we hid. Wait up to ~500 ms.
+/// Safe to call from a panic hook (try_lock) and multiple times.
 pub fn shutdown() {
     let worker = WORKER.try_lock().ok().and_then(|mut g| g.take());
     if let Some(w) = worker {
-        drop(w.tx); // kanal tertutup -> run() mengembalikan tombol lalu keluar
+        drop(w.tx); // Closed channel -> run() restores the buttons and exits.
         for _ in 0..50 {
             if w.thread.is_finished() {
                 break;
@@ -151,7 +150,7 @@ fn run(rx: Receiver<Cmd>) {
                 }
             }
         }
-        // kanal ditutup: kembalikan semua tombol yang masih kita sembunyikan
+        // Channel closed: restore all buttons that are still hidden.
         for k in hidden.drain() {
             let _ = list.AddTab(hwnd(k));
         }

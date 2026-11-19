@@ -1,11 +1,11 @@
-//! Tema dan primitif gambar bergaya native Windows 11 (Fluent Design / WinUI 3):
-//!  - Membaca mode gelap/terang (`AppsUseLightTheme`) dan warna aksen (`AccentColor`)
-//!    langsung dari registry Windows.
-//!  - Mengaktifkan sudut membulat (`DWMWCP_ROUND`), mode gelap DWM, border 1px halus,
-//!    serta menu klik-kanan native gelap (`uxtheme.dll`).
-//!  - Kanvas double-buffered + GDI+ anti-aliased untuk persegi membulat, pil, dan garis
-//!    halus tanpa kedipan, serta font `Segoe UI Variable` (otomatis jatuh ke `Segoe UI`).
-//!  - Kurva animasi Fluent Decelerate (`cubic-bezier(0.1, 0.9, 0.2, 1.0)`).
+//! Native Windows 11-style theme and drawing primitives (Fluent Design / WinUI 3):
+//!  - Read dark/light mode (`AppsUseLightTheme`) and accent color (`AccentColor`)
+//!    directly from the Windows registry.
+//!  - Enable rounded corners (`DWMWCP_ROUND`), DWM dark mode, a subtle 1px border,
+//!    and native dark right-click menus (`uxtheme.dll`).
+//!  - Double-buffered + anti-aliased GDI+ canvas for rounded rectangles, pills, and
+//!    smooth lines without flicker, plus `Segoe UI Variable` (fallback to `Segoe UI`).
+//!  - Fluent Decelerate animation curve (`cubic-bezier(0.1, 0.9, 0.2, 1.0)`).
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -39,8 +39,8 @@ use crate::config::{rgb, OverviewColors};
 static GDIPLUS_TOKEN: AtomicUsize = AtomicUsize::new(0);
 static HAS_SEGOE_VAR: AtomicBool = AtomicBool::new(false);
 
-/// Inisialisasi GDI+, cek font `Segoe UI Variable`, dan aktifkan tema gelap/terang
-/// otomatis untuk menu popup Win32 (`TrackPopupMenu`). Panggil sekali di `main`.
+/// Initialize GDI+, check for the `Segoe UI Variable` font, and enable automatic
+/// dark/light theming for Win32 popup menus (`TrackPopupMenu`). Call once from `main`.
 pub unsafe fn init() {
     let input = GdiplusStartupInput {
         GdiplusVersion: 1,
@@ -54,7 +54,7 @@ pub unsafe fn init() {
     enable_native_dark_menus();
 }
 
-/// Bersihkan GDI+ saat aplikasi keluar.
+/// Clean up GDI+ when the application exits.
 pub unsafe fn shutdown() {
     let token = GDIPLUS_TOKEN.swap(0, Ordering::Relaxed);
     if token != 0 {
@@ -62,7 +62,7 @@ pub unsafe fn shutdown() {
     }
 }
 
-/// Aktifkan mode gelap/terang otomatis Windows 11 untuk menu konteks (`uxtheme.dll`
+/// Enable automatic Windows 11 dark/light mode for context menus (`uxtheme.dll`
 /// ordinal 135 = `SetPreferredAppMode(AllowDark = 1)`, ordinal 136 = `FlushMenuThemes`).
 unsafe fn enable_native_dark_menus() {
     let Ok(ux) = LoadLibraryW(w!("uxtheme.dll")) else {
@@ -72,7 +72,7 @@ unsafe fn enable_native_dark_menus() {
     type FlushMenuThemesFn = unsafe extern "system" fn();
     if let Some(f) = GetProcAddress(ux, windows::core::PCSTR(135usize as *const u8)) {
         let set_mode: SetPreferredAppModeFn = std::mem::transmute(f);
-        let _ = set_mode(1); // AllowDark: mengikuti tema sistem Windows
+        let _ = set_mode(1); // AllowDark: follow the Windows system theme.
     }
     if let Some(f) = GetProcAddress(ux, windows::core::PCSTR(136usize as *const u8)) {
         let flush: FlushMenuThemesFn = std::mem::transmute(f);
@@ -87,7 +87,7 @@ unsafe extern "system" fn enum_font_cb(
     lparam: windows::Win32::Foundation::LPARAM,
 ) -> i32 {
     *(lparam.0 as *mut bool) = true;
-    0 // cukup tahu ada minimal satu
+    0 // Only need to know that at least one exists.
 }
 
 unsafe fn font_exists(name: &str) -> bool {
@@ -113,8 +113,8 @@ unsafe fn font_exists(name: &str) -> bool {
     found
 }
 
-/// Buat font native Windows 11 (`Segoe UI Variable Display` untuk judul besar,
-/// `Segoe UI Variable Text` untuk teks biasa; otomatis jatuh ke `Segoe UI` di Windows 10).
+/// Create native Windows 11 fonts (`Segoe UI Variable Display` for large headings,
+/// `Segoe UI Variable Text` for regular text; automatically falls back to `Segoe UI` on Windows 10).
 pub unsafe fn create_font(height: i32, weight: i32) -> HFONT {
     let mut lf: LOGFONTW = std::mem::zeroed();
     lf.lfHeight = height;
@@ -136,13 +136,13 @@ pub unsafe fn create_font(height: i32, weight: i32) -> HFONT {
     CreateFontIndirectW(&lf)
 }
 
-// ---------------------------------------------------------------- warna & tema
+// ---------------------------------------------------------------- colors & theme
 
 fn channels(c: u32) -> (u32, u32, u32) {
     (c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF)
 }
 
-/// Campur warna `c` ke arah `toward` sebesar `pct` persen (0..=100).
+/// Blend color `c` toward `toward` by `pct` percent (0..=100).
 pub fn mix(c: u32, toward: u32, pct: u32) -> u32 {
     let p = pct.min(100);
     let (r, g, b) = channels(c);
@@ -151,13 +151,13 @@ pub fn mix(c: u32, toward: u32, pct: u32) -> u32 {
     rgb(f(r, tr), f(g, tg), f(b, tb))
 }
 
-/// Terang gelapnya warna COLORREF (0-255).
+/// Color brightness for a COLORREF (0-255).
 pub fn luminance(c: u32) -> u32 {
     let (r, g, b) = channels(c);
     (r * 299 + g * 587 + b * 114) / 1000
 }
 
-/// Ubah `COLORREF` (0x00BBGGRR) + alpha menjadi format GDI+ `ARGB` (0xAARRGGBB).
+/// Convert `COLORREF` (0x00BBGGRR) + alpha to GDI+ `ARGB` format (0xAARRGGBB).
 pub fn argb(c: u32, alpha: u8) -> u32 {
     let (r, g, b) = channels(c);
     ((alpha as u32) << 24) | (r << 16) | (g << 8) | b
@@ -182,7 +182,7 @@ unsafe fn read_reg_dword(subkey: PCWSTR, value: PCWSTR) -> Option<u32> {
     }
 }
 
-/// True kalau Windows sedang memakai Dark Mode untuk aplikasi.
+/// True if Windows is currently using Dark Mode for the application.
 pub fn is_dark_mode() -> bool {
     unsafe {
         read_reg_dword(
@@ -193,7 +193,7 @@ pub fn is_dark_mode() -> bool {
     }
 }
 
-/// Warna aksen Windows (COLORREF 0x00BBGGRR) dari pengaturan Personalization -> Colors.
+/// Windows accent color (COLORREF 0x00BBGGRR) from Personalization -> Colors settings.
 pub fn system_accent() -> Option<u32> {
     unsafe {
         read_reg_dword(w!(r"Software\Microsoft\Windows\DWM"), w!("AccentColor"))
@@ -201,55 +201,55 @@ pub fn system_accent() -> Option<u32> {
     }
 }
 
-/// Palet warna Fluent Design Windows 11 lengkap.
+/// Complete Windows 11 Fluent Design color palette.
 #[derive(Debug, Clone, Copy)]
 pub struct Palette {
     pub dark: bool,
-    /// Permukaan utama flyout / panel.
+    /// Main flyout / panel surface.
     pub surface: u32,
-    /// Lapisan latar di atas permukaan (mis. kolom workspace).
+    /// Background layer over the surface (e.g. workspace columns).
     pub layer: u32,
-    /// Isi kartu / kotak window.
+    /// Window card / box fill.
     pub card: u32,
-    /// Isi kartu saat disentuh kursor.
+    /// Card fill when hovered.
     pub card_hover: u32,
-    /// Isi kontrol kecil (keycap, titik non-aktif, zona snap diam).
+    /// Small control fill (keycaps, inactive dots, idle snap zones).
     pub control: u32,
-    /// Garis tepi halus 1px khas Fluent Design.
+    /// Subtle 1px Fluent Design border.
     pub stroke: u32,
-    /// Garis tepi lebih tegas untuk kontrol aktif / keycap.
+    /// Stronger border for active controls / keycaps.
     pub stroke_strong: u32,
-    /// Garis pemisah tipis.
+    /// Thin divider.
     pub divider: u32,
-    /// Teks utama.
+    /// Primary text.
     pub text: u32,
-    /// Teks sekunder.
+    /// Secondary text.
     pub text_secondary: u32,
-    /// Teks petunjuk / caption.
+    /// Hint / caption text.
     pub text_muted: u32,
-    /// Warna aksen Windows (disesuaikan kontrasnya untuk mode gelap/terang).
+    /// Windows accent color (contrast-adjusted for dark/light mode).
     pub accent: u32,
-    /// Warna sorotan seleksi (bawaannya ikut aksen Windows).
+    /// Selection highlight color (defaults to the Windows accent).
     pub selected: u32,
-    /// Warna bingkai viewport (bawaannya ikut aksen halus).
+    /// Viewport frame color (defaults to a subtle accent).
     pub view: u32,
 }
 
 impl Palette {
-    /// Bangun palet Fluent Design dari tema Windows aktif; kalau pengguna mengubah
-    /// warna tertentu di `vscroll-wm.conf`, warna kustom itu tetap dihormati.
+    /// Build a Fluent Design palette from the active Windows theme; preserve any
+    /// custom colors the user sets in `vscroll-wm.conf`.
     pub fn resolve(overrides: OverviewColors) -> Self {
         let dark = is_dark_mode();
         let raw_accent = system_accent();
         Self::build(dark, raw_accent, overrides)
     }
 
-    /// Versi murni (tanpa membaca registry) untuk pengujian.
+    /// Pure version (does not read the registry) for tests.
     pub fn build(dark: bool, raw_accent: Option<u32>, overrides: OverviewColors) -> Self {
         let def = OverviewColors::default();
         let sys_accent = match raw_accent {
             Some(c) if dark => {
-                // Mode gelap WinUI 3: cerahkan aksen kalau terlalu gelap agar terbaca
+                // WinUI 3 dark mode: lighten the accent if it is too dark to read.
                 if luminance(c) < 125 {
                     mix(c, rgb(255, 255, 255), 32)
                 } else {
@@ -257,7 +257,7 @@ impl Palette {
                 }
             }
             Some(c) => {
-                // Mode terang WinUI 3: gelapkan aksen kalau terlalu terang agar kontras
+                // WinUI 3 light mode: darken the accent if it is too bright for contrast.
                 if luminance(c) > 165 {
                     mix(c, rgb(0, 0, 0), 28)
                 } else {
@@ -286,7 +286,7 @@ impl Palette {
             mix(sys_accent, rgb(0, 0, 0), 10)
         };
 
-        // Hormati override eksplisit dari vscroll-wm.conf
+        // Respect explicit overrides from vscroll-wm.conf.
         if overrides.background != def.background {
             surface = overrides.background;
         }
@@ -370,8 +370,8 @@ impl Palette {
     }
 }
 
-/// Pasang chrome DWM native Windows 11: sudut membulat (`DWMWCP_ROUND`), mode gelap
-/// DWM, dan border 1px halus.
+/// Apply native Windows 11 DWM chrome: rounded corners (`DWMWCP_ROUND`), DWM dark
+/// mode, and a subtle 1px border.
 pub unsafe fn apply_window_chrome(hwnd: HWND, pal: &Palette, small_corners: bool) {
     let corner: u32 = if small_corners { 3 } else { 2 }; // DWMWCP_ROUNDSMALL / DWMWCP_ROUND
     let _ = DwmSetWindowAttribute(
@@ -396,16 +396,16 @@ pub unsafe fn apply_window_chrome(hwnd: HWND, pal: &Palette, small_corners: bool
     );
 }
 
-// ---------------------------------------------------------------- animasi Fluent
+// ---------------------------------------------------------------- Fluent animation
 
-/// Kurva easing Fluent Decelerate (`cubic-bezier(0.1, 0.9, 0.2, 1.0)`):
-/// responsif dan cepat di awal, mendarat sangat halus tanpa patah (khas WinUI 3).
+/// Fluent Decelerate easing curve (`cubic-bezier(0.1, 0.9, 0.2, 1.0`):
+/// responsive and fast at first, then settles smoothly without a jolt (typical of WinUI 3).
 pub fn ease_fluent_out(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     if t <= 0.0 || t >= 1.0 {
         return t;
     }
-    // Pecahkan x(u) = t untuk bezier kubik dengan P1=(0.1, 0.9), P2=(0.2, 1.0)
+    // Solve x(u) = t for a cubic Bezier with P1=(0.1, 0.9), P2=(0.2, 1.0).
     const X1: f32 = 0.1;
     const Y1: f32 = 0.9;
     const X2: f32 = 0.2;
@@ -426,16 +426,16 @@ pub fn ease_fluent_out(t: f32) -> f32 {
     (3.0 * inv * inv * u * Y1 + 3.0 * inv * u * u * Y2 + u * u * u).clamp(0.0, 1.0)
 }
 
-/// Kurva easing Fluent Accelerate untuk animasi keluar (fade/slide out).
+/// Fluent Accelerate easing curve for exit animations (fade/slide out).
 pub fn ease_fluent_in(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     t * t * t
 }
 
-// ---------------------------------------------------------------- kanvas GDI+
+// ---------------------------------------------------------------- GDI+ canvas
 
-/// Kanvas double-buffered di memori + konteks GDI+ anti-aliased.
-/// Saat `present()` dipanggil (atau `Drop`), hasilnya disalin sekaligus ke layar tanpa kedipan.
+/// Double-buffered in-memory canvas + anti-aliased GDI+ context.
+/// When `present()` is called (or on `Drop`), copy the result to the screen in one flicker-free operation.
 pub struct Canvas {
     dst: HDC,
     mem: HDC,
@@ -633,7 +633,7 @@ mod tests {
     fn fluent_easing_is_monotonic_and_snappy() {
         assert_eq!(ease_fluent_out(0.0), 0.0);
         assert_eq!(ease_fluent_out(1.0), 1.0);
-        // Fluent decelerate cepat di awal: di t=0.25 sudah lewat setengah jalan
+        // Fluent decelerate starts quickly: more than halfway through by t=0.25.
         let q = ease_fluent_out(0.25);
         let h = ease_fluent_out(0.5);
         assert!(q > 0.55 && q < 1.0, "q = {q}");

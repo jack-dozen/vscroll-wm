@@ -1,4 +1,4 @@
-//! Aksi atas window aktif: tutup, minimize, float, jeda, dan info.
+//! Actions for the active window: close, minimize, float, pause, and inspect.
 
 use std::sync::atomic::Ordering;
 
@@ -16,9 +16,9 @@ use super::App;
 use crate::winutil::{title, unmanaged_reason, wid};
 use crate::{bindings, cheatsheet, osd, rules, safety, taskbar, tray};
 
-/// Tampilkan masalah konfigurasi di kotak pesan (build release tidak punya console).
-/// Jalan di thread terpisah supaya message loop tidak terblokir. Tidak melakukan
-/// apa-apa kalau tidak ada masalah.
+/// Show config issues in a message box (release builds have no console).
+/// Run on a separate thread so the message loop is not blocked. Does nothing
+/// when there are no issues.
 pub(crate) fn show_config_problems(report: &crate::config::LoadReport) {
     if report.problems.is_empty() {
         return;
@@ -45,8 +45,8 @@ pub(crate) fn show_config_problems(report: &crate::config::LoadReport) {
 }
 
 impl App {
-    /// Win+Q: tutup window aktif (setara Alt+F4). Hanya window yang kita kenal,
-    /// supaya desktop / taskbar tidak ikut terkirim perintah tutup.
+    /// Win+Q: close the active window (equivalent to Alt+F4). Only windows we
+    /// recognize, so the desktop / taskbar do not receive a close command.
     pub(crate) unsafe fn close_active(&self) {
         let fg = GetForegroundWindow();
         let id = wid(fg);
@@ -60,8 +60,8 @@ impl App {
         }
     }
 
-    /// Win+M: minimize window aktif saja. Fokus pindah ke tetangganya di strip,
-    /// bukan ke window pilihan Windows.
+    /// Win+M: minimize only the active window. Focus moves to its neighbor in
+    /// the strip, not to the window chosen by Windows.
     pub(crate) unsafe fn minimize_active(&mut self) {
         let fg = GetForegroundWindow();
         let id = wid(fg);
@@ -70,7 +70,7 @@ impl App {
             return;
         }
         if tiled {
-            self.ws.set_hidden(id, true); // fokus pindah ke tetangga
+            self.ws.set_hidden(id, true); // Focus moves to the neighbor.
             self.hidden.insert(id);
             self.anim.remove(&id);
         }
@@ -84,8 +84,8 @@ impl App {
         }
     }
 
-    /// Jeda / lanjutkan (menu tray). Saat dijeda semua window dikembalikan ke
-    /// posisi asli dan hotkey diteruskan ke Windows.
+    /// Pause / resume (tray menu). When paused, all windows are restored to
+    /// their original positions and hotkeys are passed through to Windows.
     pub(crate) unsafe fn toggle_pause(&mut self) {
         let paused = !tray::PAUSED.load(Ordering::Relaxed);
         tray::PAUSED.store(paused, Ordering::Relaxed);
@@ -101,7 +101,7 @@ impl App {
             osd::hide();
             self.finish_all_anims();
             self.stop_sync_timer();
-            safety::restore_all(); // juga mengembalikan warna border
+            safety::restore_all(); // Also restores border colors.
             taskbar::show_all();
             self.parked.clear();
             self.leaving.clear();
@@ -113,8 +113,8 @@ impl App {
         }
     }
 
-    /// Win+Alt+I: tampilkan class, exe, dan title window yang sedang aktif, plus
-    /// alasan ditata atau tidaknya. Berguna untuk menulis aturan di vscroll-wm.ignore.
+    /// Win+Alt+I: show the active window's class, exe, and title, plus why it
+    /// is or is not tiled. Useful for writing rules in vscroll-wm.ignore.
     pub(crate) unsafe fn inspect(&self) {
         let h = GetForegroundWindow();
         let id = wid(h);
@@ -140,8 +140,8 @@ impl App {
         );
         println!("---------- window aktif ----------\n{text}\n----------------------------------");
         if !cfg!(debug_assertions) {
-            // Build release tidak punya console: tampilkan di kotak pesan, di thread
-            // terpisah supaya message loop tidak terblokir.
+            // Release builds have no console: show a message box on a separate
+            // thread so the message loop is not blocked.
             let wide: Vec<u16> = text.encode_utf16().chain(Some(0)).collect();
             std::thread::spawn(move || {
                 MessageBoxW(
@@ -154,9 +154,9 @@ impl App {
         }
     }
 
-    /// Window menolak dipindahkan karena hak aksesnya lebih tinggi dari kita (biasanya
-    /// berjalan sebagai administrator; UIPI). Keluarkan dari strip supaya tidak
-    /// memegang slot kosong yang tidak pernah bisa diisi.
+    /// The window refused to move because it has higher privileges than us
+    /// (usually running as administrator; UIPI). Remove it from the strip so
+    /// it does not occupy a slot that can never be filled.
     pub(crate) unsafe fn mark_blocked(&mut self, id: WindowId, h: HWND) {
         self.ws.remove_window(id);
         self.map.remove(&id);
@@ -174,13 +174,13 @@ impl App {
         );
     }
 
-    /// Win+Alt+F: window yang sedang di foreground dikeluarkan dari strip
-    /// (mengambang, bebas digeser/di-resize), atau dimasukkan kembali.
+    /// Win+Alt+F: remove the foreground window from the strip (float it, free
+    /// to move / resize), or add it back.
     pub(crate) unsafe fn toggle_float(&mut self) {
         let fg = GetForegroundWindow();
         let id = wid(fg);
         if self.floating.remove(&id).is_some() {
-            println!("tile: {}", title(fg)); // masuk strip lagi lewat sync berikutnya
+            println!("tile: {}", title(fg)); // It rejoins the strip on the next sync.
             return;
         }
         let Some(h) = self.map.remove(&id) else {
@@ -190,7 +190,7 @@ impl App {
         self.hidden.remove(&id);
         self.actual.remove(&id);
         if let Some(a) = self.anim.remove(&id) {
-            // selesaikan gerakan dulu supaya berhenti di posisi akhirnya
+            // Finish the movement first so it stops at its final position.
             let _ = SetWindowPos(
                 h,
                 None,
@@ -201,7 +201,7 @@ impl App {
                 SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
             );
         }
-        safety::forget(h); // tidak ikut dipindahkan saat app keluar
+        safety::forget(h); // Do not move it when the app exits.
         self.floating.insert(id, h);
         println!("float: {}", title(h));
     }

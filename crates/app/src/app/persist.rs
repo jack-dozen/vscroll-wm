@@ -1,8 +1,8 @@
-//! Ingat layout: simpan susunan workspace ke file, dan pulihkan saat vscroll-wm
-//! dijalankan ulang selagi window-window itu masih terbuka (lihat layout_state.rs).
+//! Persist layouts: save workspace layouts to a file and restore them when
+//! vscroll-wm is restarted while its windows are still open (see layout_state.rs).
 //!
-//! Disimpan otomatis dari timer poll (setiap perubahan tersimpan paling lambat sekitar
-//! satu detik kemudian) dan sekali lagi saat keluar. Dimatikan lewat `remember_layout = off`.
+//! Saved automatically by the poll timer (each change is saved within about one
+//! second) and again on exit. Disabled via `remember_layout = off`.
 
 use std::collections::HashMap;
 
@@ -14,7 +14,7 @@ use super::App;
 use crate::winutil::{collect, wid};
 use crate::{layout_state, rules};
 
-/// Identitas window untuk mencocokkan entri tersimpan: `exe|class` (huruf kecil).
+/// Window identity for matching saved entries: `exe|class` (lowercase).
 unsafe fn identity(h: HWND) -> String {
     format!(
         "{}|{}",
@@ -24,8 +24,8 @@ unsafe fn identity(h: HWND) -> String {
 }
 
 impl App {
-    /// Pulihkan susunan tersimpan untuk window yang masih terbuka dan identitasnya cocok.
-    /// Dipanggil sekali saat start, sebelum sync() pertama (yang menambahkan sisanya).
+    /// Restore the saved layout for open windows with matching identities.
+    /// Called once at startup, before the first sync() (which adds the remaining windows).
     pub(crate) unsafe fn restore_layout(&mut self) {
         if !self.cfg.remember_layout {
             return;
@@ -47,11 +47,11 @@ impl App {
         self.ws.restore(&saved, |id| {
             matches!((live.get(&id), idents.get(&id.0)), (Some(a), Some(b)) if a == b)
         });
-        // yang baru dipulihkan belum perlu ditulis lagi
+        // The just-restored layout does not need to be written again yet.
         self.saved_layout = Some(self.ws.snapshot());
     }
 
-    /// Tulis susunan ke file kalau berubah sejak penulisan terakhir.
+    /// Write the layout to the file if it has changed since the last write.
     pub(crate) unsafe fn save_layout(&mut self) {
         if !self.cfg.remember_layout {
             return;
@@ -63,7 +63,7 @@ impl App {
         let Some(path) = layout_state::path() else {
             return;
         };
-        // identitas dihitung sekali per window (membuka proses itu tidak murah)
+        // Compute each window's identity once (opening a process is not cheap).
         let ids: Vec<WindowId> = snap
             .strips
             .iter()

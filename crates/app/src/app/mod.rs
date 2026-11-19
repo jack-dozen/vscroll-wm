@@ -1,4 +1,4 @@
-//! Status aplikasi: window yang dikelola, sinkronisasi, dan penataan.
+//! Application state: managed windows, synchronization, and arrangement.
 
 mod actions;
 mod anim;
@@ -36,78 +36,78 @@ use crate::winutil::{
 use crate::{bindings, config, overview, safety, taskbar};
 use workspace::{slide_dir, Slide};
 
-/// Mode bidik `join`: menahan modifier untuk mengarahkan `src` ke `target` dengan panah,
-/// lalu melepas modifier untuk menggabungkannya.
+/// `join` targeting mode: hold the modifier to point `src` at `target` with the arrows,
+/// then release the modifier to join them.
 #[derive(Clone, Copy)]
 pub(crate) struct JoinAim {
     pub(crate) src: WindowId,
     pub(crate) target: WindowId,
 }
 
-/// Overview yang sedang terbuka.
+/// Currently open overview.
 pub(crate) struct OverviewSession {
-    /// Kursor overview (belum tentu window yang fokus).
+    /// Overview cursor (not necessarily the focused window).
     pub(crate) selected: WindowId,
-    /// Window yang foreground sebelum overview dibuka, untuk dikembalikan saat batal.
+    /// Foreground window before the overview opened, to restore on cancel.
     pub(crate) prev_fg: HWND,
-    /// Data untuk membangun ulang panel saat kolom tengah bergeser.
+    /// Data for rebuilding the panel when the center column shifts.
     pub(crate) model: overview::Model,
     pub(crate) titles: HashMap<u64, String>,
     pub(crate) sources: HashMap<u64, isize>,
-    /// Window yang fokus saat overview dibuka (0 = tidak ada), untuk sorotan.
+    /// Window focused when the overview opened (0 = none), for highlighting.
     pub(crate) focused: u64,
 }
 
 pub(crate) struct App {
-    /// Semua workspace; yang aktif ditata, sisanya diparkir di luar layar.
+    /// All workspaces; the active one is arranged, the rest are parked off-screen.
     pub(crate) ws: Workspaces,
     pub(crate) map: HashMap<WindowId, HWND>,
     pub(crate) last_fg: Option<WindowId>,
-    /// Batas frame tiap window hasil penempatan terakhir kita; kalau berubah
-    /// tanpa kita, berarti window digeser dari luar (Win+Arrow, drag, dll).
+    /// Frame bounds for each window after our last placement; if they change
+    /// without us, the window was moved externally (Win+Arrow, drag, etc.).
     pub(crate) actual: HashMap<WindowId, Bounds>,
     pub(crate) anim: HashMap<WindowId, Anim>,
-    /// Window yang masih ada tapi sedang tidak tampil (di-minimize, cloaked, dll).
-    /// Slotnya tetap diingat di strip.
+    /// Windows that still exist but are not currently visible (minimized, cloaked, etc.).
+    /// Their slots remain in the strip.
     pub(crate) hidden: HashSet<WindowId>,
-    /// Window di workspace lain yang sedang diparkir di luar layar (tombol taskbar
-    /// disembunyikan). Dibuka lagi oleh apply() saat workspacenya aktif.
+    /// Windows in other workspaces that are parked off-screen (taskbar buttons are
+    /// hidden). apply() restores them when their workspace becomes active.
     pub(crate) parked: HashSet<WindowId>,
-    /// Window yang sedang meluncur keluar layar menuju parkir; diparkir sungguhan saat
-    /// animasinya selesai (tick_anim). Selalu juga ada di `parked`.
+    /// Windows sliding off-screen to be parked; actually parked when their animation
+    /// finishes (tick_anim). They are also always in `parked`.
     pub(crate) leaving: HashSet<WindowId>,
-    /// Arah geser untuk apply() berikutnya (pindah / kirim workspace); dipakai sekali.
+    /// Slide direction for the next apply() (switch / send workspace); used once.
     pub(crate) slide: Option<Slide>,
-    /// Window yang sengaja dibiarkan mengambang (tidak ditata) lewat Win+Alt+F.
+    /// Windows deliberately left floating (not tiled) via Win+Alt+F.
     pub(crate) floating: HashMap<WindowId, HWND>,
-    /// Window yang menolak dikendalikan (hak akses lebih tinggi). Dibiarkan mengambang.
+    /// Windows that refuse control (higher privileges). Leave them floating.
     pub(crate) blocked: HashMap<WindowId, HWND>,
-    /// 0 = timer animasi tidak jalan (tidak ada beban saat idle).
+    /// 0 = animation timer is stopped (no idle overhead).
     pub(crate) anim_timer: usize,
     pub(crate) anim_ms: f32,
-    /// Warna border window fokus (COLORREF), dari konfigurasi.
+    /// Focused window border color (COLORREF), from config.
     pub(crate) focus_border: Option<u32>,
-    /// Window yang sedang diwarnai bordernya, supaya bisa dikembalikan.
+    /// Window whose border is currently colored, so it can be restored.
     pub(crate) border_applied: Option<(HWND, u32)>,
     pub(crate) overview: Option<OverviewSession>,
     pub(crate) cfg: config::Config,
-    /// Timer sekali jalan untuk menata ulang setelah event (0 = tidak ada).
+    /// One-shot timer to rearrange after an event (0 = none).
     pub(crate) sync_timer: usize,
-    /// Ada window baru: jadwalkan satu pengecekan ulang.
+    /// A new window appeared: schedule one recheck.
     pub(crate) recheck: bool,
-    /// Susunan yang terakhir ditulis ke layout.state (persist.rs).
+    /// Layout last written to layout.state (persist.rs).
     pub(crate) saved_layout: Option<layout::SavedLayout>,
-    /// Identitas (exe|class) window untuk layout.state, dihitung sekali per window.
+    /// Window identity (exe|class) for layout.state, computed once per window.
     pub(crate) idents: HashMap<WindowId, String>,
-    /// Seretan window yang dipantau untuk menu snap layouts (snap.rs).
+    /// Window drag tracked for the snap layouts menu (snap.rs).
     pub(crate) snap_drag: Option<SnapDrag>,
-    /// 0 = timer pemantau seretan tidak jalan.
+    /// 0 = drag-tracking timer is stopped.
     pub(crate) snap_timer: usize,
-    /// Sesi daftar window untuk zona preset yang masih kosong.
+    /// Window-list session for empty preset zones.
     pub(crate) snap_assist: Option<SnapAssist>,
-    /// Mode bidik `join` (tahan modifier + panah, lepas untuk gabung).
+    /// `join` targeting mode (hold modifier + arrows, release to join).
     pub(crate) join_aim: Option<JoinAim>,
-    /// Mode angkat-dan-jatuhkan (`pick`) dengan marker overlay di desktop.
+    /// Lift-and-drop (`pick`) mode with an overlay marker on the desktop.
     pub(crate) pick: Option<PickSession>,
 }
 
@@ -143,13 +143,13 @@ impl App {
         }
     }
 
-    /// Samakan state strip dengan window yang ada sekarang. True kalau ada perubahan.
+    /// Sync strip state with the current windows. True if anything changed.
     pub(crate) unsafe fn sync(&mut self) -> bool {
         let mut list: Vec<HWND> = Vec::new();
         let _ = EnumWindows(Some(collect), LPARAM(&mut list as *mut Vec<HWND> as isize));
         let live: HashMap<WindowId, HWND> = list.iter().map(|&h| (wid(h), h)).collect();
         let mut changed = false;
-        self.floating.retain(|_, h| safety::alive(*h)); // yang ditutup tidak perlu diingat
+        self.floating.retain(|_, h| safety::alive(*h)); // Closed windows no longer need tracking.
         self.blocked.retain(|_, h| safety::alive(*h));
 
         let gone: Vec<WindowId> = self
@@ -161,8 +161,8 @@ impl App {
         for id in gone {
             let h = self.map[&id];
             if safety::alive(h) {
-                // di-minimize / disembunyikan / pindah virtual desktop:
-                // window masih ada, jadi ingat slotnya, jangan hapus dari strip
+                // Minimized / hidden / moved to a virtual desktop:
+                // the window still exists, so retain its slot in the strip.
                 if self.hidden.insert(id) {
                     self.ws.set_hidden(id, true);
                     self.anim.remove(&id);
@@ -170,7 +170,7 @@ impl App {
                 }
                 continue;
             }
-            // benar-benar ditutup
+            // Actually closed.
             self.ws.remove_window(id);
             self.map.remove(&id);
             self.hidden.remove(&id);
@@ -190,13 +190,13 @@ impl App {
                 continue;
             }
             if !self.map.contains_key(&id) {
-                safety::remember(h, work); // posisi asli, untuk dipulihkan saat keluar
+                safety::remember(h, work); // Original position, to restore on exit.
                 self.map.insert(id, h);
-                self.ws.add_window(id); // masuk ke workspace aktif
+                self.ws.add_window(id); // Add to the active workspace.
                 added = true;
             } else if self.hidden.remove(&id) {
-                // muncul lagi (mis. setelah Win+D): kembali ke slotnya semula
-                self.parked.remove(&id); // kalau di workspace lain, diparkir ulang oleh apply()
+                // Reappeared (e.g. after Win+D): return it to its original slot.
+                self.parked.remove(&id); // If in another workspace, apply() parks it again.
                 self.ws.set_hidden(id, false);
                 added = true;
             }
@@ -206,7 +206,7 @@ impl App {
             self.recheck = true;
         }
 
-        // Kalau salah satu window yang sedang dibidik `join` atau `pick` hilang, batalkan.
+        // If a window being targeted in `join` or `pick` disappears, cancel the mode.
         if let Some(aim) = self.join_aim {
             if !self.map.contains_key(&aim.src) || !self.map.contains_key(&aim.target) {
                 self.join_aim = None;
@@ -220,9 +220,9 @@ impl App {
                 crate::pick_overlay::hide();
             }
         }
-        // ikuti window yang difokuskan user (klik, alt-tab, tombol taskbar). Window di
-        // workspace lain membawa kita ke workspace itu. Foreground lama yang masih
-        // tertinggal di window yang baru diparkir tidak dihitung.
+        // Follow the window focused by the user (click, Alt+Tab, taskbar button).
+        // A window in another workspace switches us to that workspace. Ignore
+        // a stale foreground window that has just been parked.
         let fg_hwnd = GetForegroundWindow();
         self.snap_assist_follow_focus(fg_hwnd);
         let fg = wid(fg_hwnd);
@@ -240,16 +240,16 @@ impl App {
                 changed = true;
             }
         }
-        // foreground bisa berubah tanpa mengubah layout (mis. setelah Win+Shift+Arrow)
+        // Foreground can change without changing the layout (e.g. after Win+Shift+Arrow).
         self.refresh_border();
         changed || self.drifted()
     }
 
-    /// True kalau ada window yang posisinya bukan hasil penempatan kita.
-    /// Diabaikan saat tombol kiri mouse ditekan (user sedang drag).
+    /// True if any window's position does not match our last placement.
+    /// Ignored while the left mouse button is down (user is dragging).
     pub(crate) unsafe fn drifted(&self) -> bool {
         if !self.anim.is_empty() {
-            return false; // posisi sedang bergerak karena animasi kita
+            return false; // Position is moving due to our animation.
         }
         if GetAsyncKeyState(VK_LBUTTON.0 as i32) < 0 {
             return false;
@@ -264,9 +264,9 @@ impl App {
         let work = work_area();
         self.ws.set_viewport(work);
         let now = Instant::now();
-        let slide = self.slide.take(); // arah geser pindah workspace, sekali pakai
-        // Pass kedua hanya kalau ada window yang menolak dikecilkan
-        // (tinggi minimum) sehingga layout perlu dihitung ulang.
+        let slide = self.slide.take(); // Workspace-switch slide direction; use once.
+        // Run a second pass only if a window refused to shrink
+        // (minimum height), requiring the layout to be recalculated.
         for _ in 0..2 {
             let mut grew = false;
             for p in self.ws.cur().layout() {
@@ -274,9 +274,9 @@ impl App {
                     continue;
                 };
                 let t = p.rect;
-                // baru keluar dari parkir: mulai dari luar layar di sisi masuk lalu meluncur
-                // (jangan dianimasikan dari -32768). Yang masih meluncur keluar (pindah balik
-                // di tengah animasi) cukup dilanjutkan ke posisi barunya.
+                // Just unparked: start off-screen on the entering side, then slide in
+                // (do not animate from -32768). If it is already sliding out (switching
+                // back mid-animation), continue to its new position.
                 let was_parked = self.parked.remove(&p.id);
                 let was_leaving = self.leaving.remove(&p.id);
                 if was_parked {
@@ -288,7 +288,7 @@ impl App {
                     && cur.bottom - cur.top == t.h
                     && !IsZoomed(h).as_bool();
                 if same_size && !at_park {
-                    // hanya posisi yang berubah -> boleh dianimasikan
+                    // Only the position changed -> animation is allowed.
                     self.move_only(p.id, h, (cur.left, cur.top), t, work, now);
                     continue;
                 }
@@ -298,19 +298,19 @@ impl App {
                         continue;
                     }
                 }
-                // ukuran berubah -> langsung ke ukuran akhir, tanpa animasi
+                // Size changed -> go directly to the final size, without animation.
                 self.anim.remove(&p.id);
                 let (mut a, denied) = place(h, t);
                 if denied {
                     self.mark_blocked(p.id, h);
-                    grew = true; // hitung ulang layout tanpa window ini
+                    grew = true; // Recalculate the layout without this window.
                     continue;
                 }
                 let mut got = a.bottom - a.top;
                 let mut got_w = a.right - a.left;
                 if got > t.h + 2 || got_w > t.w + 2 {
-                    // Sebagian app (Electron/UWP) menerapkan ukuran dengan jeda;
-                    // ukur ulang sebelum menyimpulkan ada tinggi minimum.
+                    // Some apps (Electron/UWP) apply sizes after a delay;
+                    // measure again before concluding there is a minimum height.
                     std::thread::sleep(Duration::from_millis(40));
                     a = ext_bounds(h);
                     got = a.bottom - a.top;
@@ -340,7 +340,7 @@ impl App {
                 break;
             }
         }
-        // window workspace aktif yang tidak ikut ditata (di-minimize) tapi masih diparkir
+        // Minimized window in the active workspace that is not tiled but remains parked.
         for id in self.ws.window_ids(self.ws.active()) {
             self.leaving.remove(&id);
             if self.parked.remove(&id) {
@@ -350,22 +350,22 @@ impl App {
             }
         }
         self.park_inactive(slide, work, now);
-        // isyarat tukar posisi window penuh lebar (lihat Strip::take_move_cue)
+        // Full-width window position-swap cue (see Strip::take_move_cue).
         if let Some((id, dir)) = self.ws.cur_mut().take_move_cue() {
             self.cue_slide(id, dir, work, now);
         }
         if !self.anim.is_empty() && self.anim_timer == 0 {
-            // 10 ms = minimum Windows; praktisnya berdetak tiap ~15,6 ms (~64 fps)
+            // 10 ms = Windows minimum; in practice it ticks every ~15.6 ms (~64 fps).
             self.anim_timer = SetTimer(None, 0, 10, None);
         }
         self.refresh_border();
     }
 
-    /// Warnai border window yang SEDANG foreground (kalau ditata dan focus_border
-    /// diatur), dan kembalikan border window sebelumnya.
+    /// Color the window CURRENTLY in the foreground (if tiled and focus_border
+    /// is configured), and restore the previous window's border.
     ///
-    /// Sengaja berdasar foreground sebenarnya, bukan tujuan fokus di strip: warna
-    /// yang dipasang sebelum window selesai diaktifkan bisa hilang saat aktivasi.
+    /// Deliberately use the actual foreground, not the strip's focus target: a
+    /// color applied before activation finishes can be lost during activation.
     pub(crate) unsafe fn refresh_border(&mut self) {
         let want = if let Some(aim) = self.join_aim {
             let color = self
@@ -397,7 +397,7 @@ impl App {
         }
     }
 
-    /// Terapkan konfigurasi (gap, animasi, warna border).
+    /// Apply config (gap, animation, border color).
     pub(crate) unsafe fn apply_config(&mut self, cfg: &config::Config) {
         self.cfg = cfg.clone();
         bindings::install(&cfg.bindings);
@@ -412,9 +412,9 @@ impl App {
         });
     }
 
-    /// Muat ulang file konfigurasi (menu tray). Aturan ignore butuh restart.
+    /// Reload the config file (tray menu). Ignore rules require a restart.
     pub(crate) unsafe fn reload_config(&mut self) {
-        self.snap_reset(false); // indeks preset di menu / slot bisa berubah
+        self.snap_reset(false); // Preset indices in the menu / slots may change.
         let report = config::load();
         self.apply_config(&report.cfg);
         self.apply();

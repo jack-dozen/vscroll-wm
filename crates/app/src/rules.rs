@@ -1,14 +1,14 @@
-//! Aturan window yang TIDAK boleh ditata (selalu mengambang).
+//! Rules for windows that must NOT be tiled (always floating).
 //!
-//! Selain daftar bawaan, pengguna bisa menambah aturan lewat file teks
-//! `vscroll-wm.ignore` (di folder tempat app dijalankan, atau path dari env
-//! VSCROLL_IGNORE). Satu aturan per baris:
+//! In addition to the built-in list, users can add rules in the
+//! `vscroll-wm.ignore` text file (in the app's working directory, or at the path
+//! specified by the VSCROLL_IGNORE environment variable). One rule per line:
 //!
-//!   class:NamaKelas     persis, tanpa peduli huruf besar/kecil
-//!   exe:nama.exe        nama file program
-//!   title:potongan      judul window mengandung teks ini
+//!   class:ClassName     exact match, case-insensitive
+//!   exe:name.exe        executable file name
+//!   title:substring     window title contains this text
 //!
-//! Baris kosong dan yang diawali # diabaikan.
+//! Blank lines and lines beginning with # are ignored.
 
 use std::sync::OnceLock;
 
@@ -21,7 +21,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetClassNameW, GetWindowTextW, GetWindowThreadProcessId,
 };
 
-/// Kelas window milik shell / sistem yang bukan "app" untuk ditata.
+/// Shell / system window classes that are not apps to be tiled.
 const BUILTIN_CLASSES: &[&str] = &[
     "Progman",
     "WorkerW",
@@ -34,8 +34,8 @@ const BUILTIN_CLASSES: &[&str] = &[
     "ForegroundStaging",
     "Windows.UI.Core.CoreWindow",
     "Windows.UI.Composition.DesktopWindowContentBridge",
-    "Ghost",  // placeholder untuk app yang tidak merespons
-    "#32770", // dialog standar (installer, "Run", dll)
+    "Ghost",  // Placeholder for an unresponsive app.
+    "#32770", // Standard dialog (installer, "Run", etc.).
 ];
 
 #[derive(Debug, Default, PartialEq)]
@@ -71,8 +71,8 @@ impl Rules {
     }
 }
 
-/// Env VSCROLL_IGNORE, atau file di samping exe, atau di folder kerja.
-/// (Saat dijalankan otomatis saat login, folder kerja bukan folder proyek.)
+/// VSCROLL_IGNORE environment variable, or a file next to the executable, or in the working directory.
+/// (When launched automatically at login, the working directory is not the project directory.)
 fn ignore_path() -> String {
     if let Ok(p) = std::env::var("VSCROLL_IGNORE") {
         return p;
@@ -134,7 +134,7 @@ pub unsafe fn exe_name(h: HWND) -> Option<String> {
     full.rsplit('\\').next().map(|s| s.to_lowercase())
 }
 
-/// Alasan window ini harus dibiarkan mengambang, atau None kalau boleh ditata.
+/// Why this window must remain floating, or None if it can be tiled.
 pub unsafe fn ignored(h: HWND) -> Option<&'static str> {
     let rules = rules();
     let class = class_name(h);

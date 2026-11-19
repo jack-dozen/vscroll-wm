@@ -1,13 +1,13 @@
-//! Perhitungan posisi: aliran window per blok, scroll, dan query baca-saja.
+//! Position calculations: window flow by block, scrolling, and read-only queries.
 
 use crate::types::*;
 
-/// Posisi window di koordinat strip (belum dikurangi scroll).
+/// Window position in strip coordinates (before subtracting the scroll offset).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Flow {
     pub(crate) id: WindowId,
     pub(crate) span: Span,
-    /// Posisi dan lebar horizontal di area konten.
+    /// Horizontal position and width in the content area.
     pub(crate) x: i32,
     pub(crate) w: i32,
     pub(crate) top: i32,
@@ -24,8 +24,8 @@ impl Flow {
 }
 
 impl Strip {
-    /// Area efektif: work area dikurangi setengah gap di tiap sisi. Tiap window
-    /// lalu dikecilkan setengah gap lagi, jadi jarak antar window = gap penuh.
+    /// Effective area: the work area minus half the gap on each side. Each window
+    /// is then inset by another half-gap, so the spacing between windows equals one full gap.
     pub(crate) fn content(&self) -> Rect {
         let g = self.gap / 2;
         Rect {
@@ -36,8 +36,8 @@ impl Strip {
         }
     }
 
-    /// Batas blok (run) yang memuat posisi `i`: indeks pertama setelah window penuh
-    /// sebelumnya sampai window penuh berikutnya.
+    /// Block (run) bounds containing position `i`: from the first index after the
+    /// previous full-width window up to the next full-width window.
     pub(crate) fn run_bounds(&self, i: usize) -> (usize, usize) {
         let lo = self.items[..i]
             .iter()
@@ -50,7 +50,7 @@ impl Strip {
         (lo, hi)
     }
 
-    /// Rasio pembagi (permil) sebuah blok: nilai item lajur pertama di blok itu.
+    /// Split ratio (thousandths) for a block: the value of its first lane item.
     pub(crate) fn run_split(&self, left: &[usize], right: &[usize]) -> i32 {
         let first = match (left.first(), right.first()) {
             (Some(&a), Some(&b)) => Some(a.min(b)),
@@ -61,8 +61,8 @@ impl Strip {
         first.map_or(500, |k| self.items[k].split)
     }
 
-    /// Lebar lajur kiri (piksel konten) untuk satu blok. Dibatasi 15%-85%, lalu oleh
-    /// lebar minimum window di tiap lajur yang berisi.
+    /// Left lane width (content pixels) for one block. Clamped to 15%-85%, then constrained
+    /// by the minimum window width in each non-empty lane.
     pub(crate) fn left_width(&self, cw: i32, split: i32, left: &[usize], right: &[usize]) -> i32 {
         let gap = 2 * (self.gap / 2);
         let lane_min = |idxs: &[usize]| {
@@ -82,7 +82,7 @@ impl Strip {
         lw.clamp(0, cw)
     }
 
-    /// Item lajur (kiri/kanan, tidak tersembunyi) dalam satu blok.
+    /// Lane items (left/right, not hidden) in one block.
     pub(crate) fn lanes_in(&self, lo: usize, hi: usize) -> (Vec<usize>, Vec<usize>) {
         let left = (lo..hi)
             .filter(|&k| self.items[k].span == Span::Left)
@@ -97,9 +97,9 @@ impl Strip {
         self.items.iter().position(|it| it.id == id)
     }
 
-    /// Tinggi window: target atau minimum aslinya, mana yang lebih besar.
+    /// Window height: whichever is greater, the target or its original minimum.
     fn item_px(&self, it: &Item) -> i32 {
-        // tinggi minimum adalah tinggi window; slot perlu ditambah gap
+        // The minimum height is the window height; add the gap to the slot.
         let min = self
             .min_heights
             .get(&it.id)
@@ -107,14 +107,14 @@ impl Strip {
         it.height.pixels(self.content().h).max(min)
     }
 
-    /// Susun semua window di koordinat strip.
+    /// Arrange all windows in strip coordinates.
     ///
-    /// Window penuh lebar memisahkan strip jadi "run" (blok berisi dua lajur).
-    /// Di tiap run, lihat batas-batas NOMINAL (tinggi target, tanpa tinggi
-    /// minimum) di kedua lajur: kalau sebuah batas seharusnya sejajar tapi jadi
-    /// tidak rata karena tinggi minimum sebuah app, window di lajur yang lebih
-    /// pendek diregangkan supaya batas itu rata. Dengan begitu susunan seperti
-    /// 2x2 kuarter tetap sejajar baris demi baris, dan gap seragam.
+    /// Full-width windows divide the strip into "runs" (blocks containing two lanes).
+    /// In each run, compare the NOMINAL boundaries (target heights, excluding minimum
+    /// heights) in both lanes: if boundaries that should align become uneven because
+    /// an app's minimum height forces one lane to be taller, stretch windows in the
+    /// shorter lane to align those boundaries. This keeps layouts such as a 2x2 grid
+    /// aligned row by row, with uniform gaps.
     pub(crate) fn flow(&self) -> Vec<Flow> {
         let content_h = self.content().h;
         let content_w = self.content().w;
@@ -164,7 +164,7 @@ impl Strip {
         out
     }
 
-    /// Tata satu run mulai dari `base`. Mengembalikan dasar run (yang terendah).
+    /// Arrange one run starting at `base`. Returns the bottom of the run.
     fn place_run(
         &self,
         out: &mut [Flow],
@@ -259,12 +259,12 @@ impl Strip {
         self.scroll_y = self.scroll_y.min(top).max(0);
     }
 
-    /// Window tetangga terdekat di arah `dir`, berdasarkan posisi di layar.
+    /// Nearest neighboring window in direction `dir`, based on screen position.
     pub(crate) fn neighbor(&self, dir: Dir) -> Option<WindowId> {
         self.neighbor_of(self.focused?, dir)
     }
 
-    /// Tetangga terdekat dari `id` di arah `dir`, tanpa mengubah fokus.
+    /// Nearest neighbor of `id` in direction `dir`, without changing focus.
     pub fn neighbor_of(&self, id: WindowId, dir: Dir) -> Option<WindowId> {
         let flow = self.flow();
         let f = flow.iter().find(|c| c.id == id)?;
@@ -293,11 +293,11 @@ impl Strip {
         best.map(|(_, n)| n)
     }
 
-    /// Seperti `neighbor_of`, tapi untuk saat tidak ada window lagi di arah `dir`:
-    /// lompat ke ujung seberang strip (Atas di baris teratas -> baris terbawah, Kiri
-    /// di tepi kiri -> tepi kanan, dst.), sebisanya di lajur / baris yang sama.
-    /// Dipakai panah di overview supaya pilihan berputar. None kalau tidak ada window
-    /// lain di sisi seberang, atau `id` tidak dikenal / tersembunyi.
+    /// Like `neighbor_of`, but when there are no more windows in direction `dir`:
+    /// jump to the opposite end of the strip (top from the top row -> bottom row, left
+    /// from the left edge -> right edge, etc.), preferably in the same lane / row.
+    /// Used by overview arrows to wrap the selection. Returns None if there is no other
+    /// window at the opposite end, or if `id` is unknown / hidden.
     pub fn wrap_neighbor_of(&self, id: WindowId, dir: Dir) -> Option<WindowId> {
         let flow = self.flow();
         let f = flow.iter().find(|c| c.id == id && c.span != Span::Hidden)?;
@@ -317,8 +317,8 @@ impl Strip {
             let h_ov = (fx1.min(cx1) - fx0.max(cx0)).max(0);
             let v_ov = (fy1.min(cy1) - fy0.max(cy0)).max(0);
             let dy = ((cy0 + cy1) / 2 - f_mid).abs();
-            // Hanya window di sisi "belakang" `id` yang jadi kandidat (Atas: yang ada di
-            // bawahnya, dst.); yang terdekat ke ujung seberang menang.
+            // Only windows "behind" `id` are candidates (for Up: those below it,
+            // etc.); the one closest to the opposite edge wins.
             let key = match dir {
                 Dir::Up if cy0 >= fy1 => Some((h_ov == 0, last_bottom - cy1, -h_ov, cy0)),
                 Dir::Down if cy1 <= fy0 => Some((h_ov == 0, cy0 - first_top, -h_ov, cy0)),
@@ -335,9 +335,9 @@ impl Strip {
         best.map(|(_, n)| n)
     }
 
-    /// Window berikutnya (atau sebelumnya) menurut urutan baca: atas ke bawah,
-    /// kiri ke kanan, berputar. Dipakai untuk Tab di overview. None kalau hanya
-    /// ada satu window atau `id` tidak dikenal / tersembunyi.
+    /// Next (or previous) window in reading order: top to bottom, left to right, wrapping.
+    /// Used for Tab in the overview. Returns None if there is only one window or `id` is
+    /// unknown / hidden.
     pub fn cycle_from(&self, id: WindowId, forward: bool) -> Option<WindowId> {
         let mut order: Vec<(i32, i32, WindowId)> = self
             .flow()
@@ -359,7 +359,7 @@ impl Strip {
         Some(order[next].2)
     }
 
-    /// Peta seluruh strip (termasuk bagian di luar layar) untuk overview.
+    /// Map of the entire strip (including off-screen portions) for the overview.
     pub fn overview(&self) -> Overview {
         let c = self.content();
         let items: Vec<OverviewItem> = self

@@ -1,4 +1,4 @@
-//! Helper Win32: posisi dan ukuran window, judul, dan filter "layak ditata".
+//! Win32 helpers: window position and size, title, and "eligible for tiling" filter.
 
 use std::ffi::c_void;
 use std::sync::atomic::Ordering;
@@ -26,7 +26,7 @@ pub(crate) fn wid(h: HWND) -> WindowId {
     WindowId(h.0 as usize as u64)
 }
 
-/// Kenapa window ini TIDAK ditata (None = boleh ditata).
+/// Why this window is NOT tiled (None = it can be tiled).
 pub(crate) unsafe fn unmanaged_reason(hwnd: HWND) -> Option<&'static str> {
     if !IsWindowVisible(hwnd).as_bool() {
         return Some("not visible");
@@ -39,7 +39,7 @@ pub(crate) unsafe fn unmanaged_reason(hwnd: HWND) -> Option<&'static str> {
     if style & WS_CAPTION.0 != WS_CAPTION.0 {
         return Some("no title bar (WS_CAPTION)");
     }
-    // tidak bisa di-resize (dialog, installer, utilitas kecil): biarkan mengambang
+    // Cannot be resized (dialog, installer, small utility): leave it floating.
     if style & WS_THICKFRAME.0 == 0 {
         return Some("cannot be resized (no WS_THICKFRAME)");
     }
@@ -109,10 +109,10 @@ pub(crate) unsafe fn ext_bounds(hwnd: HWND) -> RECT {
     ext
 }
 
-/// Pindahkan window dengan kompensasi invisible border Windows 10/11.
-/// Mengembalikan batas frame yang terlihat SETELAH dipindah (bisa beda dari
-/// yang diminta kalau app punya ukuran minimum), dan apakah Windows menolak
-/// (ACCESS_DENIED: jendela berjalan dengan hak lebih tinggi, mis. administrator).
+/// Move a window while compensating for the Windows 10/11 invisible border.
+/// Returns the visible frame bounds AFTER moving (may differ from the requested
+/// bounds if the app has a minimum size), and whether Windows denied the request
+/// (ACCESS_DENIED: the window runs with higher privileges, e.g. as administrator).
 pub(crate) unsafe fn place(hwnd: HWND, r: Rect) -> (RECT, bool) {
     if IsZoomed(hwnd).as_bool() {
         let _ = ShowWindow(hwnd, SW_RESTORE);
@@ -168,7 +168,7 @@ pub(crate) unsafe fn insets(hwnd: HWND) -> (i32, i32) {
     (ext.left - win.left, ext.top - win.top)
 }
 
-/// Hormati pengaturan Windows "Animation effects".
+/// Respect the Windows "Animation effects" setting.
 pub(crate) unsafe fn animations_enabled() -> bool {
     let mut on = BOOL(1);
     let r = SystemParametersInfoW(
@@ -180,11 +180,11 @@ pub(crate) unsafe fn animations_enabled() -> bool {
     r.is_err() || on.as_bool()
 }
 
-/// Cegah dua salinan berjalan bersamaan (mis. autostart + dijalankan manual):
-/// dua hook keyboard dan dua penata window akan saling berebut.
+/// Prevent two instances from running at once (e.g. autostart + manual launch):
+/// two keyboard hooks and two window arrangers would interfere with each other.
 pub(crate) unsafe fn single_instance() -> bool {
     match CreateMutexW(None, true, w!("Local\\vscroll-wm-single-instance")) {
-        Ok(_handle) => GetLastError() != ERROR_ALREADY_EXISTS, // handle sengaja tidak ditutup
+        Ok(_handle) => GetLastError() != ERROR_ALREADY_EXISTS, // Deliberately keep the handle open.
         Err(_) => true,
     }
 }

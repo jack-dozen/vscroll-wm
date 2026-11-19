@@ -1,47 +1,47 @@
-//! Snap layout: preset susunan beberapa zona (seperti Snap Layouts di Windows 11).
-//! Murni logika, tanpa Win32.
+//! Snap layouts: presets arranging several zones (like Snap Layouts in Windows 11).
+//! Pure logic, without Win32.
 //!
-//! Sebuah preset adalah daftar zona berurutan, tiap zona = lebar (`Span`: kiri, kanan,
-//! penuh) + tinggi. Urutannya sama dengan urutan item di strip, jadi preset selalu
-//! bisa dinyatakan oleh engine yang ada (dua lajur + rasio pembagi + tinggi per window).
+//! A preset is an ordered list of zones, each consisting of a width (`Span`: left, right,
+//! full) and height. Its order matches the item order in the strip, so every preset can
+//! be represented by the existing engine (two lanes + split ratio + per-window height).
 //!
-//! Memasang preset ke strip (`Strip::apply_snap`):
-//!  - window yang dijatuhkan mengisi satu zona; zona lain menjadi SLOT: item dengan id
-//!    palsu (`WindowId::slot`) yang memesan ruangnya di layout. App tidak menggerakkan
-//!    slot (id-nya tidak punya window), dan menampilkan daftar window di atasnya;
-//!  - blok preset menggantikan susunan layar tempat window itu berada: window lain
-//!    di susunan yang sama dijadikan penuh lebar di bawah blok (supaya tidak ikut
-//!    tercampur ke lajur preset, dan tetap bisa dipilih untuk mengisi slot);
-//!  - `fill_slot` mengisi slot dengan window yang sudah ada; `clear_slots` membuang
-//!    slot yang tersisa (zona yang tidak diisi tetap kosong).
+//! Applying a preset to a strip (`Strip::apply_snap`):
+//!  - the dropped window fills one zone; the other zones become SLOTS: items with
+//!    fake IDs (`WindowId::slot`) that reserve space in the layout. The app does not move
+//!    slots (their IDs have no associated windows) and displays a list of windows over them;
+//!  - the preset block replaces the arrangement on the screen containing that window:
+//!    other windows in the same arrangement are made full-width below the block (so they
+//!    do not mix into the preset lanes and can still be selected to fill slots);
+//!  - `fill_slot` fills a slot with an existing window; `clear_slots` removes the
+//!    remaining slots (unfilled zones stay empty).
 
 use crate::types::*;
 
-/// Batas bawah id slot. Id window asli berasal dari HWND (32 bit bermakna), jadi
-/// tidak pernah sebesar ini.
+/// Lower bound for slot IDs. Original window IDs come from HWNDs (32 significant bits),
+/// so they can never be this large.
 const SLOT_BASE: u64 = 1 << 60;
 
 impl WindowId {
-    /// Id palsu untuk zona ke-`n` dari preset yang belum terisi.
+    /// Fake ID for the unfilled zone `n` of a preset.
     pub fn slot(n: usize) -> WindowId {
         WindowId(SLOT_BASE + n as u64)
     }
 
-    /// True kalau ini id slot (bukan window asli).
+    /// True if this is a slot ID (not an original window).
     pub fn is_slot(self) -> bool {
         self.0 >= SLOT_BASE
     }
 }
 
-/// Jumlah zona maksimum satu preset.
+/// Maximum number of zones in one preset.
 pub const MAX_ZONES: usize = 8;
 
-/// Tinggi terkecil sebuah zona (permil), sama dengan batas `Height::Custom`.
+/// Minimum height of a zone (thousandths), equal to the `Height::Custom` limit.
 const MIN_PERMIL: i32 = 150;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SnapZone {
-    /// `Full`, `Left` atau `Right`.
+    /// `Full`, `Left`, or `Right`.
     pub span: Span,
     pub height: Height,
 }
@@ -49,13 +49,13 @@ pub struct SnapZone {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapPreset {
     pub name: String,
-    /// Lebar lajur kiri dalam permil (500 = 50%), seperti `Item::split`.
+    /// Left lane width in thousandths (500 = 50%), like `Item::split`.
     pub split: i32,
-    /// Zona berurutan (urutan baca: atas ke bawah, kiri ke kanan).
+    /// Ordered zones (reading order: top to bottom, left to right).
     pub zones: Vec<SnapZone>,
 }
 
-/// Preset bawaan: (nama, spesifikasi dalam format yang sama dengan file konfigurasi).
+/// Built-in preset: (name, specification in the same format as the configuration file).
 pub const BUILTIN: &[(&str, &str)] = &[
     ("full", "F"),
     ("halves", "L, R"),
@@ -69,7 +69,7 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("thirds", "F:1/3, F:1/3, F:1/3"),
 ];
 
-/// Semua preset bawaan, urut seperti `BUILTIN`.
+/// All built-in presets, in the same order as `BUILTIN`.
 pub fn builtin_presets() -> Vec<SnapPreset> {
     BUILTIN
         .iter()
@@ -86,7 +86,7 @@ fn height_from_permil(p: i32) -> Height {
     }
 }
 
-/// "full", "1/2", "40%" atau "0.4" -> permil tinggi area konten.
+/// "full", "1/2", "40%", or "0.4" -> thousandths of the content area height.
 fn parse_height(s: &str) -> Result<Height, String> {
     let s = s.trim();
     let bad = || format!("bad height '{s}' (use full, 1/2, 1/3, 2/3 or 40%)");
@@ -114,7 +114,7 @@ fn parse_height(s: &str) -> Result<Height, String> {
     Ok(height_from_permil(permil))
 }
 
-/// "L", "r:1/2", "full:1/3" -> zona.
+/// "L", "r:1/2", "full:1/3" -> zone.
 fn parse_zone(tok: &str) -> Result<SnapZone, String> {
     let (side, height) = match tok.split_once(':') {
         Some((s, h)) => (s.trim(), Some(h)),
@@ -137,7 +137,7 @@ fn parse_zone(tok: &str) -> Result<SnapZone, String> {
     Ok(SnapZone { span, height })
 }
 
-/// "67" / "66.7%" -> permil lebar lajur kiri (15%-85%).
+/// "67" / "66.7%" -> thousandths of the left lane width (15%-85%).
 fn parse_split(v: &str) -> Result<i32, String> {
     let v = v.trim().trim_end_matches('%').trim();
     let pct: f64 = v
@@ -150,11 +150,11 @@ fn parse_split(v: &str) -> Result<i32, String> {
 }
 
 impl SnapPreset {
-    /// Baca spesifikasi teks: daftar dipisah koma, urut seperti di strip.
-    ///   `split=67`        lebar lajur kiri (persen, 15-85; bawaan 50)
-    ///   `L` `R` `F`       zona di lajur kiri / kanan / penuh lebar
-    ///   `L:1/2`           tinggi zona: full (bawaan), 1/2, 1/3, 2/3, 40%
-    /// Contoh: `split=60, L, R:1/2, R:1/2`.
+    /// Parse a text specification: comma-separated list, ordered as in the strip.
+    ///   `split=67`        left lane width (percent, 15-85; default 50)
+    ///   `L` `R` `F`       zone in the left / right / full-width lane
+    ///   `L:1/2`           zone height: full (default), 1/2, 1/3, 2/3, 40%
+    /// Example: `split=60, L, R:1/2, R:1/2`.
     pub fn parse(name: &str, spec: &str) -> Result<SnapPreset, String> {
         let name = name.trim();
         if name.is_empty() {
@@ -197,10 +197,9 @@ impl SnapPreset {
         }
     }
 
-    /// Gambaran zona di kotak `w` x `h` (tanpa gap), dihitung oleh engine layout yang
-    /// sama dengan yang dipakai saat dipasang sungguhan. Sebuah rect per zona, urut
-    /// seperti `zones`. Kalau zona-zonanya lebih tinggi dari satu layar, gambarnya
-    /// diperkecil supaya semuanya muat.
+    /// Preview of zones in a `w` x `h` box (without gaps), calculated by the same layout
+    /// engine used when applying the preset. One rect per zone, ordered as in `zones`.
+    /// If the zones are taller than one screen, the preview is scaled down to fit them all.
     pub fn preview(&self, w: i32, h: i32) -> Vec<Rect> {
         let (w, h) = (w.max(1), h.max(1));
         let mut s = Strip::new(Rect { x: 0, y: 0, w, h });
@@ -234,7 +233,7 @@ impl SnapPreset {
 }
 
 impl Strip {
-    /// Id slot yang masih ada di strip ini, urut menurut posisi.
+    /// IDs of slots still in this strip, ordered by position.
     pub fn slots(&self) -> Vec<WindowId> {
         self.items
             .iter()
@@ -243,7 +242,7 @@ impl Strip {
             .collect()
     }
 
-    /// Buang semua slot (zona yang tidak diisi). True kalau ada yang dibuang.
+    /// Remove all slots (unfilled zones). True if any were removed.
     pub fn clear_slots(&mut self) -> bool {
         let before = self.items.len();
         self.items.retain(|it| !it.id.is_slot());
@@ -261,7 +260,7 @@ impl Strip {
         true
     }
 
-    /// Tempat sisip window baru: di bawah seluruh blok window yang fokus.
+    /// Insertion point for a new window: below the entire block containing the focused window.
     fn after_focused(&self) -> usize {
         self.focused
             .and_then(|f| self.index_of(f))
@@ -276,16 +275,16 @@ impl Strip {
             })
     }
 
-    /// Pasang `preset` dengan `id` di zona `zone`; zona lainnya menjadi slot kosong.
-    /// Mengembalikan id slot tersebut, urut menurut zona (kosong kalau `zone` di luar
-    /// jangkauan atau `id` tidak valid).
+    /// Apply `preset` with `id` in zone `zone`; the other zones become empty slots.
+    /// Returns their slot IDs, ordered by zone (empty if `zone` is out of range
+    /// or `id` is invalid).
     ///
-    /// Blok preset menggantikan susunan layar tempat `id` berada: kalau `id` berbagi
-    /// lajur dengan window lain, window-window itu dijadikan penuh lebar & tinggi tepat
-    /// di bawah blok. Blok bisa menyatu dengan lajur di atas / bawahnya kalau yang
-    /// bersebelahan bukan window penuh lebar; rasio pembagi preset berlaku untuk
-    /// seluruh lajur itu (pembagi memang milik satu lajur). `id` menjadi fokus dan
-    /// viewport menggulung ke awal blok.
+    /// The preset block replaces the arrangement on the screen containing `id`: if `id`
+    /// shares a lane with other windows, those windows are made full-width and full-height
+    /// directly below the block. The block may merge with the lane above / below it if the
+    /// adjacent item is not full-width; the preset's split ratio applies to that entire lane
+    /// (the split belongs to a lane). `id` becomes focused and the viewport scrolls to the
+    /// start of the block.
     pub fn apply_snap(&mut self, id: WindowId, preset: &SnapPreset, zone: usize) -> Vec<WindowId> {
         if id.is_slot() || zone >= preset.zones.len() {
             return Vec::new();
@@ -293,7 +292,7 @@ impl Strip {
         self.clear_slots();
         let at = match self.index_of(id) {
             Some(i) => {
-                // window penuh lebar berdiri sendiri; selain itu seluruh lajurnya (blok)
+                // A full-width window stands alone; otherwise, the entire lane (block)
                 let (lo, hi) = if self.items[i].span == Span::Full {
                     (i, i + 1)
                 } else {
@@ -333,7 +332,7 @@ impl Strip {
             };
             self.items.insert(at + k, preset.item(item_id, *z));
         }
-        // pembagi dimiliki lajur: seluruh lajur yang memuat blok memakai rasio preset
+        // The split belongs to the lane: every lane containing the block uses the preset ratio.
         for k in 0..preset.zones.len() {
             let idx = at + k;
             if self.items[idx].span == Span::Full {
@@ -354,9 +353,9 @@ impl Strip {
         slots
     }
 
-    /// Isi slot `slot` dengan window `id` yang tidak ada di strip ini (pemanggil
-    /// mengeluarkannya dulu dari tempat lamanya). `id` menjadi fokus. False kalau
-    /// `slot` tidak ada atau `id` sudah ada di strip.
+    /// Fill slot `slot` with window `id`, which is not in this strip (the caller must
+    /// remove it from its previous location first). `id` becomes focused. Returns false if
+    /// `slot` does not exist or `id` is already in the strip.
     pub fn fill_slot(&mut self, slot: WindowId, id: WindowId) -> bool {
         if !slot.is_slot() || id.is_slot() || self.index_of(id).is_some() {
             return false;
@@ -365,7 +364,7 @@ impl Strip {
             return false;
         };
         self.items[i].id = id;
-        // ukuran zona beda dari tempat lamanya: ukur ulang batas minimum window ini
+        // The zone size differs from its previous location: remeasure this window's minimum.
         self.min_heights.remove(&id);
         self.min_widths.remove(&id);
         self.focused = Some(id);
@@ -451,15 +450,15 @@ mod tests {
     #[test]
     fn rejects_bad_specs() {
         assert!(SnapPreset::parse("x", "").is_err());
-        assert!(SnapPreset::parse("x", "split=60").is_err()); // tanpa zona
+        assert!(SnapPreset::parse("x", "split=60").is_err()); // No zones.
         assert!(SnapPreset::parse("x", "Q").is_err());
         assert!(SnapPreset::parse("x", "L:1/0").is_err());
-        assert!(SnapPreset::parse("x", "L:5%").is_err()); // di bawah 15%
-        assert!(SnapPreset::parse("x", "L:3/2").is_err()); // di atas 100%
+        assert!(SnapPreset::parse("x", "L:5%").is_err()); // Below 15%.
+        assert!(SnapPreset::parse("x", "L:3/2").is_err()); // Above 100%.
         assert!(SnapPreset::parse("x", "split=99, L").is_err());
         assert!(SnapPreset::parse("x", "split, L").is_err());
         assert!(SnapPreset::parse("", "L").is_err());
-        assert!(SnapPreset::parse("x", "L,L,L,L,L,L,L,L,L").is_err()); // 9 zona
+        assert!(SnapPreset::parse("x", "L,L,L,L,L,L,L,L,L").is_err()); // 9 zones.
     }
 
     #[test]
@@ -542,7 +541,7 @@ mod tests {
                 B
             ]
         );
-        // viewport menggulung ke awal blok: W (kanan atas) ada di pojok kanan atas layar
+        // The viewport scrolls to the start of the block: W (top right) is in the screen's top-right corner.
         assert_eq!(placed(&s, W), rect(500, 0, 500, 300));
         assert_eq!(placed(&s, WindowId::slot(3)), rect(500, 300, 500, 300));
     }
@@ -576,7 +575,7 @@ mod tests {
             .iter()
             .filter(|it| it.span != Span::Full)
             .all(|it| it.split == 670));
-        // baris kedua dari lajur yang menyatu: W di kiri bawah, sejajar slot kanan
+        // Second row of the merged lane: W is at the bottom left, aligned with the right slot.
         assert_eq!(placed(&s, W), rect(0, 0, 670, 600));
         assert_eq!(placed(&s, WindowId::slot(1)), rect(670, 0, 330, 600));
     }
@@ -622,7 +621,7 @@ mod tests {
         let slots = w.apply_snap(W, &preset("L, R"), 0);
         assert_eq!(slots, vec![WindowId::slot(1)]);
         assert!(w.has_slots());
-        // slot tidak ikut tersimpan ke layout.state
+        // Slots are not saved to layout.state.
         let saved = w.snapshot();
         assert!(saved.strips[0].items.iter().all(|it| !it.id.is_slot()));
         assert!(w.fill_slot(WindowId::slot(1), A));
@@ -641,7 +640,7 @@ mod tests {
         w.add_window(W);
         assert_eq!(w.apply_snap(W, &preset("L, R"), 0).len(), 1);
         assert!(w.fill_slot(WindowId::slot(1), A));
-        // workspace lama jadi kosong dan dihapus; keduanya kini di workspace aktif
+        // The old workspace became empty and was removed; both are now in the active workspace.
         assert_eq!(w.workspace_of(A), Some(w.active()));
         assert_eq!(w.workspace_of(W), Some(w.active()));
         assert!(!w.has_slots());
@@ -652,9 +651,9 @@ mod tests {
         let mut w = Workspaces::new(rect(0, 0, 1000, 600));
         w.add_window(W);
         w.apply_snap(W, &preset("L, R"), 0);
-        assert!(!w.fill_slot(WindowId::slot(5), W)); // slot tidak ada
-        assert!(!w.fill_slot(WindowId::slot(1), C)); // window tidak dikenal
-        assert!(!w.fill_slot(WindowId::slot(1), WindowId::slot(0))); // slot bukan window
+        assert!(!w.fill_slot(WindowId::slot(5), W)); // Slot does not exist.
+        assert!(!w.fill_slot(WindowId::slot(1), C)); // Unknown window.
+        assert!(!w.fill_slot(WindowId::slot(1), WindowId::slot(0))); // A slot is not a window.
         assert!(w.has_slots());
         assert!(w.clear_slots());
         assert!(!w.has_slots());

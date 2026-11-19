@@ -1,8 +1,8 @@
-//! Mouse: seret window untuk menukar posisi dengan window lain, dan tarik tepi window
-//! yang berbatasan dengan pembagi lajur untuk menggesernya. Memakai drag / resize bawaan
-//! Windows (window mengikuti kursor seperti biasa); di sini hanya hasilnya yang dibaca
-//! saat tombol dilepas (EVENT_SYSTEM_MOVESIZEEND). Gerakan lain dikembalikan ke
-//! tempatnya oleh sync / apply seperti sebelumnya. Dimatikan lewat `mouse_drag = off`.
+//! Mouse: drag a window to swap positions with another, or drag an edge adjacent
+//! to the column divider to move it. Uses built-in Windows drag / resize (the window
+//! follows the cursor normally); only the result is read here when the button is
+//! released (EVENT_SYSTEM_MOVESIZEEND). Other movement is reverted by sync / apply
+//! as before. Disabled via `mouse_drag = off`.
 
 use std::sync::atomic::Ordering;
 
@@ -14,10 +14,10 @@ use super::App;
 use crate::tray;
 use crate::winutil::{bounds, ext_bounds, wid, Bounds};
 
-/// Toleransi (piksel) untuk "tepi ini tidak bergerak".
+/// Tolerance (pixels) for "this edge did not move".
 const TOL: i32 = 6;
 
-/// Window dipindah (ukuran tetap, posisi berubah)?
+/// Was the window moved (same size, different position)?
 pub(crate) fn was_moved(before: Bounds, after: Bounds) -> bool {
     let (w0, h0) = (before.2 - before.0, before.3 - before.1);
     let (w1, h1) = (after.2 - after.0, after.3 - after.1);
@@ -26,9 +26,10 @@ pub(crate) fn was_moved(before: Bounds, after: Bounds) -> bool {
         && ((after.0 - before.0).abs() > TOL || (after.1 - before.1).abs() > TOL)
 }
 
-/// Kalau window di lajur `span` ditarik pada tepi yang berbatasan dengan pembagi
-/// (lajur kiri: tepi kanan, lajur kanan: tepi kiri) dan tepi lain serta tinggi tidak
-/// berubah: berapa piksel pembagi bergeser (> 0 ke kanan). Selain itu None.
+/// If a window in column `span` is dragged at the edge adjacent to the divider
+/// (right edge for the left column, left edge for the right column), while the other
+/// edge and height remain unchanged: how many pixels did the divider move (> 0 right)?
+/// Otherwise, None.
 pub(crate) fn divider_shift(span: Span, before: Bounds, after: Bounds) -> Option<i32> {
     let (l0, t0, r0, b0) = before;
     let (l1, t1, r1, b1) = after;
@@ -42,7 +43,7 @@ pub(crate) fn divider_shift(span: Span, before: Bounds, after: Bounds) -> Option
     }
 }
 
-/// Window (selain `skip`) yang memuat titik (x, y).
+/// Window (other than `skip`) containing point (x, y).
 pub(crate) fn window_at(
     x: i32,
     y: i32,
@@ -56,7 +57,7 @@ pub(crate) fn window_at(
 }
 
 impl App {
-    /// Seretan / tarikan window yang kita kelola selesai (tombol mouse dilepas).
+    /// A drag / resize of a managed window has ended (mouse button released).
     pub(crate) unsafe fn on_drag_end(&mut self, hwnd: HWND) {
         if !self.cfg.mouse_drag
             || self.overview.is_some()
@@ -91,10 +92,10 @@ impl App {
             if let Some(other) = window_at(pt.x, pt.y, id, &rects) {
                 if self.ws.cur_mut().swap_windows(id, other) {
                     self.ws.cur_mut().set_focus(id);
-                    self.apply(); // masing-masing masuk ke tempat barunya
+                    self.apply(); // Arrange each in its new position.
                 }
             }
-            return; // tidak jatuh di window lain: sync mengembalikannya ke tempat semula
+            return; // Not dropped on another window: sync restores it to its original position.
         }
         let span = self
             .ws
@@ -106,7 +107,7 @@ impl App {
         if let Some(dx) = span.and_then(|s| divider_shift(s, before, after)) {
             self.ws.cur_mut().set_focus(id);
             self.ws.cur_mut().adjust_split(dx);
-            self.apply(); // pembagi baru; kalau ditolak (batas), window kembali ke lajurnya
+            self.apply(); // New divider; if rejected (limit), the window returns to its column.
         }
     }
 }
@@ -121,24 +122,24 @@ mod tests {
     fn moving_keeps_the_size() {
         assert!(was_moved(B0, (400, 200, 1200, 800)));
         assert!(!was_moved(B0, B0));
-        assert!(!was_moved(B0, (103, 52, 903, 652))); // gerak kecil = klik
-        assert!(!was_moved(B0, (100, 50, 1000, 650))); // berubah ukuran
+        assert!(!was_moved(B0, (103, 52, 903, 652))); // Small movement = click.
+        assert!(!was_moved(B0, (100, 50, 1000, 650))); // Resized.
     }
 
     #[test]
     fn dragging_the_inner_edge_moves_the_divider() {
-        // lajur kiri: tepi kanan 900 -> 1000 = pembagi 100 px ke kanan
+        // Left column: right edge 900 -> 1000 = divider moved 100 px right.
         assert_eq!(divider_shift(Span::Left, B0, (100, 50, 1000, 650)), Some(100));
-        // lajur kanan: tepi kiri 100 -> 40 = pembagi 60 px ke kiri
+        // Right column: left edge 100 -> 40 = divider moved 60 px left.
         assert_eq!(divider_shift(Span::Right, B0, (40, 50, 900, 650)), Some(-60));
-        // tepi luar yang ditarik: bukan pembagi
+        // Dragged outer edge: not the divider.
         assert_eq!(divider_shift(Span::Left, B0, (40, 50, 900, 650)), None);
         assert_eq!(divider_shift(Span::Right, B0, (100, 50, 1000, 650)), None);
-        // tinggi ikut berubah (mis. snap Windows): bukan pembagi
+        // Height also changed (e.g. Windows snap): not the divider.
         assert_eq!(divider_shift(Span::Left, B0, (100, 50, 1000, 900)), None);
-        // window penuh lebar tidak punya pembagi
+        // Full-width window has no divider.
         assert_eq!(divider_shift(Span::Full, B0, (100, 50, 1000, 650)), None);
-        // goyangan kecil diabaikan
+        // Ignore small jitter.
         assert_eq!(divider_shift(Span::Left, B0, (100, 50, 903, 650)), None);
     }
 
@@ -148,9 +149,9 @@ mod tests {
         let b = WindowId(2);
         let rects = [(a, (0, 0, 500, 500)), (b, (500, 0, 1000, 500))];
         assert_eq!(window_at(700, 100, a, &rects), Some(b));
-        assert_eq!(window_at(100, 100, a, &rects), None); // hanya window itu sendiri
+        assert_eq!(window_at(100, 100, a, &rects), None); // Only the window itself.
         assert_eq!(window_at(100, 100, b, &rects), Some(a));
         assert_eq!(window_at(1200, 100, a, &rects), None);
-        assert_eq!(window_at(500, 0, a, &rects), Some(b)); // tepi kiri termasuk
+        assert_eq!(window_at(500, 0, a, &rects), Some(b)); // Left edge is included.
     }
 }

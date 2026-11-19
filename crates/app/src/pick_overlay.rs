@@ -1,7 +1,7 @@
-//! Mode angkat-dan-jatuhkan (`pick`) langsung di desktop:
-//!  - Daftar slot mendarat (`build_slots`) dan navigasi panah (`step_slot`), murni tanpa Win32.
-//!  - Jendela overlay semi-transparan (`show` / `hide`) yang menggambar marker tempat
-//!    mendarat di atas desktop tanpa merebut fokus dan tembus klik.
+//! Lift-and-drop (`pick`) mode directly on the desktop:
+//!  - Destination slot list (`build_slots`) and arrow navigation (`step_slot`), pure and Win32-free.
+//!  - A semi-transparent overlay window (`show` / `hide`) that draws destination markers
+//!    over the desktop without taking focus and with click-through behavior.
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicIsize, Ordering};
@@ -19,9 +19,9 @@ use crate::config::OverviewColors;
 use crate::theme::{self, Canvas, Palette};
 use crate::winutil::animations_enabled;
 
-/// Tinggi pita horizontal untuk slot `FullBefore` / `FullAfter` (di antara window).
+/// Height of the horizontal band for `FullBefore` / `FullAfter` slots (between windows).
 const BAR_H: i32 = 30;
-/// Toleransi piksel untuk menyamakan tepi / lebar kolom.
+/// Pixel tolerance for matching edges / column widths.
 const SLACK: i32 = 4;
 /// Opasitas overlay (0..=255), menyerupai pratinjau Aero Snap Windows 11.
 const ALPHA: u8 = 195;
@@ -30,18 +30,18 @@ const ANIM_TICK_MS: u32 = 16;
 const GLIDE_MS: f32 = 130.0;
 const FADE_MS: f32 = 120.0;
 
-/// Jenis tempat mendarat yang bisa dipilih di mode `pick`.
+/// Destination type selectable in `pick` mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PickTarget {
-    /// Sisipkan penuh lebar di atas blok window ini.
+    /// Insert full-width above this window block.
     FullBefore(WindowId),
-    /// Sisipkan penuh lebar di bawah blok window ini.
+    /// Insert full-width below this window block.
     FullAfter(WindowId),
-    /// Bagi dua window ini (`first`: kiri untuk penuh lebar, atas untuk setengah lebar).
+    /// Split this window (`first`: left for full-width, top for half-width).
     Split(WindowId, bool),
-    /// Isi sisi kosong di sebelah window setengah lebar ini.
+    /// Fill the empty side next to this half-width window.
     Beside(WindowId),
-    /// Taruh di workspace kosong (atau satu-satunya window di workspace ini).
+    /// Place in an empty workspace (or the only window in this workspace).
     EmptyWorkspace,
 }
 
@@ -57,18 +57,18 @@ impl PickTarget {
     }
 }
 
-/// Satu kandidat tempat mendarat di koordinat strip (belum dikurangi scroll).
+/// A candidate destination in strip coordinates (before subtracting scroll).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PickSlot {
     pub target: PickTarget,
-    /// Kotak marker di koordinat strip (0..ov.width, 0..ov.height).
+    /// Marker rectangle in strip coordinates (0..ov.width, 0..ov.height).
     pub rect: Rect,
-    /// Window acuan untuk menggulung viewport agar slot ini terlihat.
+    /// Reference window for scrolling the viewport to make this slot visible.
     pub anchor: Option<WindowId>,
 }
 
-/// Bangun semua slot mendarat untuk satu workspace, mengecualikan `src` sendiri.
-/// Urutan vertikal: celah atas blok -> isi blok (split / beside) -> celah bawah blok -> ...
+/// Build all destination slots for one workspace, excluding `src` itself.
+/// Vertical order: gap above block -> block contents (split / beside) -> gap below block -> ...
 pub fn build_slots(ov: &Overview, src: WindowId) -> Vec<PickSlot> {
     let others: Vec<_> = ov.items.iter().copied().filter(|it| it.id != src).collect();
     if others.is_empty() {
@@ -85,7 +85,7 @@ pub fn build_slots(ov: &Overview, src: WindowId) -> Vec<PickSlot> {
         }];
     }
 
-    // Kelompokkan window lain jadi blok vertikal (rentang y yang saling tumpang tindih).
+    // Group other windows into vertical blocks (overlapping y-ranges).
     let mut sorted = others;
     sorted.sort_by_key(|it| (it.rect.y, it.rect.x));
     let mut blocks: Vec<(i32, i32, Vec<layout::OverviewItem>)> = Vec::new();
@@ -105,7 +105,7 @@ pub fn build_slots(ov: &Overview, src: WindowId) -> Vec<PickSlot> {
     let mut slots = Vec::new();
     let w = ov.width.max(1);
 
-    // 1. Celah paling atas strip (sebelum blok pertama)
+    // 1. Topmost gap in the strip (before the first block).
     if let Some((top, _, items)) = blocks.first() {
         let first_id = items[0].id;
         slots.push(PickSlot {
@@ -120,10 +120,10 @@ pub fn build_slots(ov: &Overview, src: WindowId) -> Vec<PickSlot> {
         });
     }
 
-    // 2. Untuk setiap blok: isi blok (split / beside), lalu celah di bawah blok
+    // 2. For each block: block contents (split / beside), then the gap below it.
     for (bi, (b_top, b_bot, items)) in blocks.iter().enumerate() {
         let is_full = |r: Rect| r.w >= w - SLACK;
-        // Cek apakah ini blok setengah lebar yang hanya punya satu sisi
+        // Check whether this is a half-width block with only one side occupied.
         let has_left = items.iter().any(|it| !is_full(it.rect) && it.rect.x <= SLACK);
         let has_right = items
             .iter()
@@ -178,7 +178,7 @@ pub fn build_slots(ov: &Overview, src: WindowId) -> Vec<PickSlot> {
             }
         }
 
-        // Kalau cuma satu lajur yang terisi di blok ini, tawarkan setengah kosong `Beside`
+        // If only one column is occupied in this block, offer the empty half as `Beside`.
         if has_left ^ has_right {
             if let Some(first) = items.first() {
                 let r = first.rect;
@@ -200,7 +200,7 @@ pub fn build_slots(ov: &Overview, src: WindowId) -> Vec<PickSlot> {
             }
         }
 
-        // Celah di bawah blok (sekaligus pemisah ke blok berikutnya)
+        // Gap below the block (also separates it from the next block).
         let last_id = items[0].id;
         let is_last = bi + 1 == blocks.len();
         let bar_y = if is_last {
@@ -223,7 +223,7 @@ pub fn build_slots(ov: &Overview, src: WindowId) -> Vec<PickSlot> {
     slots
 }
 
-/// Pilih slot awal yang paling dekat dengan posisi `src_rect` (atau 0 kalau tidak ada).
+/// Choose the initial slot closest to `src_rect` (or 0 if none exists).
 pub fn initial_slot(slots: &[PickSlot], src_rect: Option<Rect>) -> usize {
     let Some(sr) = src_rect else { return 0 };
     let (sx, sy) = (sr.x + sr.w / 2, sr.y + sr.h / 2);
@@ -239,8 +239,8 @@ pub fn initial_slot(slots: &[PickSlot], src_rect: Option<Rect>) -> usize {
         .unwrap_or(0)
 }
 
-/// Pilih slot masuk saat menyeberang dari workspace sebelah (`from_left` = masuk dari
-/// sisi kiri, artinya menekan Kanan).
+/// Choose an entry slot when crossing from a neighboring workspace (`from_left` = enter
+/// from the left, meaning the Right key was pressed).
 pub fn entry_slot(slots: &[PickSlot], from_left: bool, y: i32) -> usize {
     if slots.is_empty() {
         return 0;
@@ -265,8 +265,8 @@ pub fn entry_slot(slots: &[PickSlot], from_left: bool, y: i32) -> usize {
         .unwrap_or(0)
 }
 
-/// Geser pilihan slot ke arah `dir`. None kalau tidak ada slot lagi di arah itu
-/// (untuk Kiri / Kanan berarti saatnya menyeberang ke workspace sebelah).
+/// Move the selected slot in direction `dir`. None if there are no more slots in that
+/// direction (for Left / Right, this means crossing to the neighboring workspace).
 pub fn step_slot(slots: &[PickSlot], cur: usize, dir: Dir) -> Option<usize> {
     let f = slots.get(cur)?;
     let (fx0, fx1) = (f.rect.x, f.rect.x + f.rect.w);
@@ -325,8 +325,8 @@ struct OverlayState {
 static OVERLAY_HWND: AtomicIsize = AtomicIsize::new(0);
 static DRAW_STATE: Mutex<Option<OverlayState>> = Mutex::new(None);
 
-/// Ambil ikon window (milik window / kelas, tidak perlu `DestroyIcon`).
-/// Memakai `SendMessageTimeoutW` supaya tidak pernah macet kalau app sedang sibuk.
+/// Get the window icon (owned by the window / class; no need to call `DestroyIcon`).
+/// Use `SendMessageTimeoutW` so this never hangs if the app is busy.
 pub unsafe fn window_icon(hwnd: HWND) -> isize {
     for kind in [ICON_BIG, ICON_SMALL2, ICON_SMALL] {
         let mut res = 0usize;
@@ -376,7 +376,7 @@ unsafe fn paint(hwnd: HWND) {
         let pal = Palette::resolve(OverviewColors::default());
         let mut canvas = Canvas::new(hdc, client);
 
-        // Permukaan kaca halus bernuansa aksen (gaya pratinjau Snap Windows 11)
+        // Smooth accent-tinted glass surface (Windows 11 Snap preview style).
         let tint = theme::mix(pal.surface, accent, if pal.dark { 28 } else { 20 });
         canvas.fill_rect(client, tint, 255);
         let border_r = RECT {
@@ -489,7 +489,7 @@ unsafe extern "system" fn overlay_proc(
     }
 }
 
-/// Buat jendela overlay tersembunyi (dipanggil sekali di awal `main`).
+/// Create the hidden overlay window (called once at the start of `main`).
 pub unsafe fn init() -> bool {
     let hinst: HINSTANCE = GetModuleHandleW(None).unwrap_or_default().into();
     let cls = w!("VScrollWmPickOverlay");
@@ -527,8 +527,8 @@ pub unsafe fn init() -> bool {
     true
 }
 
-/// Tampilkan marker overlay di `rect` (koordinat layar) dengan warna `color` (COLORREF)
-/// dan ikon app `icon` (HICON sebagai isize; 0 = tanpa ikon).
+/// Show an overlay marker at `rect` (screen coordinates) with color `color` (COLORREF)
+/// and app icon `icon` (HICON as isize; 0 = no icon).
 pub unsafe fn show(rect: Rect, color: u32, icon: isize) {
     let raw = OVERLAY_HWND.load(Ordering::Relaxed);
     if raw == 0 {
@@ -536,7 +536,7 @@ pub unsafe fn show(rect: Rect, color: u32, icon: isize) {
     }
     let hwnd = HWND(raw as *mut c_void);
     let pal = Palette::resolve(OverviewColors::default());
-    // Kalau warna sama dengan default lama, gunakan aksen Windows aktif
+    // If the color matches the old default, use the active Windows accent.
     let accent = if color == OverviewColors::default().active {
         pal.accent
     } else {
@@ -620,20 +620,20 @@ mod tests {
 
     #[test]
     fn vertical_navigation_visits_gaps_between_windows_and_inside_windows() {
-        // Strip berisi A, B, C penuh lebar; kita angkat C.
+        // Strip contains full-width A, B, C; pick up C.
         let mut s = Strip::new(rect(0, 0, 1920, 1080));
         s.add_window(A);
         s.add_window(B);
         s.add_window(C);
         let slots = build_slots(&s.overview(), C);
 
-        // Mulai dari paling atas: FullBefore(A) -> Split(A, left) -> FullAfter(A) (antara A & B)
+        // Starting at the top: FullBefore(A) -> Split(A, left) -> FullAfter(A) (between A & B).
         // -> Split(B, left) -> FullAfter(B)
         let mut i = 0;
         assert_eq!(slots[i].target, PickTarget::FullBefore(A));
         i = step_slot(&slots, i, Dir::Down).unwrap();
         assert_eq!(slots[i].target, PickTarget::Split(A, true));
-        // Kanan -> Split(A, right), Kiri -> balik ke Split(A, left)
+        // Right -> Split(A, right); Left -> back to Split(A, left).
         let right = step_slot(&slots, i, Dir::Right).unwrap();
         assert_eq!(slots[right].target, PickTarget::Split(A, false));
         assert_eq!(step_slot(&slots, right, Dir::Left), Some(i));

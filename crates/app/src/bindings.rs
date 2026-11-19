@@ -1,17 +1,18 @@
-//! Pintasan keyboard: SATU tabel (`ACTIONS`) untuk semua aksi yang bisa diikat tombol.
+//! Keyboard shortcuts: one table (`ACTIONS`) for all bindable actions.
 //!
-//! Tiap aksi punya nama konfigurasi (`bind.<nama>`), id hotkey (yang dikirim ke thread
-//! utama), kelompok + keterangan untuk cheatsheet, tombol bawaan, dan apakah menahan
-//! tombolnya mengulang aksi. Hook keyboard, parser konfigurasi, dan cheatsheet sama-sama
-//! membaca tabel ini, jadi aksi baru cukup ditambah di sini: otomatis bisa diubah lewat
-//! konfigurasi dan otomatis muncul di cheatsheet (test di bawah menjaga ini).
+//! Each action has a config name (`bind.<name>`), a hotkey ID (sent to the main
+//! thread), a group + description for the cheatsheet, default keys, and whether
+//! holding the key repeats the action. The keyboard hook, config parser, and
+//! cheatsheet all read this table, so new actions only need to be added here:
+//! they automatically become configurable and appear in the cheatsheet (the
+//! tests below enforce this).
 //!
-//! Format di vscroll-wm.conf:
-//!   bind.close = win+q                  satu tombol
-//!   bind.overview = win+tab, win+alt+space   beberapa tombol (pisah koma)
-//!   bind.minimize = off                 matikan
-//!   bind.workspace_goto = win+ctrl+1-9  aksi bernomor: tombol "1-9" = workspace 1..9
-//! Modifier: win, ctrl, alt, shift (minimal satu). Tombol: huruf/angka, left/right/up/down,
+//! Format in vscroll-wm.conf:
+//!   bind.close = win+q                  one key
+//!   bind.overview = win+tab, win+alt+space   multiple keys (comma-separated)
+//!   bind.minimize = off                 disable
+//!   bind.workspace_goto = win+ctrl+1-9  numbered action: "1-9" keys = workspaces 1..9
+//! Modifiers: win, ctrl, alt, shift (at least one). Keys: letters/numbers, left/right/up/down,
 //! enter, esc, space, tab, backspace, delete, insert, home, end, pageup, pagedown, f1-f12,
 //! slash, backslash, lbracket, rbracket, grave, comma, period, minus, equals, semicolon, quote.
 
@@ -25,21 +26,21 @@ use crate::consts::{
     HOTKEY_WS_SEND, HOTKEY_WS_SEND_NEXT, HOTKEY_WS_SEND_PREV,
 };
 
-// ---------------------------------------------------------------- modifier
+// ---------------------------------------------------------------- modifiers
 
 pub const WIN: u8 = 1;
 pub const CTRL: u8 = 2;
 pub const ALT: u8 = 4;
 pub const SHIFT: u8 = 8;
 
-/// Kode virtual-key yang dipakai di luar tabel nama tombol.
+/// Virtual-key codes used outside the key-name table.
 const VK_TAB: u16 = 0x09;
 const VK_ESCAPE: u16 = 0x1B;
 const VK_SPACE: u16 = 0x20;
 const VK_D: u16 = 0x44;
 const VK_F4: u16 = 0x73;
 
-// ------------------------------------------------------------------ kelompok
+// ------------------------------------------------------------------ groups
 
 pub const G_LAYOUT: &str = "Window layout";
 pub const G_MOVE: &str = "Moving around";
@@ -48,23 +49,23 @@ pub const G_WINDOW: &str = "Windows";
 pub const G_APP: &str = "App";
 pub const G_OVERVIEW: &str = "Inside the overview";
 
-// -------------------------------------------------------------------- tabel
+// -------------------------------------------------------------------- table
 
 pub struct ActionDef {
-    /// Nama di konfigurasi: `bind.<name>`.
+    /// Name in the config: `bind.<name>`.
     pub name: &'static str,
-    /// Id hotkey yang dikirim ke thread utama (aksi bernomor: id dasar, ditambah 0..8).
+    /// Hotkey ID sent to the main thread (numbered action: base ID plus 0..8).
     pub id: i32,
-    /// Judul kelompok di cheatsheet.
+    /// Group title in the cheatsheet.
     pub group: &'static str,
-    /// Keterangan di cheatsheet. Aksi satu kelompok dengan keterangan yang sama digabung
-    /// jadi satu baris (mis. ↑ dan ↓). Placeholder: {resize_step}, {height_note}.
+    /// Cheatsheet description. Actions in the same group with the same description
+    /// are combined into one row (e.g. ↑ and ↓). Placeholders: {resize_step}, {height_note}.
     pub desc: &'static str,
-    /// Tombol bawaan (format yang sama dengan konfigurasi).
+    /// Default keys (same format as the config).
     pub defaults: &'static [&'static str],
-    /// Menahan tombol mengulang aksi (menggeser / mengubah ukuran). Sisanya sekali per tekan.
+    /// Holding the key repeats the action (move / resize). Others trigger once per press.
     pub repeat: bool,
-    /// Aksi bernomor: tombolnya "1-9" dan id dasar ditambah 0..8.
+    /// Numbered action: keys are "1-9" and the base ID is incremented by 0..8.
     pub numbered: bool,
 }
 
@@ -131,9 +132,9 @@ const D_SWAP: &str = "swap places with the neighbouring window";
 const D_WS_STEP: &str = "previous / next workspace";
 const D_WS_SEND_STEP: &str = "send window to previous / next workspace";
 
-/// Urutan tabel = urutan baris di cheatsheet.
+/// Table order = row order in the cheatsheet.
 pub const ACTIONS: &[ActionDef] = &[
-    // Window layout (id 1..4 = snap kiri, kanan, atas, bawah)
+    // Window layout (IDs 1..4 = snap left, right, up, down)
     rep("snap_up", 3, G_LAYOUT, D_HEIGHT, &["win+up"]),
     rep("snap_down", 4, G_LAYOUT, D_HEIGHT, &["win+down"]),
     rep("snap_left", 1, G_LAYOUT, D_COLUMN, &["win+left"]),
@@ -165,7 +166,7 @@ pub const ACTIONS: &[ActionDef] = &[
         "back to full width and height",
         &["win+enter"],
     ),
-    // Moving around (id 5..8 = fokus kiri, kanan, atas, bawah; 10..13 = tukar posisi)
+    // Moving around (IDs 5..8 = focus left, right, up, down; 10..13 = swap positions)
     rep("focus_left", 5, G_MOVE, D_FOCUS, &["win+shift+left"]),
     rep("focus_right", 6, G_MOVE, D_FOCUS, &["win+shift+right"]),
     rep("focus_up", 7, G_MOVE, D_FOCUS, &["win+shift+up"]),
@@ -227,8 +228,8 @@ pub const ACTIONS: &[ActionDef] = &[
     act("cheatsheet", HOTKEY_CHEATSHEET, G_APP, "show this cheatsheet", &["win+/"]),
 ];
 
-/// Tombol yang tidak bisa diubah (dicek lebih dulu dari ikatan pengguna): jalan keluar
-/// darurat, dan penelan pintasan desktop virtual Windows (diganti workspace kita).
+/// Keys that cannot be changed (checked before user bindings): emergency exit
+/// and swallowed Windows virtual desktop shortcuts (replaced by our workspaces).
 /// (modifier, vk, id hotkey)
 pub const RESERVED: &[(u8, u16, i32)] = &[
     (WIN | CTRL, VK_ESCAPE, HOTKEY_QUIT),
@@ -240,24 +241,24 @@ pub fn find_action(name: &str) -> Option<usize> {
     ACTIONS.iter().position(|a| a.name == name)
 }
 
-/// Menahan tombol aksi ber-id `id` boleh mengulang?
+/// May holding the action key with ID `id` repeat it?
 pub fn repeat_allowed(id: i32) -> bool {
     ACTIONS.iter().any(|a| a.repeat && a.id == id)
 }
 
-/// Id hotkey milik workspace (pindah / kirim / penelan desktop virtual).
+/// Workspace hotkey IDs (switch / send / swallowed virtual desktop shortcuts).
 pub fn is_workspace_id(id: i32) -> bool {
     (HOTKEY_WS_PREV..=HOTKEY_WS_NOOP).contains(&id)
         || (HOTKEY_WS_GO..HOTKEY_WS_GO + 9).contains(&id)
         || (HOTKEY_WS_SEND..HOTKEY_WS_SEND + 9).contains(&id)
 }
 
-// -------------------------------------------------------------------- chord
+// -------------------------------------------------------------------- chords
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Key {
     Vk(u16),
-    /// Tombol angka 1..9 (hanya untuk aksi bernomor).
+    /// Number keys 1..9 (only for numbered actions).
     Digits,
 }
 
@@ -283,12 +284,12 @@ impl Chord {
         }
     }
 
-    /// Dua chord yang bisa ditekan bersamaan oleh satu kombinasi tombol.
+    /// Two chords that can be pressed together by one key combination.
     pub fn conflicts(&self, other: &Chord) -> bool {
         self.mods == other.mods && key_overlap(self.key, other.key)
     }
 
-    /// Cocok dengan kombinasi (modifier, vk) yang sedang ditekan.
+    /// Matches the currently pressed (modifier, vk) combination.
     fn hits(&self, mods: u8, vk: u16) -> Option<i32> {
         if self.mods != mods {
             return None;
@@ -305,7 +306,7 @@ impl Chord {
     }
 }
 
-/// "tab" / "left" / "f5" / "z" / "/" -> kode virtual-key. None = tidak dikenal.
+/// "tab" / "left" / "f5" / "z" / "/" -> virtual-key code. None = unknown.
 fn parse_key(tok: &str) -> Option<u16> {
     let t = tok.trim().to_lowercase();
     let code = match t.as_str() {
@@ -349,7 +350,7 @@ fn parse_key(tok: &str) -> Option<u16> {
     Some(code)
 }
 
-/// "win+shift+left" -> Chord. `numbered`: aksi bernomor, tombolnya harus "1-9".
+/// "win+shift+left" -> Chord. `numbered`: numbered action; keys must be "1-9".
 pub fn parse_chord(text: &str, numbered: bool) -> Result<Chord, String> {
     let lower = text.trim().to_lowercase();
     let mut parts: Vec<&str> = lower.split('+').map(str::trim).collect();
@@ -404,7 +405,7 @@ pub fn parse_chord(text: &str, numbered: bool) -> Result<Chord, String> {
     Ok(Chord { mods, key })
 }
 
-/// Isi `bind.<aksi>`: daftar chord dipisah koma; kosong / off / none = tanpa tombol.
+/// Parse `bind.<action>`: comma-separated chord list; empty / off / none = no keys.
 pub fn parse_list(idx: usize, value: &str) -> Result<Vec<Chord>, String> {
     let v = value.trim();
     if v.is_empty() || v.eq_ignore_ascii_case("off") || v.eq_ignore_ascii_case("none") {
@@ -414,7 +415,7 @@ pub fn parse_list(idx: usize, value: &str) -> Result<Vec<Chord>, String> {
     v.split(',').map(|p| parse_chord(p, numbered)).collect()
 }
 
-// -------------------------------------------------------------------- label
+// -------------------------------------------------------------------- labels
 
 pub fn mods_label(mods: u8) -> String {
     let mut out: Vec<&str> = Vec::new();
@@ -433,7 +434,7 @@ pub fn mods_label(mods: u8) -> String {
     out.join(" + ")
 }
 
-/// Nama tombol untuk ditampilkan, dari kode virtual-key.
+/// Display name for a key, from its virtual-key code.
 pub fn vk_label(vk: u16) -> String {
     match vk {
         0x25 => "←".to_string(),
@@ -475,8 +476,8 @@ pub fn key_label(key: Key) -> String {
     }
 }
 
-/// Teks tombol untuk satu baris cheatsheet. Modifier yang sama digabung:
-/// "Win + ← / →"; keempat panah jadi "Win + Shift + arrows".
+/// Key text for a cheatsheet row. Identical modifiers are combined:
+/// "Win + ← / →"; all four arrows become "Win + Shift + arrows".
 pub fn join_chords(chords: &[Chord]) -> String {
     let Some(first) = chords.first() else {
         return String::new();
@@ -512,7 +513,7 @@ pub fn join_chords(chords: &[Chord]) -> String {
 
 // ----------------------------------------------------------------- Bindings
 
-/// Tombol tiap aksi, urutannya sama dengan `ACTIONS`.
+/// Keys for each action, in the same order as `ACTIONS`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bindings {
     chords: Vec<Vec<Chord>>,
@@ -550,8 +551,8 @@ impl Bindings {
         }
     }
 
-    /// Id hotkey untuk kombinasi (modifier, vk), kalau ada aksi yang terikat padanya.
-    /// Aksi bernomor: id dasar + nomor tombol.
+    /// Hotkey ID for a (modifier, vk) combination, if an action is bound to it.
+    /// Numbered action: base ID + key number.
     pub fn lookup(&self, mods: u8, vk: u16) -> Option<i32> {
         for (i, list) in self.chords.iter().enumerate() {
             for c in list {
@@ -563,8 +564,8 @@ impl Bindings {
         None
     }
 
-    /// Tombol untuk berputar antar window saat overview terbuka dan Win ditahan: tombol
-    /// pembuka overview yang hanya memakai Win. 0 = tidak ada.
+    /// Key for cycling through windows while overview is open and Win is held: the
+    /// overview key when it uses Win alone. 0 = none.
     pub fn overview_cycle_vk(&self) -> u16 {
         let Some(idx) = find_action("overview") else {
             return 0;
@@ -578,9 +579,9 @@ impl Bindings {
             .unwrap_or(0)
     }
 
-    /// Buang chord yang bentrok: dengan tombol terkunci (RESERVED), atau dengan aksi yang
-    /// lebih diutamakan. Urutan prioritas: `first` (aksi yang diatur eksplisit, sesuai
-    /// urutan di file), lalu sisanya menurut tabel. Mengembalikan peringatan.
+    /// Remove conflicting chords: with reserved keys (RESERVED) or higher-priority
+    /// actions. Priority order: `first` (explicitly configured actions, in file order),
+    /// then the remaining actions in table order. Returns warnings.
     pub fn resolve_conflicts(&mut self, first: &[usize]) -> Vec<String> {
         let mut warnings = Vec::new();
         if self.chords.len() != ACTIONS.len() {
@@ -627,11 +628,11 @@ impl Bindings {
     }
 }
 
-// ------------------------------------------------------ ikatan yang berlaku
+// ------------------------------------------------------ active bindings
 
-/// Ikatan yang dipakai hook keyboard. Diisi dari thread utama (apply_config); hook juga
-/// jalan di thread yang sama, jadi tidak ada rebutan, tapi tetap memakai try_read supaya
-/// hook tidak pernah menunggu.
+/// Bindings used by the keyboard hook. Populated from the main thread (apply_config);
+/// the hook runs on the same thread, so there is no contention, but try_read is still
+/// used to ensure the hook never waits.
 static ACTIVE: RwLock<Bindings> = RwLock::new(Bindings::empty());
 
 pub fn install(b: &Bindings) {
@@ -640,7 +641,7 @@ pub fn install(b: &Bindings) {
     }
 }
 
-/// Id hotkey untuk kombinasi yang sedang ditekan: tombol terkunci dulu, lalu ikatan pengguna.
+/// Hotkey ID for the currently pressed combination: reserved keys first, then user bindings.
 pub fn lookup_active(mods: u8, vk: u16) -> Option<i32> {
     if let Some(r) = RESERVED.iter().find(|r| r.0 == mods && r.1 == vk) {
         return Some(r.2);
@@ -648,7 +649,7 @@ pub fn lookup_active(mods: u8, vk: u16) -> Option<i32> {
     ACTIVE.try_read().ok().and_then(|g| g.lookup(mods, vk))
 }
 
-/// Tombol pertama aksi `name` yang berlaku sekarang, untuk teks petunjuk. "unbound" kalau kosong.
+/// First currently active key for action `name`, for hint text. "unbound" if empty.
 pub fn active_label(name: &str) -> String {
     let Some(i) = find_action(name) else {
         return String::new();
@@ -705,7 +706,7 @@ mod tests {
         );
         assert_eq!(parse_chord(" super + ] ", false), Ok(Chord::new(WIN, 0xDD)));
         assert_eq!(parse_chord("alt+f5", false), Ok(Chord::new(ALT, 0x74)));
-        assert_eq!(parse_chord("ctrl+f", false), Ok(Chord::new(CTRL, 0x46))); // huruf F
+        assert_eq!(parse_chord("ctrl+f", false), Ok(Chord::new(CTRL, 0x46))); // Letter F.
         assert_eq!(parse_chord("win+slash", false), Ok(Chord::new(WIN, 0xBF)));
         assert_eq!(
             parse_chord("win+ctrl+1-9", true),
@@ -718,13 +719,13 @@ mod tests {
 
     #[test]
     fn rejects_bad_chords() {
-        assert!(parse_chord("q", false).is_err()); // tanpa modifier
-        assert!(parse_chord("win+", false).is_err()); // tanpa tombol
-        assert!(parse_chord("win+win+q", false).is_err()); // modifier dobel
+        assert!(parse_chord("q", false).is_err()); // No modifier.
+        assert!(parse_chord("win+", false).is_err()); // No key.
+        assert!(parse_chord("win+win+q", false).is_err()); // Duplicate modifier.
         assert!(parse_chord("hyper+q", false).is_err());
         assert!(parse_chord("win+f13", false).is_err());
-        assert!(parse_chord("win+1-9", false).is_err()); // bukan aksi bernomor
-        assert!(parse_chord("win+3", true).is_err()); // aksi bernomor wajib 1-9
+        assert!(parse_chord("win+1-9", false).is_err()); // Not a numbered action.
+        assert!(parse_chord("win+3", true).is_err()); // Numbered actions require 1-9.
     }
 
     #[test]
@@ -742,10 +743,10 @@ mod tests {
     #[test]
     fn default_lookup_matches_the_documented_shortcuts() {
         let b = defaults();
-        assert_eq!(b.lookup(WIN, 0x25), Some(1)); // Win+Left = snap kiri
-        assert_eq!(b.lookup(WIN, 0x26), Some(3)); // Win+Up = lebih pendek
-        assert_eq!(b.lookup(WIN | SHIFT, 0x27), Some(6)); // fokus kanan
-        assert_eq!(b.lookup(WIN | ALT, 0x28), Some(13)); // tukar bawah
+        assert_eq!(b.lookup(WIN, 0x25), Some(1)); // Win+Left = snap left.
+        assert_eq!(b.lookup(WIN, 0x26), Some(3)); // Win+Up = shorter.
+        assert_eq!(b.lookup(WIN | SHIFT, 0x27), Some(6)); // Focus right.
+        assert_eq!(b.lookup(WIN | ALT, 0x28), Some(13)); // Swap down.
         assert_eq!(b.lookup(WIN | ALT | SHIFT, 0x25), Some(HOTKEY_JOIN_LEFT));
         assert_eq!(b.lookup(WIN | ALT | SHIFT, 0x27), Some(HOTKEY_JOIN_RIGHT));
         assert_eq!(b.lookup(WIN | ALT | SHIFT, 0x26), Some(HOTKEY_JOIN_UP));
@@ -799,7 +800,7 @@ mod tests {
         let mut b = defaults();
         let close = find_action("close").unwrap();
         let minimize = find_action("minimize").unwrap();
-        // close dipindah ke Win+M, yang tadinya milik minimize
+        // close moved to Win+M, previously assigned to minimize
         b.set(close, vec![Chord::new(WIN, 0x4D)]);
         let w = b.resolve_conflicts(&[close]);
         assert_eq!(w.len(), 1);
@@ -812,11 +813,11 @@ mod tests {
         let mut b = defaults();
         let close = find_action("close").unwrap();
         let goto = find_action("workspace_goto").unwrap();
-        b.set(close, vec![Chord::new(WIN | CTRL, 0x33)]); // Win+Ctrl+3 ada di dalam 1-9
+        b.set(close, vec![Chord::new(WIN | CTRL, 0x33)]); // Win+Ctrl+3 is within 1-9.
         let w = b.resolve_conflicts(&[close]);
         assert_eq!(w.len(), 1);
         assert_eq!(b.lookup(WIN | CTRL, 0x33), Some(HOTKEY_CLOSE));
-        assert!(b.chords(goto).is_empty()); // chord 1-9 gugur utuh (ada peringatan)
+        assert!(b.chords(goto).is_empty()); // The 1-9 chord is dropped entirely (with a warning).
     }
 
     #[test]
@@ -877,7 +878,7 @@ mod tests {
         b.set(ov, vec![Chord::new(WIN, 0x5A), Chord::new(WIN | ALT, VK_SPACE)]);
         assert_eq!(b.overview_cycle_vk(), 0x5A);
         b.set(ov, vec![Chord::new(CTRL | ALT, 0x4F)]);
-        assert_eq!(b.overview_cycle_vk(), 0); // tanpa Win: tidak ada tombol putar
+        assert_eq!(b.overview_cycle_vk(), 0); // Without Win: no cycling key.
     }
 
     #[test]

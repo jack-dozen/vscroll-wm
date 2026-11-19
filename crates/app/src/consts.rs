@@ -1,4 +1,4 @@
-//! Konstanta: id hotkey, pesan internal, dan durasi.
+//! Constants: hotkey IDs, internal messages, and durations.
 
 use layout::Dir;
 
@@ -36,73 +36,73 @@ pub(crate) const HOTKEY_SPLIT_RESET: i32 = 22;
 
 pub(crate) const HOTKEY_CHEATSHEET: i32 = 23;
 
-/// Pesan dari callback event Windows ke thread utama.
+/// Message from the Windows event callback to the main thread.
 pub(crate) const WM_WINEVENT: u32 = WM_APP + 3;
 
-/// Jeda (ms) mengumpulkan rentetan event sebelum menata ulang.
+/// Delay (ms) for collecting a burst of events before rearranging.
 pub(crate) const EVENT_DEBOUNCE_MS: u32 = 40;
 
-/// Cek ulang setelah window baru ditata (sebagian app mengubah ukurannya sendiri
-/// beberapa saat setelah muncul).
+/// Recheck after a new window is arranged (some apps change their own size
+/// shortly after appearing).
 pub(crate) const RECHECK_MS: u32 = 250;
 
-/// Durasi animasi bawaan (ms). Diubah lewat vscroll-wm.conf (anim_ms).
+/// Default animation duration (ms). Set via vscroll-wm.conf (anim_ms).
 pub(crate) const DEFAULT_ANIM_MS: f32 = 160.0;
 
 pub(crate) const WM_ACTION: u32 = WM_APP + 1;
 
-/// Win+Ctrl+Kiri / Kanan: workspace sebelumnya / berikutnya.
+/// Win+Ctrl+Left / Right: previous / next workspace.
 pub(crate) const HOTKEY_WS_PREV: i32 = 24;
 
 pub(crate) const HOTKEY_WS_NEXT: i32 = 25;
 
-/// Win+Ctrl+Shift+Kiri / Kanan: kirim window aktif ke workspace sebelumnya / berikutnya.
+/// Win+Ctrl+Shift+Left / Right: send the active window to the previous / next workspace.
 pub(crate) const HOTKEY_WS_SEND_PREV: i32 = 26;
 
 pub(crate) const HOTKEY_WS_SEND_NEXT: i32 = 27;
 
-/// Win+Ctrl+D / Win+Ctrl+F4 (buat / tutup desktop virtual Windows): ditelan saja.
+/// Win+Ctrl+D / Win+Ctrl+F4 (create / close a Windows virtual desktop): swallow the shortcut.
 pub(crate) const HOTKEY_WS_NOOP: i32 = 28;
 
-/// Snap layouts: window dipilih di daftar slot (wParam = id window, lParam = id slot).
+/// Snap layouts: select a window in the slot list (wParam = window ID, lParam = slot ID).
 pub(crate) const WM_SNAP_PICK: u32 = WM_APP + 20;
 
-/// Snap layouts: daftar slot dibatalkan (Esc, tombol tutup, klik kanan).
+/// Snap layouts: cancel the slot list (Esc, close button, right-click).
 pub(crate) const WM_SNAP_CANCEL: u32 = WM_APP + 21;
 
-/// Mode bidik `join`: modifier dilepas -> gabungkan ke target terakhir.
+/// `join` targeting mode: modifier released -> join the last target.
 pub(crate) const WM_JOIN_COMMIT: u32 = WM_APP + 22;
 
-/// Mode bidik `join`: Esc ditekan -> batalkan dan kembalikan fokus ke window asal.
+/// `join` targeting mode: Esc pressed -> cancel and restore focus to the source window.
 pub(crate) const WM_JOIN_CANCEL: u32 = WM_APP + 23;
 
-/// Mode angkat-dan-jatuhkan (`pick`): geser marker (wParam = indeks di `DIRS`).
+/// Lift-and-drop (`pick`) mode: move the marker (wParam = index in `DIRS`).
 pub(crate) const WM_PICK_MOVE: u32 = WM_APP + 24;
 
-/// Mode angkat-dan-jatuhkan (`pick`): jatuhkan window di marker terpilih.
+/// Lift-and-drop (`pick`) mode: drop the window at the selected marker.
 pub(crate) const WM_PICK_ACCEPT: u32 = WM_APP + 25;
 
-/// Mode angkat-dan-jatuhkan (`pick`): batalkan.
+/// Lift-and-drop (`pick`) mode: cancel.
 pub(crate) const WM_PICK_CANCEL: u32 = WM_APP + 26;
 
-/// Interval (ms) memantau kursor selama window diseret untuk menu snap layouts.
+/// Interval (ms) for tracking the cursor while a window is dragged for the snap layouts menu.
 pub(crate) const SNAP_TICK_MS: u32 = 16;
 
-/// Win+Ctrl+1..9 -> HOTKEY_WS_GO + 0..8 (pindah ke workspace n).
+/// Win+Ctrl+1..9 -> HOTKEY_WS_GO + 0..8 (switch to workspace n).
 pub(crate) const HOTKEY_WS_GO: i32 = 30;
 
-/// Win+Ctrl+Shift+1..9 -> HOTKEY_WS_SEND + 0..8 (kirim window aktif ke workspace n).
+/// Win+Ctrl+Shift+1..9 -> HOTKEY_WS_SEND + 0..8 (send the active window to workspace n).
 pub(crate) const HOTKEY_WS_SEND: i32 = 40;
 
-/// Win+Alt+Shift+Panah -> gabung ke tetangga (urut seperti `DIRS`: Left, Right, Up, Down).
+/// Win+Alt+Shift+Arrow -> join a neighbor (ordered as in `DIRS`: Left, Right, Up, Down).
 pub(crate) const HOTKEY_JOIN_LEFT: i32 = 50;
 pub(crate) const HOTKEY_JOIN_RIGHT: i32 = 51;
 pub(crate) const HOTKEY_JOIN_UP: i32 = 52;
 pub(crate) const HOTKEY_JOIN_DOWN: i32 = 53;
 
-/// Win+Alt+Space -> angkat window aktif dan pilih tempat mendarat dengan panah + overlay.
+/// Win+Alt+Space -> lift the active window and choose a destination with the arrows + overlay.
 pub(crate) const HOTKEY_PICK: i32 = 54;
 
-/// Posisi x parkir window workspace lain: batas bawah USER32 (i16::MIN); nilai yang
-/// lebih kecil dijepit ke sini. Sengaja bukan -32000 (posisi "minimized" lama).
+/// Parking x-position for windows in other workspaces: the USER32 lower bound (i16::MIN);
+/// smaller values are clamped to this. Deliberately not -32000 (the old "minimized" position).
 pub(crate) const PARK_X: i32 = i16::MIN as i32;

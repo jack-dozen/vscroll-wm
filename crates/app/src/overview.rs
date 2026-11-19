@@ -1,12 +1,12 @@
-//! Overview (gaya Windows 11 Task View + Minimap):
-//!  - Bagian kiri/utama (stage): menampilkan satu workspace aktif/terpilih dalam skala
-//!    besar & bisa di-scroll vertikal (mouse wheel atau otomatis mengikuti kursor).
-//!  - Bagian kanan (minimap): peta utuh 100% seluruh strip dari atas sampai bawah lengkap
-//!    dengan nama tiap window, bingkai `view`, sorotan `selected`, serta slider posisi
-//!    scroll — bisa diklik/diseret untuk langsung melompat ke bagian mana pun di strip.
-//!  - Bagian bawah (dock workspace, saat ada > 1 workspace): deretan kartu mini untuk
-//!    tiap workspace (persis bar Desktop di Task View Windows 11). Klik untuk pindah,
-//!    atau seret window ke kartu workspace untuk memindahkannya.
+//! Overview (Windows 11 Task View + Minimap style):
+//!  - Main/left section (stage): displays one active/selected workspace at a large
+//!    scale and can scroll vertically (mouse wheel or automatic cursor tracking).
+//!  - Right section (minimap): a full 100% map of the entire strip from top to bottom,
+//!    with each window's name, `view` frame, `selected` highlight, and scroll-position
+//!    slider — click or drag it to jump anywhere in the strip.
+//!  - Bottom section (workspace dock, when there is more than one workspace): a row of
+//!    miniature cards for each workspace (like the Desktop bar in Windows 11 Task View).
+//!    Click to switch, or drag a window onto a workspace card to move it there.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
@@ -36,108 +36,108 @@ use crate::config::OverviewColors;
 use crate::theme::{self, Canvas, Palette};
 use crate::winutil::animations_enabled;
 
-/// wParam = 0 kiri, 1 kanan, 2 atas, 3 bawah.
+/// wParam = 0 left, 1 right, 2 up, 3 down.
 pub const WM_OV_MOVE: u32 = WM_APP + 7;
 pub const WM_OV_ACCEPT: u32 = WM_APP + 8;
 pub const WM_OV_CANCEL: u32 = WM_APP + 9;
-/// wParam = id window yang diklik.
+/// wParam = ID of the clicked window.
 pub const WM_OV_PICK: u32 = WM_APP + 10;
-/// wParam = 1 window berikutnya, 0 sebelumnya (urutan baca).
+/// wParam = 1 next window, 0 previous (reading order).
 pub const WM_OV_CYCLE: u32 = WM_APP + 11;
-/// wParam = 0 workspace sebelumnya, 1 berikutnya, n >= 2 workspace nomor n - 2 (mulai 0).
+/// wParam = 0 previous workspace, 1 next, n >= 2 workspace number n - 2 (zero-based).
 pub const WM_OV_WS: u32 = WM_APP + 13;
-/// Window diseret dan dilepas di overview; detailnya diambil lewat `take_drop()`.
+/// A window was dragged and dropped in the overview; details are retrieved via `take_drop()`.
 pub const WM_OV_DROP: u32 = WM_APP + 14;
-/// Zoom stage diubah (Ctrl+Wheel atau +/-/0): bangun ulang panel pada skala baru.
+/// Stage zoom changed (Ctrl+Wheel or +/-/0): rebuild the panel at the new scale.
 pub const WM_OV_ZOOM: u32 = WM_APP + 15;
 
-/// Pengaturan tampilan panel.
+/// Panel display settings.
 pub struct Options {
-    /// Tampilkan petunjuk tombol di bagian bawah.
+    /// Show key hints at the bottom.
     pub hint: bool,
-    /// Ukuran maksimum panel, persen dari area kerja (30-100).
+    /// Maximum panel size, percentage of the work area (30-100).
     pub size_pct: i32,
     pub colors: OverviewColors,
 }
 
 pub struct DrawItem {
     pub id: u64,
-    /// Koordinat konten (belum dikurangi `scroll_y`).
+    /// Content coordinates (before subtracting `scroll_y`).
     pub rect: RECT,
     pub title: String,
-    /// HWND window asli (0 = tanpa thumbnail).
+    /// Original window HWND (0 = no thumbnail).
     pub source: isize,
-    /// Kalau ada thumbnail: pita di bawah kotak tempat label digambar (koordinat konten).
+    /// If there is a thumbnail: band below the box where the label is drawn (content coordinates).
     pub label_band: Option<RECT>,
-    /// Lebar window di strip: penuh, atau lajur kiri / kanan (untuk titik drop).
+    /// Window width in the strip: full, or left / right column (for drop targets).
     pub span: Span,
 }
 
-/// Strip workspace yang sedang tampil di stage atas (koordinat konten).
+/// Workspace strip currently shown in the upper stage (content coordinates).
 pub struct DrawColumn {
-    /// Nomor untuk label (mulai 1).
+    /// Number for the label (starting at 1).
     pub number: usize,
     pub rect: RECT,
-    /// Bingkai bagian strip yang sedang tampil di layar.
+    /// Frame around the strip section currently visible on screen.
     pub view: RECT,
 }
 
-/// Satu kartu workspace di bilah bawah (gaya bar Desktop Task View Windows 11).
+/// A workspace card in the bottom bar (Windows 11 Task View Desktop bar style).
 pub struct DrawDockCard {
-    /// Nomor untuk label (mulai 1).
+    /// Number for the label (starting at 1).
     pub number: usize,
-    /// Indeks workspace (mulai 0) untuk pesan `WM_OV_WS`.
+    /// Workspace index (zero-based) for the `WM_OV_WS` message.
     pub ws_index: usize,
-    /// Kotak kartu keseluruhan di panel.
+    /// Entire card box in the panel.
     pub rect: RECT,
-    /// Area pratinjau mini di dalam kartu.
+    /// Mini-preview area inside the card.
     pub preview: RECT,
-    /// Miniatur kotak window (wireframe) di dalam `preview`.
+    /// Window box miniature (wireframe) inside `preview`.
     pub mini_items: Vec<RECT>,
-    /// Workspace yang sedang dibuka di stage atas.
+    /// Workspace currently open in the upper stage.
     pub current: bool,
 }
 
-/// Satu window di dalam minimap samping (peta utuh 100% strip).
+/// A window in the side minimap (full 100% strip map).
 pub struct MinimapItem {
     pub id: u64,
     pub rect: RECT,
     pub title: String,
 }
 
-/// Peta utuh seluruh strip di sisi kanan stage (ala minimap VS Code).
+/// Full map of the entire strip on the right side of the stage (VS Code minimap style).
 pub struct DrawMinimap {
-    /// Kotak panel minimap (koordinat panel).
+    /// Minimap panel box (panel coordinates).
     pub rect: RECT,
-    /// Kotak strip yang terpetakan 100% di dalam minimap.
+    /// Strip box mapped at 100% inside the minimap.
     pub strip_rect: RECT,
-    /// Bingkai `view` (area yang tampil di desktop) pada skala minimap.
+    /// `view` frame (area visible on the desktop) at minimap scale.
     pub view_rect: RECT,
-    /// Semua window di strip pada skala minimap.
+    /// All windows in the strip at minimap scale.
     pub items: Vec<MinimapItem>,
 }
 
 pub struct Draw {
-    /// Posisi dan ukuran panel di layar (terpusat di area kerja).
+    /// Panel position and size on screen (centered in the work area).
     pub panel: Rect,
-    /// Area stage atas tempat strip workspace saat ini digambar & di-scroll.
+    /// Upper stage area where the current workspace strip is drawn and scrolled.
     pub stage: RECT,
-    /// Offset scroll vertikal stage saat ini (`0 ..= max_scroll`).
+    /// Current vertical stage scroll offset (`0 ..= max_scroll`).
     pub scroll_y: i32,
-    /// Batas maksimum scroll vertikal (0 kalau seluruh strip muat di stage).
+    /// Maximum vertical scroll (0 if the entire strip fits in the stage).
     pub max_scroll: i32,
-    /// Semua window di workspace yang sedang dibuka (koordinat konten).
+    /// All windows in the currently open workspace (content coordinates).
     pub items: Vec<DrawItem>,
-    /// Satu kolom untuk workspace yang sedang dibuka di stage (koordinat konten).
+    /// One column for the workspace currently open in the stage (content coordinates).
     pub columns: Vec<DrawColumn>,
-    /// Minimap penuh 100% strip di sisi kanan stage.
+    /// Full 100% strip minimap on the right side of the stage.
     pub minimap: Option<DrawMinimap>,
-    /// Bar kartu workspace di bagian bawah (terisi kalau ada > 1 workspace).
+    /// Workspace card bar at the bottom (populated when there is more than one workspace).
     pub dock: Vec<DrawDockCard>,
-    /// Lebih dari satu workspace.
+    /// More than one workspace.
     pub multi: bool,
     pub selected: u64,
-    /// Window yang sedang aktif sekarang.
+    /// Currently active window.
     #[allow(dead_code)]
     pub focused: u64,
     pub hint: bool,
@@ -146,27 +146,27 @@ pub struct Draw {
 
 static DRAW: Mutex<Option<Draw>> = Mutex::new(None);
 
-/// Drag window di overview (seperti Task View): tombol kiri ditekan di sebuah kotak lalu
-/// digeser melewati ambang.
+/// Drag a window in the overview (like Task View): press the left button on a box,
+/// then drag beyond the threshold.
 struct Drag {
-    /// Window yang diseret.
+    /// Window being dragged.
     id: u64,
     start: (i32, i32),
-    /// Posisi kursor terakhir (koordinat panel), untuk auto-scroll & hover dock.
+    /// Last cursor position (panel coordinates), for auto-scroll and dock hover.
     pos: (i32, i32),
-    /// Sudah melewati ambang gerak (bukan sekadar klik).
+    /// Whether the movement threshold was passed (not just a click).
     active: bool,
-    /// Titik tujuan di bawah kursor (hanya untuk penanda; dihitung ulang saat dilepas).
+    /// Target point under the cursor (marker only; recalculated on release).
     slot: Option<DropSlot>,
-    /// Kartu dock workspace yang sedang di-hover saat drag: (ws_index, mulai hover).
+    /// Workspace dock card hovered during drag: (ws_index, hover start time).
     hover_dock: Option<(usize, Instant)>,
 }
 static DRAG: Mutex<Option<Drag>> = Mutex::new(None);
-/// Sedang menyeret / mengklik minimap untuk menggeser scroll stage.
+/// Currently dragging / clicking the minimap to move the stage scroll position.
 static MINIMAP_DRAG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Mode angkat-dan-jatuhkan lewat keyboard di dalam overview (`Space` angkat, panah geser
-/// penanda, `Enter` jatuhkan lewat jalur `DROP` yang sama dengan mouse, `Esc` batal).
+/// Keyboard lift-and-drop mode inside the overview (`Space` picks up, arrows move
+/// the marker, `Enter` drops via the same `DROP` path as the mouse, `Esc` cancels).
 struct KbPick {
     src: u64,
     slots: Vec<DropSlot>,
@@ -174,14 +174,14 @@ struct KbPick {
 }
 static KB_PICK: Mutex<Option<KbPick>> = Mutex::new(None);
 
-/// Hasil drop yang menunggu diambil thread utama: (window yang diseret, tujuannya).
+/// Pending drop result for the main thread: (dragged window, destination).
 type DropInfo = (u64, DropSlot);
 static DROP: Mutex<Option<DropInfo>> = Mutex::new(None);
 
-/// Gerak minimum (piksel) sebelum klik dianggap drag.
+/// Minimum movement (pixels) before a click is considered a drag.
 const DRAG_START: i32 = 6;
 
-/// Ambil hasil drop terakhir (sekali).
+/// Take the last drop result (once).
 pub fn take_drop() -> Option<DropInfo> {
     DROP.lock().ok().and_then(|mut g| g.take())
 }
@@ -199,7 +199,7 @@ fn shift_y(r: RECT, dy: i32) -> RECT {
     }
 }
 
-/// Isi panel di titik (x, y): (indeks kartu dock, id window di stage selain `skip`).
+/// Panel contents at point (x, y): (dock card index, stage window ID other than `skip`).
 fn hit_at(x: i32, y: i32, skip: u64) -> (Option<usize>, Option<u64>) {
     let Ok(g) = DRAW.lock() else {
         return (None, None);
@@ -222,23 +222,23 @@ fn hit_at(x: i32, y: i32, skip: u64) -> (Option<usize>, Option<u64>) {
     (None, None)
 }
 
-/// Di mana window yang dijatuhkan akan mendarat.
+/// Where a dropped window will land.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlotKind {
-    /// Setengah lebar, di lajur seberang window ini (sejajar).
+    /// Half width, in the column opposite this window (side-by-side).
     Beside(u64),
-    /// Penuh lebar di atas blok window ini.
+    /// Full width above this window block.
     Before(u64),
-    /// Penuh lebar di bawah blok window ini.
+    /// Full width below this window block.
     After(u64),
-    /// Membagi dua window ini; `bool` = window baru di kiri / atas.
+    /// Split this window in two; `bool` = new window on the left / top.
     Split(u64, bool),
-    /// Pindah ke workspace lain (dijatuhkan di kartu dock bawah).
+    /// Move to another workspace (dropped on a card in the bottom dock).
     Workspace,
 }
 
-/// Titik tujuan drop: nomor workspace (mulai 1), jenisnya, dan area penandanya
-/// (koordinat konten untuk stage, atau koordinat panel untuk `SlotKind::Workspace`).
+/// Drop destination: workspace number (starting at 1), kind, and marker area
+/// (content coordinates for the stage, or panel coordinates for `SlotKind::Workspace`).
 #[derive(Debug, Clone, Copy)]
 pub struct DropSlot {
     pub number: usize,
@@ -246,9 +246,9 @@ pub struct DropSlot {
     pub mark: RECT,
 }
 
-/// Tebal garis penanda "penuh lebar".
+/// Thickness of the "full width" marker line.
 const BAR: i32 = 6;
-/// Zona tepi atas / bawah strip (persen tinggi window di tepi itu, minimal piksel).
+/// Top / bottom strip edge zone (percentage of the edge window height, minimum pixels).
 const EDGE_PCT: i32 = 22;
 const EDGE_MIN: i32 = 10;
 const EXPAND_TOP: i32 = 24;
@@ -262,7 +262,7 @@ fn same_slot(a: &Option<DropSlot>, b: &Option<DropSlot>) -> bool {
     }
 }
 
-/// Area di lajur seberang `x` (sejajar dengannya) di dalam kolom `col`.
+/// Area opposite `x` (side-by-side with it) inside column `col`.
 fn beside_rect(x: &DrawItem, col: &RECT) -> RECT {
     let (l, r) = if x.span == Span::Right {
         (col.left, x.rect.left - MARGIN)
@@ -277,10 +277,10 @@ fn beside_rect(x: &DrawItem, col: &RECT) -> RECT {
     }
 }
 
-/// Titik tujuan untuk window `src` yang dijatuhkan di titik panel `(x, y)`.
-/// Cek kartu dock bawah dulu (pindah workspace); kalau tidak, cek kolom di stage atas.
+/// Drop destination for window `src` at panel point `(x, y)`.
+/// Check the bottom dock card first (workspace switch); otherwise check the upper stage column.
 pub fn slot_at(d: &Draw, x: i32, y: i32, src: u64) -> Option<DropSlot> {
-    // 1. Dijatuhkan di kartu workspace di dock bawah -> pindah ke workspace itu
+    // Dropped on a workspace card in the bottom dock -> switch to that workspace.
     if let Some(card) = d.dock.iter().find(|c| point_in(&c.rect, x, y)) {
         if !card.current {
             return Some(DropSlot {
@@ -292,7 +292,7 @@ pub fn slot_at(d: &Draw, x: i32, y: i32, src: u64) -> Option<DropSlot> {
         return None;
     }
 
-    // 2. Dijatuhkan di stage atas (konversi y panel -> y konten)
+    // Dropped on the upper stage (convert panel y -> content y).
     let cy = y + d.scroll_y;
     let col = d.columns.iter().find(|c| {
         x >= c.rect.left
@@ -323,7 +323,7 @@ pub fn slot_at(d: &Draw, x: i32, y: i32, src: u64) -> Option<DropSlot> {
         return None;
     }
 
-    // Workspace kosong di stage: seluruh area kolom jadi target pindah workspace
+    // Empty workspace in the stage: the entire column area becomes a workspace-switch target.
     if items.is_empty() {
         return Some(DropSlot {
             number: col.number,
@@ -438,8 +438,8 @@ fn slot_for(x: i32, y: i32, src: u64) -> Option<DropSlot> {
     slot_at(g.as_ref()?, x, y, src)
 }
 
-/// Hasilkan semua kandidat `DropSlot` untuk mode pick-and-drop keyboard (`Space`):
-/// semua slot di stage saat ini + kartu workspace lain di dock bawah.
+/// Generate all `DropSlot` candidates for keyboard pick-and-drop mode (`Space`):
+/// all slots in the current stage + other workspace cards in the bottom dock.
 pub fn drop_slots(d: &Draw, src: u64) -> Vec<DropSlot> {
     let mut out: Vec<DropSlot> = Vec::new();
     let push_unique = |out: &mut Vec<DropSlot>, sl: DropSlot| {
@@ -596,7 +596,7 @@ pub fn drop_slots(d: &Draw, src: u64) -> Vec<DropSlot> {
         }
     }
 
-    // Kartu workspace lain di dock bawah
+    // Other workspace cards in the bottom dock.
     for card in &d.dock {
         if !card.current {
             push_unique(
@@ -612,7 +612,7 @@ pub fn drop_slots(d: &Draw, src: u64) -> Vec<DropSlot> {
     out
 }
 
-/// Slot awal saat mengangkat `src`: yang paling dekat dengan posisi `src`.
+/// Initial slot when picking up `src`: the one closest to `src`'s position.
 pub fn initial_drop_slot(slots: &[DropSlot], d: &Draw, src: u64) -> usize {
     let Some(sr) = d.items.iter().find(|it| it.id == src).map(|it| it.rect) else {
         return 0;
@@ -631,7 +631,7 @@ pub fn initial_drop_slot(slots: &[DropSlot], d: &Draw, src: u64) -> usize {
         .unwrap_or(0)
 }
 
-/// Geser penanda `DropSlot` ke arah `dir`.
+/// Move the `DropSlot` marker in direction `dir`.
 pub fn step_drop_slot(slots: &[DropSlot], cur: usize, dir: layout::Dir) -> Option<usize> {
     let f = slots.get(cur)?;
     let (fx0, fx1) = (f.mark.left, f.mark.right);
@@ -691,7 +691,7 @@ pub fn step_drop_slot(slots: &[DropSlot], cur: usize, dir: layout::Dir) -> Optio
             if let Some((_, i)) = best {
                 return Some(i);
             }
-            // Dari paling bawah stage -> turun ke kartu dock workspace
+            // From the bottom of the stage -> move down to the workspace dock cards.
             if dir == layout::Dir::Down {
                 return slots
                     .iter()
@@ -752,9 +752,9 @@ const DRAG_TIMER_ID: usize = 2;
 const ANIM_TICK_MS: u32 = 16;
 const ENTER_MS: f32 = 130.0;
 const SLIDE_PX: i32 = 10;
-/// Lama hover di kartu dock workspace saat drag sebelum stage otomatis pindah (ms).
+/// Hover time over a workspace dock card during drag before the stage switches automatically (ms).
 const DOCK_HOVER_MS: f32 = 220.0;
-/// Tinggi zona tepi atas / bawah stage untuk auto-scroll saat drag (piksel).
+/// Height of the stage's top / bottom edge zones for auto-scroll during a drag (pixels).
 const EDGE_SCROLL_ZONE: i32 = 64;
 
 struct EnterAnim {
@@ -777,20 +777,20 @@ static FONT_CAPTION: AtomicIsize = AtomicIsize::new(0);
 static FONT_MINI: AtomicIsize = AtomicIsize::new(0);
 static MAIN_THREAD: AtomicU32 = AtomicU32::new(0);
 static VISIBLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-/// Faktor zoom stage (f32 disimpan sebagai u32 bits; 1.0 = bawaan).
+/// Stage zoom factor (f32 stored as u32 bits; 1.0 = default).
 static STAGE_ZOOM: AtomicU32 = AtomicU32::new(0x3F80_0000); // 1.0f32
 
 const ZOOM_MIN: f32 = 0.45;
 const ZOOM_MAX: f32 = 1.80;
 const ZOOM_STEP: f32 = 0.12;
 
-/// Faktor zoom stage saat ini (`ZOOM_MIN..=ZOOM_MAX`).
+/// Current stage zoom factor (`ZOOM_MIN..=ZOOM_MAX`).
 pub fn stage_zoom() -> f32 {
     f32::from_bits(STAGE_ZOOM.load(Ordering::Relaxed)).clamp(ZOOM_MIN, ZOOM_MAX)
 }
 
-/// Ubah zoom stage sebesar `delta` (+ untuk perbesar, - untuk perkecil).
-/// Mengembalikan true kalau nilai berubah.
+/// Change stage zoom by `delta` (+ to zoom in, - to zoom out).
+/// Returns true if the value changed.
 pub fn adjust_zoom(delta: f32) -> bool {
     let cur = stage_zoom();
     let next = ((cur + delta) * 100.0).round() / 100.0;
@@ -802,7 +802,7 @@ pub fn adjust_zoom(delta: f32) -> bool {
     true
 }
 
-/// Kembalikan zoom stage ke 1.0 (100%).
+/// Reset stage zoom to 1.0 (100%).
 pub fn reset_zoom() -> bool {
     let cur = stage_zoom();
     if (cur - 1.0).abs() < 0.005 {
@@ -812,8 +812,8 @@ pub fn reset_zoom() -> bool {
     true
 }
 
-/// Posisi tengah scroll stage saat ini sebagai fraksi (0.0..=1.0) dari tinggi strip,
-/// agar zoom in/out tetap bertahan di titik yang sedang dilihat.
+/// Current center of the stage scroll position as a fraction (0.0..=1.0) of the
+/// strip height, so zooming in/out stays anchored at the currently viewed point.
 pub fn current_scroll_frac() -> Option<f32> {
     let g = DRAW.lock().ok()?;
     let d = g.as_ref()?;
@@ -824,8 +824,8 @@ pub fn current_scroll_frac() -> Option<f32> {
 }
 
 impl Draw {
-    /// Terapkan kembali fraksi posisi scroll (0.0..=1.0) agar zoom tidak melompat ke
-    /// posisi window aktif.
+    /// Reapply the scroll-position fraction (0.0..=1.0) so zoom does not jump to
+    /// the active window.
     pub fn apply_scroll_frac(&mut self, frac: f32) {
         if self.max_scroll <= 0 {
             self.scroll_y = 0;
@@ -853,34 +853,34 @@ const DOCK_GAP: i32 = 14;
 const SCROLLBAR_GUTTER: i32 = 14;
 const MINIMAP_GAP: i32 = 16;
 const MINIMAP_PAD: i32 = 10;
-/// Lebar minimum panel supaya teks petunjuk tidak terpotong.
+/// Minimum panel width so hint text is not clipped.
 const MIN_PANEL_W_WITH_HINT: i32 = 460;
 const MIN_PANEL_W_WITH_HINT_WS: i32 = 600;
-/// Kartu workspace yang terlihat sekaligus di dock bawah.
+/// Workspace cards simultaneously visible in the bottom dock.
 pub const MAX_VISIBLE: usize = 5;
 
-/// Data panel: peta tiap workspace yang berisi window dan bagian mana yang terlihat.
+/// Panel data: map of each workspace's windows and which portion is visible.
 pub struct Model {
-    /// (nomor workspace mulai 0, petanya), urut dari kiri.
+    /// (workspace number starting at 0, its map), ordered from left to right.
     pub maps: Vec<(usize, Overview)>,
-    /// Kartu dock terlihat: `maps[first .. first + visible]`.
+    /// Visible dock cards: `maps[first .. first + visible]`.
     pub first: usize,
     pub visible: usize,
-    /// Indeks di `maps` workspace yang sedang ditampilkan besar di stage atas.
+    /// Index in `maps` of the workspace shown large in the upper stage.
     pub big: usize,
-    /// Nomor workspace yang aktif di desktop.
+    /// Workspace number active on the desktop.
     #[allow(dead_code)]
     pub active_ws: usize,
 }
 
-/// Jendela workspace yang terlihat di dock bawah untuk `columns` workspace dengan fokus `big`.
+/// Visible workspace windows in the bottom dock for `columns` workspaces, with `big` in focus.
 pub fn window_for(columns: usize, big: usize) -> (usize, usize) {
     let visible = columns.min(MAX_VISIBLE);
     let first = big.saturating_sub(visible / 2).min(columns - visible);
     (first, visible)
 }
 
-/// `first` baru supaya workspace `sel` terlihat di dock bawah.
+/// New `first` value so workspace `sel` is visible in the bottom dock.
 pub fn scroll(first: usize, visible: usize, sel: usize) -> usize {
     if sel < first {
         sel
@@ -891,7 +891,7 @@ pub fn scroll(first: usize, visible: usize, sel: usize) -> usize {
     }
 }
 
-/// Hitung `scroll_y` agar kartu `target` terlihat nyaman di dalam `stage`.
+/// Calculate `scroll_y` so the `target` card is comfortably visible in the `stage`.
 fn ensure_visible_scroll(stage: RECT, current_scroll: i32, max_scroll: i32, target: RECT) -> i32 {
     if max_scroll <= 0 {
         return 0;
@@ -908,9 +908,9 @@ fn ensure_visible_scroll(stage: RECT, current_scroll: i32, max_scroll: i32, targ
     s.clamp(0, max_scroll)
 }
 
-/// Bangun layout Task View Hybrid:
-///  - Stage atas menampilkan workspace `model.big` dengan skala besar & scrollable vertikal.
-///  - Dock bawah (saat `multi`) menampilkan bar kartu mini untuk semua workspace terlihat.
+/// Build the hybrid Task View layout:
+///  - The upper stage shows workspace `model.big` at a large scale with vertical scrolling.
+///  - The bottom dock (when `multi`) shows a mini-card bar for all visible workspaces.
 pub fn build(
     model: &Model,
     titles: &HashMap<u64, String>,
@@ -971,8 +971,8 @@ pub fn build(
     if let Some((ws, ov)) = model.maps.get(model.big).or_else(|| model.maps.first()) {
         let sw = ov.width.max(1) as f32;
         let vh = ov.view_h.max(1) as f32;
-        // Skala stage didasarkan pada ukuran 1 layar (viewport) dikalikan faktor zoom
-        // pengguna (Ctrl+Wheel / +/-/0).
+        // Stage scale is based on one screen (viewport) size multiplied by the
+        // user's zoom factor (Ctrl+Wheel / +/-/0).
         let avail_w = (stage_w - SCROLLBAR_GUTTER).max(40) as f32;
         let base_scale = ((avail_w * 0.82) / sw).min(stage_h as f32 / (vh * 1.38));
         let zoom = stage_zoom();
@@ -1039,7 +1039,7 @@ pub fn build(
             init_scroll
         };
 
-        // Bangun minimap penuh 100% strip di sisi kanan stage
+        // Build a full 100% strip minimap on the right side of the stage.
         if show_minimap {
             let mrect = RECT {
                 left: stage.right + MINIMAP_GAP,
@@ -1097,7 +1097,7 @@ pub fn build(
         }
     }
 
-    // Dock workspace di bagian bawah (persis bar Desktop di Task View Windows 11)
+    // Workspace dock at the bottom (exactly like the Desktop bar in Windows 11 Task View).
     let mut dock = Vec::new();
     if multi {
         let end = (model.first + model.visible).min(model.maps.len());
@@ -1179,7 +1179,7 @@ pub fn build(
     }
 }
 
-/// Muat sebuah sumber berukuran (sw x sh) ke `area` tanpa mengubah rasio, di tengah.
+/// Fit a source of size (sw x sh) into `area`, preserving its aspect ratio and centering it.
 fn fit(area: RECT, sw: i32, sh: i32) -> RECT {
     let (aw, ah) = (area.right - area.left, area.bottom - area.top);
     if sw <= 0 || sh <= 0 || aw <= 0 || ah <= 0 {
@@ -1198,7 +1198,7 @@ fn fit(area: RECT, sw: i32, sh: i32) -> RECT {
     }
 }
 
-/// Hitung posisi tujuan & sumber thumbnail DWM yang terpotong rapi di batas `stage`.
+/// Calculate DWM thumbnail destination and source positions, clipped cleanly to the `stage` bounds.
 fn clipped_thumb_rects(
     item_rect: RECT,
     scroll_y: i32,
@@ -1240,7 +1240,7 @@ fn clipped_thumb_rects(
     Some((vis_dest, vis_src))
 }
 
-/// Pasang thumbnail DWM untuk tiap kotak yang cukup besar di stage.
+/// Attach DWM thumbnails for each sufficiently large box in the stage.
 unsafe fn register_thumbs(dest: HWND, draw: &mut Draw, init_opacity: u8) -> Vec<ThumbEntry> {
     let mut entries = Vec::new();
     for (idx, it) in draw.items.iter_mut().enumerate() {
@@ -1300,7 +1300,7 @@ unsafe fn register_thumbs(dest: HWND, draw: &mut Draw, init_opacity: u8) -> Vec<
     entries
 }
 
-/// Perbarui posisi & pemotongan seluruh thumbnail DWM setelah `scroll_y` berubah.
+/// Update the positions and clipping of all DWM thumbnails after `scroll_y` changes.
 unsafe fn sync_thumbs_scroll(d: &Draw) {
     if let Ok(thumbs) = THUMBS.lock() {
         for th in thumbs.iter() {
@@ -1419,7 +1419,7 @@ unsafe fn paint(hwnd: HWND) {
         let font_mini = HFONT(FONT_MINI.load(Ordering::Relaxed) as *mut _);
 
         if let Some(d) = guard.as_ref() {
-            // 1. Stage atas (dipotong tepat di batas `d.stage` agar scroll rapi)
+            // 1. Upper stage (clip exactly at the `d.stage` boundary for smooth scrolling).
             canvas.set_clip(d.stage);
 
             for it in &d.items {
@@ -1491,7 +1491,7 @@ unsafe fn paint(hwnd: HWND) {
                 }
             }
 
-            // Bingkai bagian strip yang sedang tampil di layar (`view`)
+            // Frame around the strip section currently visible on screen (`view`).
             for c in &d.columns {
                 let v = shift_y(c.view, -d.scroll_y);
                 if d.items.is_empty() {
@@ -1523,7 +1523,7 @@ unsafe fn paint(hwnd: HWND) {
                 }
             }
 
-            // Penanda drop di dalam stage
+            // Drop marker inside the stage.
             if let Some(sl) = drop_slot {
                 if sl.kind != SlotKind::Workspace {
                     let m = shift_y(sl.mark, -d.scroll_y);
@@ -1540,7 +1540,7 @@ unsafe fn paint(hwnd: HWND) {
                 }
             }
 
-            // Scrollbar tipis khas Windows 11 kalau strip lebih tinggi dari stage
+            // Thin Windows 11-style scrollbar when the strip is taller than the stage.
             if d.max_scroll > 0 {
                 let stage_h = (d.stage.bottom - d.stage.top).max(1);
                 let total_h = stage_h + d.max_scroll;
@@ -1556,7 +1556,7 @@ unsafe fn paint(hwnd: HWND) {
                 canvas.fill_round_rect(bar, 2.0, pal.stroke_strong, 200);
             }
 
-            // Lencana persentase zoom halus (hanya tampil kalau bukan 100%)
+            // Subtle zoom percentage badge (shown only when not at 100%).
             let z = stage_zoom();
             if (z - 1.0).abs() >= 0.01 {
                 let badge = RECT {
@@ -1578,12 +1578,12 @@ unsafe fn paint(hwnd: HWND) {
 
             canvas.reset_clip();
 
-            // 1b. Minimap penuh 100% strip di sisi kanan stage (peta posisi semua window)
+            // 1b. Full 100% strip minimap on the right of the stage (map of all window positions).
             if let Some(mm) = d.minimap.as_ref() {
                 canvas.fill_round_rect(mm.rect, 10.0, pal.layer, 255);
                 canvas.stroke_round_rect(mm.rect, 10.0, pal.stroke, 220, 1.0);
 
-                // Slider transparan penanda area yang sedang terlihat di stage besar
+                // Transparent slider marking the area currently visible in the large stage.
                 if d.max_scroll > 0 {
                     let stage_h = (d.stage.bottom - d.stage.top).max(1) as f32;
                     let total_h = stage_h + d.max_scroll as f32;
@@ -1636,11 +1636,11 @@ unsafe fn paint(hwnd: HWND) {
                     }
                 }
 
-                // Bingkai `view` (area layar aktif di desktop) di atas minimap
+                // `view` frame (active desktop screen area) over the minimap.
                 canvas.stroke_round_rect(mm.view_rect, 4.0, pal.view, 220, 1.5);
             }
 
-            // 2. Bilah kartu workspace di bagian bawah (gaya Task View Windows 11)
+            // 2. Workspace card bar at the bottom (Windows 11 Task View style).
             if d.multi {
                 let sep = RECT {
                     left: PAD,
@@ -1668,7 +1668,7 @@ unsafe fn paint(hwnd: HWND) {
                         canvas.stroke_round_rect(card.rect, 8.0, pal.stroke, 220, 1.0);
                     }
 
-                    // Miniatur wireframe window di dalam kartu workspace (kosong = dibiarkan polos)
+                    // Wireframe window miniature inside the workspace card (empty = leave it plain).
                     canvas.fill_round_rect(card.preview, 4.0, pal.surface, 180);
                     for mr in &card.mini_items {
                         canvas.fill_round_rect(
@@ -1704,7 +1704,7 @@ unsafe fn paint(hwnd: HWND) {
                 }
             }
 
-            // 3. Petunjuk tombol di paling bawah (kalau aktif)
+            // 3. Key hints at the very bottom (if enabled).
             if d.hint {
                 let hint_text = if kb_slot.is_some() {
                     "←↑↓→ move marker  ·  Enter drop  ·  Esc cancel"
@@ -1731,8 +1731,8 @@ unsafe fn paint(hwnd: HWND) {
     let _ = EndPaint(hwnd, &ps);
 }
 
-/// Geser scroll stage berdasarkan posisi klik/seret di minimap (opsional ikut menyorot
-/// window di titik tersebut).
+/// Move the stage scroll position based on a click/drag on the minimap (optionally
+/// highlighting the window at that point).
 unsafe fn scrub_minimap(hwnd: HWND, x: i32, y: i32, pick_selection: bool) {
     let changed = if let Ok(mut g) = DRAW.lock() {
         if let Some(d) = g.as_mut() {
@@ -1774,7 +1774,7 @@ unsafe fn scrub_minimap(hwnd: HWND, x: i32, y: i32, pick_selection: bool) {
     }
 }
 
-/// Hitung langkah auto-scroll stage (piksel per tick) berdasarkan posisi y kursor saat drag.
+/// Calculate the stage auto-scroll step (pixels per tick) from the cursor's y-position during a drag.
 fn drag_edge_scroll_delta(stage: RECT, y: i32, scroll_y: i32, max_scroll: i32) -> i32 {
     if max_scroll <= 0 {
         return 0;
@@ -1792,9 +1792,9 @@ fn drag_edge_scroll_delta(stage: RECT, y: i32, scroll_y: i32, max_scroll: i32) -
     }
 }
 
-/// Tick timer saat drag window aktif:
-///  1. Auto-scroll stage saat kursor mendekati tepi atas / bawah stage.
-///  2. Hover di atas kartu workspace di dock bawah -> otomatis pindah stage ke workspace itu.
+/// Timer tick during an active window drag:
+///  1. Auto-scroll the stage when the cursor approaches its top / bottom edge.
+///  2. Hover over a workspace card in the bottom dock -> automatically switch the stage to that workspace.
 unsafe fn tick_drag(hwnd: HWND) {
     let info = DRAG.lock().ok().and_then(|g| {
         let d = g.as_ref().filter(|d| d.active)?;
@@ -1808,7 +1808,7 @@ unsafe fn tick_drag(hwnd: HWND) {
     let mut need_repaint = false;
     let mut switch_ws: Option<usize> = None;
 
-    // 1. Cek hover dock -> pindah workspace setelah DOCK_HOVER_MS
+    // 1. Check dock hover -> switch workspaces after DOCK_HOVER_MS.
     if let Some((ws_idx, since)) = hover_dock {
         let elapsed = since.elapsed().as_secs_f32() * 1000.0;
         if elapsed >= DOCK_HOVER_MS {
@@ -1821,7 +1821,7 @@ unsafe fn tick_drag(hwnd: HWND) {
         }
     }
 
-    // 2. Auto-scroll stage kalau kursor di zona tepi atas / bawah stage
+    // 2. Auto-scroll the stage when the cursor is in the top / bottom edge zone.
     let mut scrolled = false;
     if let Ok(mut g) = DRAW.lock() {
         if let Some(d) = g.as_mut() {
@@ -2027,17 +2027,17 @@ unsafe extern "system" fn ov_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 let back = shift;
                 post(WM_OV_CYCLE, if back { 0 } else { 1 });
             } else if vk == 0xBB || vk == 0x6B {
-                // '+' / '=' atau Numpad '+' -> zoom in
+                // '+' / '=' or Numpad '+' -> zoom in
                 if adjust_zoom(ZOOM_STEP) {
                     post(WM_OV_ZOOM, 0);
                 }
             } else if vk == 0xBD || vk == 0x6D {
-                // '-' atau Numpad '-' -> zoom out
+                // '-' or Numpad '-' -> zoom out
                 if adjust_zoom(-ZOOM_STEP) {
                     post(WM_OV_ZOOM, 0);
                 }
             } else if vk == 0x30 || vk == 0x60 {
-                // '0' atau Numpad '0' -> reset zoom ke 100%
+                // '0' or Numpad '0' -> reset zoom to 100%
                 if reset_zoom() {
                     post(WM_OV_ZOOM, 0);
                 }
@@ -2171,7 +2171,7 @@ unsafe extern "system" fn ov_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                 let _ = InvalidateRect(Some(hwnd), None, false);
                 return LRESULT(0);
             }
-            // Klik kartu dock bawah -> pindah workspace di overview
+            // Click a card in the bottom dock -> switch workspaces in the overview.
             let (dock_idx, item_id) = hit_at(x, y, 0);
             if let Some(di) = dock_idx {
                 let ws_idx = DRAW
@@ -2203,8 +2203,8 @@ unsafe extern "system" fn ov_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     }
 }
 
-/// Buat jendela overlay (tersembunyi) sekali di awal. Sengaja bukan jendela
-/// berlapis (layered): thumbnail DWM tidak tampil benar di jendela berlapis.
+/// Create the (hidden) overlay window once at startup. Deliberately not a
+/// layered window: DWM thumbnails do not render correctly in layered windows.
 pub unsafe fn init(main_thread: u32) -> bool {
     MAIN_THREAD.store(main_thread, Ordering::Relaxed);
     let Ok(hmod) = GetModuleHandleW(None) else {
@@ -2250,7 +2250,7 @@ pub unsafe fn init(main_thread: u32) -> bool {
     true
 }
 
-/// True kalau jendela overlay berhasil dibuat.
+/// True if the overlay window was created successfully.
 pub fn available() -> bool {
     OV_HWND.load(Ordering::Relaxed) != 0
 }
@@ -2259,7 +2259,7 @@ fn hwnd() -> HWND {
     HWND(OV_HWND.load(Ordering::Relaxed) as *mut _)
 }
 
-/// Tampilkan panel di posisinya dan ambil fokus keyboard.
+/// Show the panel in position and take keyboard focus.
 pub unsafe fn show(mut draw: Draw, thumbnails: bool) {
     if OV_HWND.load(Ordering::Relaxed) == 0 {
         return;
@@ -2309,7 +2309,7 @@ pub unsafe fn show(mut draw: Draw, thumbnails: bool) {
     }
 }
 
-/// Ganti window yang sedang dipilih (kursor overview) dan scroll stage agar terlihat.
+/// Change the selected window (overview cursor) and scroll the stage to make it visible.
 pub unsafe fn set_selected(id: u64) {
     if let Ok(mut g) = DRAW.lock() {
         if let Some(d) = g.as_mut() {
@@ -2443,7 +2443,7 @@ mod tests {
     #[test]
     fn tall_strip_stays_readable_and_shows_full_minimap_alongside_stage() {
         let mut o = ov();
-        o.height = 5400; // 5 layar tinggi
+        o.height = 5400; // 5 screens tall.
         let d = build(
             &single(&o),
             &HashMap::new(),
@@ -2454,10 +2454,10 @@ mod tests {
             &opts(true, 70),
         );
         assert!(d.max_scroll > 0);
-        // Lebar kolom stage tetap besar (tidak menciut gara-gara tinggi total 5400px)
+        // Keep the stage column wide (do not shrink it because the total height is 5400px).
         let col_w = d.columns[0].rect.right - d.columns[0].rect.left;
         assert!(col_w > 500, "col_w = {col_w}");
-        // Minimap samping menampilkan 100% strip di dalam kotaknya
+        // The side minimap shows 100% of the strip inside its box.
         let mm = d.minimap.as_ref().expect("minimap must exist");
         assert!(mm.rect.left > d.stage.right);
         assert!(mm.strip_rect.top >= mm.rect.top && mm.strip_rect.bottom <= mm.rect.bottom);
@@ -2604,7 +2604,7 @@ mod tests {
         assert_eq!(d.columns.len(), 1);
     }
 
-    // ---- titik drop ----
+    // ---- drop targets ----
 
     fn item(id: u64, span: Span, l: i32, t: i32, r: i32, b: i32) -> DrawItem {
         DrawItem {
@@ -2634,8 +2634,8 @@ mod tests {
         }
     }
 
-    /// Stage workspace 1: A (kiri, atas), B (penuh, tengah), C (kiri, bawah).
-    /// Dock bawah: Workspace 1 (current) & Workspace 2.
+    /// Workspace 1 stage: A (left, top), B (full-width, center), C (left, bottom).
+    /// Bottom dock: Workspace 1 (current) & Workspace 2.
     fn drop_draw() -> Draw {
         Draw {
             panel: Rect { x: 0, y: 0, w: 600, h: 600 },
@@ -2682,7 +2682,7 @@ mod tests {
     fn dropping_on_another_workspace_dock_card_targets_that_workspace() {
         let d = drop_draw();
         assert_eq!(kind(&d, 280, 520), Some((2, SlotKind::Workspace)));
-        // kartu workspace saat ini tidak jadi target drop
+        // The current workspace card is not a drop target.
         assert_eq!(kind(&d, 120, 520), None);
     }
 
@@ -2709,7 +2709,7 @@ mod tests {
         assert!(drag_edge_scroll_delta(stage, 30, 100, 400) < 0);
         assert!(drag_edge_scroll_delta(stage, 610, 100, 400) > 0);
         assert_eq!(drag_edge_scroll_delta(stage, 320, 100, 400), 0);
-        // sudah mentok atas / bawah -> 0
+        // Already at the top / bottom -> 0.
         assert_eq!(drag_edge_scroll_delta(stage, 30, 0, 400), 0);
         assert_eq!(drag_edge_scroll_delta(stage, 610, 400, 400), 0);
     }

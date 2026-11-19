@@ -1,14 +1,14 @@
-//! Workspace: pindah, kirim window, dan parkir window workspace lain.
+//! Workspaces: switch, send windows, and park windows in other workspaces.
 //!
-//! Window workspace yang tidak aktif diparkir di x = PARK_X (ukuran tetap, jadi saat
-//! dibuka lagi hanya posisinya yang berubah) dan tombol taskbar-nya disembunyikan
-//! (lihat taskbar.rs). Window tetap "visible" bagi EnumWindows, jadi sync() tidak
-//! menganggapnya minimize.
+//! Inactive-workspace windows are parked at x = PARK_X (size is preserved, so
+//! reopening them only changes their position) and their taskbar buttons are hidden
+//! (see taskbar.rs). Windows remain "visible" to EnumWindows, so sync() does not
+//! treat them as minimized.
 //!
-//! Pindah / kirim workspace dianimasikan geser horizontal (`Slide`): window yang keluar
-//! meluncur ke luar layar dan baru diparkir sungguhan saat animasinya selesai
-//! (`leaving`, lihat tick_anim); window yang masuk dimulai dari luar layar di sisi
-//! berlawanan lalu meluncur ke tempatnya. Animasi mati -> langsung, seperti biasa.
+//! Workspace switches / sends use a horizontal slide animation (`Slide`): outgoing
+//! windows slide off-screen and are parked only when the animation finishes
+//! (`leaving`, see tick_anim); incoming windows start off-screen on the opposite
+//! side and slide into place. When animations are disabled, they move immediately.
 
 use std::sync::atomic::Ordering;
 use std::time::Instant;
@@ -21,8 +21,8 @@ use crate::consts::PARK_X;
 use crate::winutil::{bounds, ext_bounds, place, wid, work_area};
 use crate::{osd, safety, taskbar, tray};
 
-/// Arah geser animasi pindah workspace: `enter_from` = sisi asal window yang masuk
-/// (+1 kanan, -1 kiri), `exit_to` = sisi tujuan window yang keluar.
+/// Workspace-switch slide direction: `enter_from` = starting side for incoming
+/// windows (+1 right, -1 left), `exit_to` = destination side for outgoing windows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Slide {
     pub(crate) enter_from: i32,
@@ -30,7 +30,7 @@ pub(crate) struct Slide {
 }
 
 impl Slide {
-    /// Pindah workspace ke arah `dir`: isi layar bergeser berlawanan (ke kanan = isi ke kiri).
+    /// Switch workspace in direction `dir`: screen contents shift oppositely (right = contents move left).
     pub(crate) fn switching(dir: i32) -> Self {
         Slide {
             enter_from: dir,
@@ -38,7 +38,7 @@ impl Slide {
         }
     }
 
-    /// Kirim window ke workspace ke arah `dir`: window itu meluncur ke sisi tersebut.
+    /// Send a window to the workspace in direction `dir`: the window slides toward that side.
     pub(crate) fn sending(dir: i32) -> Self {
         Slide {
             enter_from: -dir,
@@ -47,8 +47,8 @@ impl Slide {
     }
 }
 
-/// Arah dari workspace `old` ke `new` (nomor sesudah dirapikan): -1 kiri, +1 kanan.
-/// Nomor sama berarti workspace lama kosong lalu dihapus, jadi kita pasti ke kanan.
+/// Direction from workspace `old` to `new` (after renumbering): -1 left, +1 right.
+/// The same number means the old workspace was empty and removed, so we always move right.
 pub(crate) fn slide_dir(old: usize, new: usize) -> i32 {
     if new < old {
         -1
@@ -58,7 +58,7 @@ pub(crate) fn slide_dir(old: usize, new: usize) -> i32 {
 }
 
 impl App {
-    /// Pindah ke workspace nomor `n` (0 = pertama).
+    /// Switch to workspace number `n` (0 = first).
     pub(crate) unsafe fn switch_workspace(&mut self, n: usize) {
         let old = self.ws.active();
         if self.ws.switch_to(n) {
@@ -67,7 +67,7 @@ impl App {
         }
     }
 
-    /// Workspace sebelumnya / berikutnya (tidak berputar).
+    /// Previous / next workspace (does not wrap).
     pub(crate) unsafe fn switch_workspace_rel(&mut self, delta: i32) {
         let old = self.ws.active();
         if self.ws.switch_rel(delta) {
@@ -76,7 +76,7 @@ impl App {
         }
     }
 
-    /// Kirim window yang fokus ke workspace `n`; kita tetap di workspace ini.
+    /// Send the focused window to workspace `n`; stay in this workspace.
     pub(crate) unsafe fn send_to_workspace(&mut self, n: usize) {
         let dir = slide_dir(self.ws.active(), n);
         if self.ws.move_focused_to(n).is_some() {
@@ -93,27 +93,27 @@ impl App {
     }
 
     unsafe fn after_workspace_change(&mut self) {
-        self.apply(); // buka parkir workspace aktif, parkir yang lain
+        self.apply(); // Unpark the active workspace and park the others.
         self.focus_current();
         self.update_workspace_tip();
     }
 
-    /// Fokus ke window yang fokus di workspace aktif; kalau workspace kosong, ke desktop
-    /// supaya foreground tidak tertinggal di window yang baru diparkir.
+    /// Focus the focused window in the active workspace; if the workspace is empty,
+    /// focus the desktop so the foreground is not left on a newly parked window.
     unsafe fn focus_current(&mut self) {
         let target = self
             .ws
             .cur()
             .focused()
             .and_then(|f| self.map.get(&f).copied());
-        // TEBAKAN: SetForegroundWindow(GetShellWindow()) sebagai "tidak ada fokus".
+        // GUESS: SetForegroundWindow(GetShellWindow()) means "no focus".
         let h = target.unwrap_or_else(|| GetShellWindow());
         let _ = SetForegroundWindow(h);
         self.last_fg = Some(wid(h));
     }
 
-    /// Tooltip tray menunjukkan workspace aktif; kalau `workspace_osd` aktif, panel kecil
-    /// muncul sebentar setiap workspace berubah (osd.rs mengabaikan panggilan yang sama).
+    /// Tray tooltip shows the active workspace; if `workspace_osd` is enabled, a small
+    /// panel appears briefly on each workspace change (osd.rs ignores repeated calls).
     pub(crate) unsafe fn update_workspace_tip(&self) {
         if tray::PAUSED.load(Ordering::Relaxed) {
             return;
@@ -139,16 +139,16 @@ impl App {
         }
     }
 
-    /// Saat start: kembalikan tombol taskbar yang mungkin tertinggal terhapus oleh
-    /// proses sebelumnya yang mati paksa.
+    /// At startup: restore taskbar buttons that may have been left removed by a
+    /// previous process that was force-killed.
     pub(crate) unsafe fn restore_all_tabs(&self) {
         for &h in self.map.values() {
             taskbar::restore(h);
         }
     }
 
-    /// Parkir semua window di workspace selain yang aktif. Idempoten. Dengan `slide`,
-    /// window yang masih tampak meluncur keluar dulu.
+    /// Park all windows in workspaces other than the active one. Idempotent. With
+    /// `slide`, currently visible windows slide out first.
     pub(crate) unsafe fn park_inactive(&mut self, slide: Option<Slide>, work: Rect, now: Instant) {
         let active = self.ws.active();
         let ids: Vec<WindowId> = (0..self.ws.count())
@@ -165,15 +165,15 @@ impl App {
             return;
         };
         if !self.parked.insert(id) {
-            return; // sudah diparkir, atau masih meluncur keluar (leaving)
+            return; // Already parked, or still sliding out (leaving).
         }
         taskbar::hide(h);
         if self.hidden.contains(&id) {
             self.anim.remove(&id);
-            return; // minimize / cloaked: cukup tombolnya yang disembunyikan
+            return; // Minimized / cloaked: hide only the taskbar button.
         }
         if let Some(s) = slide {
-            // meluncur keluar dulu; parkir sungguhan setelah animasinya selesai
+            // Slide out first; actually park it when the animation finishes.
             if self.slide_out(id, h, s.exit_to, work, now) {
                 self.leaving.insert(id);
                 return;
@@ -183,7 +183,7 @@ impl App {
         self.finish_park(id);
     }
 
-    /// Pindahkan window ke posisi parkir (di luar layar, ukuran tetap).
+    /// Move a window to its parked position (off-screen, size unchanged).
     pub(crate) unsafe fn finish_park(&mut self, id: WindowId) {
         let Some(&h) = self.map.get(&id) else {
             return;
@@ -200,10 +200,10 @@ impl App {
         };
         let (actual, denied) = place(h, target);
         if denied {
-            self.mark_blocked(id, h); // hak akses lebih tinggi: tidak bisa diparkir
+            self.mark_blocked(id, h); // Higher privileges: cannot park it.
             return;
         }
-        // yang dicatat posisi sebenarnya (USER32 bisa menjepit), supaya bukan "drift"
+        // Record the actual position (USER32 may clamp it), to avoid "drift".
         self.actual.insert(id, bounds(actual));
     }
 }
@@ -216,7 +216,7 @@ mod tests {
     fn slide_direction_follows_workspace_order() {
         assert_eq!(slide_dir(0, 1), 1);
         assert_eq!(slide_dir(3, 1), -1);
-        // workspace lama (kosong, di tengah) dihapus: nomor baru bisa sama -> ke kanan
+        // Old workspace (empty, in the middle) removed: its new number may be the same -> move right.
         assert_eq!(slide_dir(1, 1), 1);
     }
 

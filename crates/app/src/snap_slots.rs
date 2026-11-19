@@ -1,13 +1,13 @@
-//! Daftar window untuk zona snap layout yang masih kosong (Snap Assist): satu panel di
-//! atas tiap zona kosong, berisi kartu semua window yang sedang terbuka (thumbnail DWM
-//! + judul). Klik kartu = window itu mengisi zona tersebut.
+//! Window list for empty snap layout zones (Snap Assist): one panel above each
+//! empty zone, containing cards for all open windows (DWM thumbnail + title).
+//! Clicking a card places that window in the zone.
 //!
-//! Panel tidak pernah merebut fokus (WS_EX_NOACTIVATE): klik tetap sampai ke sini tapi
-//! window yang sedang aktif tidak berganti. Esc dan klik di luar ditangani app
-//! (hook keyboard / pelacak fokus). Penggambar hanya meneruskan klik sebagai pesan ke
-//! thread utama: `WM_SNAP_PICK` (kartu) dan `WM_SNAP_CANCEL` (tombol tutup / klik kanan).
+//! The panel never takes focus (WS_EX_NOACTIVATE): clicks reach it, but the
+//! active window does not change. Esc and outside clicks are handled by the app
+//! (keyboard hook / focus tracker). The renderer only forwards clicks as messages
+//! to the main thread: `WM_SNAP_PICK` (card) and `WM_SNAP_CANCEL` (close button / right-click).
 //!
-//! Beberapa panel dibuat sekali di awal (satu per zona maksimum) lalu dipakai ulang.
+//! Several panels are created once at startup (one per maximum zone count) and reused.
 
 use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
 use std::sync::Mutex;
@@ -33,7 +33,7 @@ use crate::consts::{WM_SNAP_CANCEL, WM_SNAP_PICK};
 use crate::theme::{self, Canvas, Palette};
 use crate::winutil::animations_enabled;
 
-/// Jumlah panel yang disiapkan = zona terbanyak satu preset.
+/// Number of prepared panels = the largest zone count in any preset.
 const POOL: usize = layout::MAX_ZONES;
 const PAD: i32 = 12;
 const CARD_GAP: i32 = 10;
@@ -41,20 +41,20 @@ const LABEL_BAND: i32 = 26;
 const MIN_CARD_W: i32 = 70;
 const MIN_CARD_H: i32 = 54;
 
-/// Zona kosong yang perlu daftar window: `slot` = id slot di strip, `rect` = tempatnya
-/// di layar.
+/// Empty zone needing a window list: `slot` = slot ID in the strip, `rect` = its
+/// screen position.
 #[derive(Debug, Clone, Copy)]
 pub struct SlotView {
     pub slot: u64,
     pub rect: Rect,
 }
 
-/// Satu window yang bisa dipilih.
+/// A selectable window.
 #[derive(Debug, Clone)]
 pub struct Candidate {
     pub id: u64,
     pub label: String,
-    /// HWND window aslinya (untuk thumbnail); 0 = tanpa thumbnail.
+    /// Original window HWND (for the thumbnail); 0 = no thumbnail.
     pub source: isize,
 }
 
@@ -62,7 +62,7 @@ struct Card {
     id: u64,
     label: String,
     rect: RECT,
-    /// Pita label di bawah thumbnail; None = tanpa thumbnail (label di tengah kartu).
+    /// Label band below the thumbnail; None = no thumbnail (label centered in the card).
     band: Option<RECT>,
 }
 
@@ -91,9 +91,9 @@ static COLORS: Mutex<OverviewColors> = Mutex::new(OverviewColors {
 static FONT: AtomicIsize = AtomicIsize::new(0);
 static MAIN_THREAD: AtomicU32 = AtomicU32::new(0);
 
-/// Letak `n` kartu di panel berukuran `w` x `h` (koordinat relatif panel): kolom dan
-/// baris dipilih supaya kartunya sebesar mungkin. Kalau tidak semua muat dengan ukuran
-/// minimum, hanya yang muat yang diberi tempat (hasilnya bisa kurang dari `n`).
+/// Arrange `n` cards in a `w` x `h` panel (panel-relative coordinates): choose the
+/// number of rows and columns to make the cards as large as possible. If they cannot
+/// all fit at the minimum size, place only those that fit (fewer than `n` may fit).
 pub(crate) fn card_grid(n: usize, w: i32, h: i32) -> Vec<Rect> {
     let aw = w - 2 * PAD;
     let ah = h - 2 * PAD;
@@ -101,7 +101,7 @@ pub(crate) fn card_grid(n: usize, w: i32, h: i32) -> Vec<Rect> {
         return Vec::new();
     }
     for count in (1..=n as i32).rev() {
-        let mut best: Option<(i32, i32, i32, i32)> = None; // (nilai, kolom, lebar, tinggi)
+        let mut best: Option<(i32, i32, i32, i32)> = None; // (score, columns, width, height)
         for cols in 1..=count {
             let rows = (count + cols - 1) / cols;
             let cw = (aw - (cols - 1) * CARD_GAP) / cols;
@@ -109,7 +109,7 @@ pub(crate) fn card_grid(n: usize, w: i32, h: i32) -> Vec<Rect> {
             if cw < MIN_CARD_W || ch < MIN_CARD_H {
                 continue;
             }
-            // thumbnail memakai rasio kira-kira 4:3: nilai = sisi terpendeknya
+            // Thumbnails have an approximate 4:3 aspect ratio: score by the shortest side.
             let score = cw.min(ch * 4 / 3);
             if best.map_or(true, |b| score > b.0) {
                 best = Some((score, cols, cw, ch));
@@ -129,7 +129,7 @@ pub(crate) fn card_grid(n: usize, w: i32, h: i32) -> Vec<Rect> {
                 .collect();
         }
     }
-    // panel terlalu kecil untuk kartu biasa: satu kartu memenuhi ruangnya
+    // Panel is too small for regular cards: let one card fill the available space.
     vec![Rect {
         x: PAD,
         y: PAD,
@@ -149,7 +149,7 @@ fn lparam_xy(lparam: LPARAM) -> (i32, i32) {
     )
 }
 
-/// Muat sumber berukuran (sw x sh) ke `area` tanpa mengubah rasio, di tengah.
+/// Fit a source of size (sw x sh) into `area`, preserving its aspect ratio and centering it.
 fn fit(area: RECT, sw: i32, sh: i32) -> RECT {
     let (aw, ah) = (area.right - area.left, area.bottom - area.top);
     if sw <= 0 || sh <= 0 || aw <= 0 || ah <= 0 {
@@ -168,8 +168,8 @@ fn fit(area: RECT, sw: i32, sh: i32) -> RECT {
     }
 }
 
-/// Pasang thumbnail DWM `source` di kartu `card`. Mengembalikan (handle thumbnail,
-/// pita label) kalau kartunya cukup besar.
+/// Attach the DWM thumbnail for `source` to card `card`. Returns (thumbnail handle,
+/// label band) if the card is large enough.
 unsafe fn register_thumb(
     dest: HWND,
     source: isize,
@@ -189,7 +189,7 @@ unsafe fn register_thumb(
         bottom: inner.bottom - LABEL_BAND,
     };
     if area.right - area.left < 40 || area.bottom - area.top < 30 {
-        return None; // terlalu kecil: cukup label teks
+        return None; // Too small: use text label only.
     }
     let thumb = DwmRegisterThumbnail(dest, HWND(source as *mut _)).ok()?;
     let size = DwmQueryThumbnailSourceSize(thumb).unwrap_or(SIZE { cx: 0, cy: 0 });
@@ -323,7 +323,7 @@ unsafe fn tick_anim(hwnd: HWND) {
     }
 }
 
-/// Perbarui sorotan di bawah kursor; gambar ulang kalau berubah.
+/// Update the highlight under the cursor; redraw if it changed.
 unsafe fn hover_at(hwnd: HWND, x: i32, y: i32) {
     let mut changed = false;
     if let Ok(mut g) = PANELS.lock() {
@@ -365,7 +365,7 @@ unsafe extern "system" fn slot_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
             tick_anim(hwnd);
             LRESULT(0)
         }
-        WM_MOUSEACTIVATE => LRESULT(3), // MA_NOACTIVATE: klik tidak mengubah window aktif
+        WM_MOUSEACTIVATE => LRESULT(3), // MA_NOACTIVATE: clicking does not change the active window.
         WM_MOUSEMOVE => {
             let (x, y) = lparam_xy(lparam);
             hover_at(hwnd, x, y);
@@ -384,7 +384,7 @@ unsafe extern "system" fn slot_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
     }
 }
 
-/// Buat panel-panel (tersembunyi) sekali di awal. `scale` = dpi / 96 untuk huruf.
+/// Create the (hidden) panels once at startup. `scale` = dpi / 96 for text.
 pub unsafe fn init(main_thread: u32, scale: f32) -> bool {
     MAIN_THREAD.store(main_thread, Ordering::Relaxed);
     let Ok(hmod) = GetModuleHandleW(None) else {
@@ -405,7 +405,7 @@ pub unsafe fn init(main_thread: u32, scale: f32) -> bool {
     let pal = Palette::resolve(OverviewColors::default());
     let mut handles = Vec::new();
     for _ in 0..POOL {
-        // Sengaja tanpa WS_EX_LAYERED agar thumbnail DWM tampil tajam.
+        // Deliberately omit WS_EX_LAYERED so DWM thumbnails stay sharp.
         let Ok(hwnd) = CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
             class,
@@ -433,16 +433,16 @@ pub unsafe fn init(main_thread: u32, scale: f32) -> bool {
     true
 }
 
-/// True kalau `h` salah satu panel milik modul ini.
+/// True if `h` is one of this module's panels.
 pub fn is_ours(h: HWND) -> bool {
     HANDLES
         .lock()
         .map_or(false, |g| g.contains(&(h.0 as isize)))
 }
 
-/// Tampilkan satu panel di atas tiap zona kosong `slots`, masing-masing berisi `cands`.
-/// Memanggil ulang menggantikan tampilan sebelumnya. `thumbnails` = tampilan mini
-/// langsung dari window aslinya (kalau tidak, hanya judul).
+/// Show one panel above each empty zone in `slots`, each containing `cands`.
+/// Calling again replaces the previous display. `thumbnails` = live thumbnails
+/// of the original windows (otherwise, titles only).
 pub unsafe fn show(
     slots: &[SlotView],
     cands: &[Candidate],
@@ -497,7 +497,7 @@ pub unsafe fn show(
             anim_start: anim.then_some(now),
         });
     }
-    // sebelum ditampilkan, supaya WM_PAINT pertama sudah menemukan datanya
+    // Before showing it, so the first WM_PAINT can access the data.
     let shown: Vec<(isize, Rect)> = panels
         .iter()
         .zip(slots.iter())
@@ -524,7 +524,7 @@ pub unsafe fn show(
     }
 }
 
-/// Sembunyikan semua panel dan lepaskan thumbnail-nya.
+/// Hide all panels and release their thumbnails.
 pub unsafe fn hide() {
     let old: Vec<Panel> = PANELS
         .lock()
@@ -570,7 +570,7 @@ mod tests {
     #[test]
     fn a_wide_panel_prefers_columns_and_a_tall_panel_prefers_rows() {
         let wide = card_grid(2, 1200, 300);
-        assert_eq!(wide[0].y, wide[1].y); // sebaris
+        assert_eq!(wide[0].y, wide[1].y); // Same row.
         let tall = card_grid(2, 300, 1000);
         assert_eq!(tall[0].x, tall[1].x); // sekolom
     }

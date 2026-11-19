@@ -1,5 +1,5 @@
-//! Ikon tray (menu klik kanan: Jeda / Jalankan saat login / Keluar) dan
-//! pengaturan autostart lewat registry HKCU\...\Run.
+//! Tray icon (right-click menu: Pause / Run at login / Quit) and
+//! autostart settings via the HKCU\...\Run registry key.
 
 use std::os::windows::process::CommandExt;
 use std::process::Command;
@@ -14,17 +14,17 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-/// Pesan dari ikon tray ke window tersembunyi kita.
+/// Message from the tray icon to our hidden window.
 const WM_TRAY: u32 = WM_APP + 4;
-/// Dikirim ke thread utama: ganti status jeda.
+/// Sent to the main thread: toggle the paused state.
 pub const WM_TRAY_PAUSE: u32 = WM_APP + 5;
-/// Dikirim ke thread utama: muat ulang file konfigurasi.
+/// Sent to the main thread: reload the configuration file.
 pub const WM_TRAY_RELOAD: u32 = WM_APP + 6;
-/// Dikirim ke thread utama: buka / tutup cheatsheet.
+/// Sent to the main thread: open / close the cheatsheet.
 pub const WM_TRAY_HELP: u32 = WM_APP + 12;
 
-/// True = app dijeda: window dikembalikan ke posisi asli dan semua hotkey
-/// diteruskan ke Windows seperti biasa.
+/// True = the app is paused: windows are restored to their original positions
+/// and all hotkeys are passed through to Windows as usual.
 pub static PAUSED: AtomicBool = AtomicBool::new(false);
 
 static MAIN_THREAD: AtomicU32 = AtomicU32::new(0);
@@ -80,10 +80,10 @@ pub fn set_autostart(on: bool) -> bool {
     out.map_or(false, |o| o.status.success())
 }
 
-// --------------------------------------------------------------------- ikon
+// --------------------------------------------------------------------- icons
 
-/// Ikon 32x32 bergaya Fluent Windows 11: latar membulat + tiga panel membulat
-/// memakai warna aksen Windows aktif (anti-aliased).
+/// A 32x32 Windows 11 Fluent-style icon: a rounded background and three rounded
+/// panels using the active Windows accent color (anti-aliased).
 unsafe fn make_icon() -> Option<HICON> {
     const N: usize = 32;
     let pal = crate::theme::Palette::resolve(crate::config::OverviewColors::default());
@@ -210,7 +210,7 @@ unsafe fn show_menu(hwnd: HWND) {
 
     let mut pt = POINT::default();
     let _ = GetCursorPos(&mut pt);
-    // wajib supaya menu tertutup saat user mengklik di tempat lain
+    // Required to close the menu when the user clicks elsewhere.
     let _ = SetForegroundWindow(hwnd);
     let cmd = TrackPopupMenu(
         menu,
@@ -251,14 +251,14 @@ unsafe extern "system" fn tray_proc(
     }
     let tb = TASKBAR_CREATED.load(Ordering::Relaxed);
     if tb != 0 && msg == tb {
-        add_icon(hwnd); // explorer di-restart: pasang ikon lagi
+        add_icon(hwnd); // Explorer restarted: add the icon again.
         return LRESULT(0);
     }
     DefWindowProcW(hwnd, msg, wparam, lparam)
 }
 
-/// Buat window tersembunyi penerima pesan tray dan pasang ikonnya.
-/// Harus dipanggil dari thread yang menjalankan message loop.
+/// Create a hidden window to receive tray messages and add its icon.
+/// Must be called from the thread running the message loop.
 pub unsafe fn create(main_thread: u32) -> bool {
     MAIN_THREAD.store(main_thread, Ordering::Relaxed);
     let Ok(hmod) = GetModuleHandleW(None) else {
@@ -276,7 +276,7 @@ pub unsafe fn create(main_thread: u32) -> bool {
     if RegisterClassW(&wc) == 0 {
         return false;
     }
-    // Window top-level (bukan message-only) supaya menerima broadcast "TaskbarCreated".
+    // Use a top-level window (not a message-only window) to receive the "TaskbarCreated" broadcast.
     let Ok(hwnd) = CreateWindowExW(
         WS_EX_TOOLWINDOW,
         class,

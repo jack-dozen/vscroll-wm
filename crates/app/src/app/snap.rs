@@ -1,21 +1,21 @@
-//! Snap layouts: seret window ke tepi atas layar -> menu preset muncul; lepas di sebuah
-//! zona -> window mengisi zona itu. Zona lain di preset yang sama menampilkan daftar
-//! window yang sedang terbuka (Snap Assist); klik sebuah window untuk mengisinya.
+//! Snap layouts: drag a window to the top edge of the screen to show the preset menu;
+//! release over a zone to place the window there. Other zones in the same preset show
+//! a list of open windows (Snap Assist); click a window to place it in a zone.
 //!
-//! Alur:
-//!  1. EVENT_SYSTEM_MOVESIZESTART -> `snap_drag_start`: mulai memantau kursor dengan
-//!     timer (`tick_snap_drag`). Seretan tepi window (resize) dikenali dari ukuran yang
-//!     berubah dan diabaikan.
-//!  2. Kursor masuk pita pemicu di tepi atas -> menu tampil (snap_menu.rs); zona di
-//!     bawah kursor disorot. Menu hilang lagi kalau kursor menjauh.
-//!  3. EVENT_SYSTEM_MOVESIZEEND -> `snap_drag_end`: kalau menu tampil dan kursor ada di
-//!     sebuah zona, preset dipasang (`Workspaces::apply_snap`); selain itu seretan
-//!     diproses seperti biasa (tukar posisi / geser pembagi, mouse.rs).
-//!  4. Zona kosong menjadi slot di strip. Kalau `snap_assist` aktif, daftar window
-//!     (snap_slots.rs) muncul di atas tiap slot. Memilih window memanggil
-//!     `snap_assist_pick`. Sesi berakhir kalau semua slot terisi, atau dibatalkan
-//!     (Esc, tombol tutup, klik di luar, pintasan keyboard, overview, seretan baru);
-//!     slot yang tersisa dibuang sehingga zona itu tetap kosong.
+//! Flow:
+//!  1. EVENT_SYSTEM_MOVESIZESTART -> `snap_drag_start`: start tracking the cursor
+//!     with a timer (`tick_snap_drag`). Edge drags (resize) are detected by the
+//!     size change and ignored.
+//!  2. Cursor enters the trigger band at the top edge -> show the menu (snap_menu.rs);
+//!     highlight the zone under the cursor. Hide the menu again when the cursor moves away.
+//!  3. EVENT_SYSTEM_MOVESIZEEND -> `snap_drag_end`: if the menu is visible and the
+//!     cursor is over a zone, apply the preset (`Workspaces::apply_snap`); otherwise
+//!     process the drag as usual (swap positions / move divider, mouse.rs).
+//!  4. Empty zones become slots in the strip. If `snap_assist` is enabled, show a
+//!     window list (snap_slots.rs) above each slot. Selecting a window calls
+//!     `snap_assist_pick`. The session ends when all slots are filled, or is canceled
+//!     (Esc, close button, outside click, keyboard shortcut, overview, new drag);
+//!     remaining slots are removed so those zones stay empty.
 
 use std::sync::atomic::Ordering;
 
@@ -33,37 +33,37 @@ use crate::hook::SNAP_OPEN;
 use crate::winutil::{bounds, ext_bounds, title, wid, work_area, Bounds};
 use crate::{config, rules, safety, snap_menu, snap_slots, tray};
 
-/// Jarak (piksel) dari panel menu yang masih dianggap "di menu" supaya menu tidak
-/// menghilang saat kursor sedikit keluar.
+/// Distance (pixels) from the menu panel still considered "inside" so it does not
+/// disappear when the cursor strays slightly outside.
 const MENU_MARGIN: i32 = 24;
-/// Gerak minimum (piksel) sebelum sebuah seretan dianggap benar-benar memindahkan
-/// window, dan selisih ukuran maksimum sebelum dianggap seretan tepi (resize).
+/// Minimum movement (pixels) before a drag is considered to move a window, and
+/// maximum size difference before it is treated as an edge drag (resize).
 const MOVE_TOL: i32 = 6;
 
-/// Seretan window yang sedang dipantau untuk menu snap layouts.
+/// Window drag currently tracked for the snap layouts menu.
 pub(crate) struct SnapDrag {
     id: WindowId,
     hwnd: HWND,
-    /// Batas frame saat seretan mulai.
+    /// Frame bounds when the drag started.
     start: Bounds,
-    /// Susunan menu kalau sedang tampil.
+    /// Menu layout, if currently visible.
     menu: Option<snap_menu::MenuLayout>,
-    /// Zona (preset, zona) di bawah kursor.
+    /// Zone (preset, zone) under the cursor.
     hover: Option<(usize, usize)>,
-    /// Esc ditekan selama seretan: seretan dibatalkan, jangan dipasang.
+    /// Esc pressed during the drag: drag was canceled; do not apply the preset.
     cancelled: bool,
 }
 
-/// Sesi daftar window untuk zona kosong.
+/// Window-list session for empty zones.
 pub(crate) struct SnapAssist {
-    /// Window yang sudah menempati zona preset ini (untuk pelacak fokus).
+    /// Windows already occupying zones in this preset (for focus tracking).
     members: Vec<WindowId>,
-    /// Slot yang belum terisi.
+    /// Unfilled slots.
     slots: Vec<WindowId>,
 }
 
 impl App {
-    /// Seretan window dimulai.
+    /// A window drag started.
     pub(crate) unsafe fn snap_drag_start(&mut self, hwnd: HWND) {
         if !self.cfg.snap_layouts_enabled
             || self.cfg.snap_layouts.is_empty()
@@ -79,8 +79,8 @@ impl App {
         {
             return;
         }
-        // seretan baru membatalkan sesi sebelumnya; tanpa apply(): window yang sedang
-        // diseret tidak boleh ditarik balik ke tempatnya
+        // A new drag cancels the previous session; do not call apply(): the
+        // dragged window must not be pulled back to its original position.
         self.snap_reset(false);
         self.snap_drag = Some(SnapDrag {
             id,
@@ -95,7 +95,7 @@ impl App {
         }
     }
 
-    /// Berhenti memantau seretan: sembunyikan menu dan matikan timer.
+    /// Stop tracking the drag: hide the menu and stop the timer.
     unsafe fn snap_stop_drag(&mut self) {
         self.snap_drag = None;
         snap_menu::hide();
@@ -105,7 +105,7 @@ impl App {
         }
     }
 
-    /// Hentikan seretan dan sesi daftar window (pause, reload config, seretan baru).
+    /// Stop the drag and window-list session (pause, config reload, new drag).
     pub(crate) unsafe fn snap_reset(&mut self, apply: bool) {
         self.snap_stop_drag();
         if self.snap_assist.is_some() {
@@ -137,7 +137,7 @@ impl App {
         }
     }
 
-    /// Dipanggil timer selama seretan: tampilkan / sembunyikan menu dan sorot zona.
+    /// Called by the timer during a drag: show / hide the menu and highlight the zone.
     pub(crate) unsafe fn tick_snap_drag(&mut self) {
         let Some(d) = self.snap_drag.as_ref() else {
             self.snap_stop_drag();
@@ -155,7 +155,7 @@ impl App {
             return;
         }
         if GetAsyncKeyState(VK_ESCAPE.0 as i32) < 0 {
-            // Esc membatalkan seretan oleh Windows: jangan pasang preset saat dilepas
+            // Esc cancels the drag in Windows: do not apply a preset on release.
             self.snap_hide_menu();
             if let Some(d) = self.snap_drag.as_mut() {
                 d.cancelled = true;
@@ -166,12 +166,12 @@ impl App {
         let size_changed = ((now.2 - now.0) - (start.2 - start.0)).abs() > MOVE_TOL
             || ((now.3 - now.1) - (start.3 - start.1)).abs() > MOVE_TOL;
         if size_changed {
-            // tepi window yang ditarik (resize), bukan dipindah: bukan urusan menu ini
+            // A window edge was dragged (resize), not moved: this menu does not handle it.
             self.snap_stop_drag();
             return;
         }
         if GetAsyncKeyState(VK_LBUTTON.0 as i32) >= 0 {
-            return; // tombol kiri tidak ditekan (mis. pindah lewat keyboard)
+            return; // Left mouse button is not pressed (e.g. keyboard navigation).
         }
         let mut pt = POINT::default();
         if GetCursorPos(&mut pt).is_err() {
@@ -193,7 +193,7 @@ impl App {
             }
             return;
         }
-        // menu tampil: bertahan selama kursor di menu atau di pita pemicu
+        // Menu is visible: keep it open while the cursor is over the menu or trigger band.
         let (hover, keep) = {
             let Some(m) = self.snap_drag.as_ref().and_then(|d| d.menu.as_ref()) else {
                 return;
@@ -216,13 +216,13 @@ impl App {
         }
     }
 
-    /// Seretan selesai. True kalau dipakai untuk memasang preset (pemanggil tidak perlu
-    /// memprosesnya sebagai tukar posisi / geser pembagi).
+    /// Drag ended. True if it was used to apply a preset (caller need not process it
+    /// as a position swap / divider movement).
     pub(crate) unsafe fn snap_drag_end(&mut self, hwnd: HWND) -> bool {
         let Some(d) = self.snap_drag.take() else {
             return false;
         };
-        self.snap_stop_drag(); // menu hilang, timer mati
+        self.snap_stop_drag(); // Hide the menu and stop the timer.
         if d.id != wid(hwnd) || d.cancelled {
             return false;
         }
@@ -240,14 +240,14 @@ impl App {
         true
     }
 
-    /// Pasang preset `pi` dengan `id` di zona `zi`.
+    /// Apply preset `pi` with `id` to zone `zi`.
     unsafe fn snap_apply(&mut self, id: WindowId, pi: usize, zi: usize) {
         let Some(preset) = self.cfg.snap_layouts.get(pi).cloned() else {
             return;
         };
         let slots = self.ws.apply_snap(id, &preset, zi);
         if !self.cfg.snap_assist {
-            self.ws.clear_slots(); // zona lain dibiarkan kosong
+            self.ws.clear_slots(); // Leave the other zones empty.
         }
         self.apply();
         if let Some(&h) = self.map.get(&id) {
@@ -260,14 +260,14 @@ impl App {
                 slots,
             });
             if !self.snap_assist_show() {
-                self.snap_assist_end(true); // tidak ada window lain untuk dipilih
+                self.snap_assist_end(true); // No other windows to select.
             }
         }
         self.schedule_sync(EVENT_DEBOUNCE_MS);
     }
 
-    /// Window yang bisa mengisi slot: hanya window terbuka yang ditata di workspace aktif
-    /// (urut seperti di strip), selain `members` dan yang sedang disembunyikan.
+    /// Windows that can fill a slot: only open windows tiled in the active workspace
+    /// (in strip order), excluding `members` and currently hidden windows.
     unsafe fn snap_candidates(&self, members: &[WindowId]) -> Vec<snap_slots::Candidate> {
         let mode = self.cfg.overview_label;
         let mut out = Vec::new();
@@ -293,8 +293,8 @@ impl App {
         out
     }
 
-    /// Tampilkan (ulang) daftar window di atas slot yang masih kosong. False kalau tidak
-    /// ada yang bisa ditampilkan (tidak ada slot kelihatan atau tidak ada window).
+    /// Show / refresh window lists above empty slots. False if nothing can be shown
+    /// (no visible slots or no windows).
     unsafe fn snap_assist_show(&mut self) -> bool {
         let Some(a) = self.snap_assist.as_ref() else {
             return false;
@@ -306,7 +306,7 @@ impl App {
             .filter_map(|s| {
                 places
                     .iter()
-                    .find(|p| p.id == *s && p.visible) // zona di luar layar tidak bisa diklik
+                    .find(|p| p.id == *s && p.visible) // Off-screen zones cannot be clicked.
                     .map(|p| snap_slots::SlotView {
                         slot: s.0,
                         rect: p.rect,
@@ -330,7 +330,7 @@ impl App {
         true
     }
 
-    /// Sebuah window dipilih untuk mengisi slot (pesan WM_SNAP_PICK).
+    /// A window was selected to fill a slot (WM_SNAP_PICK message).
     pub(crate) unsafe fn snap_assist_pick(&mut self, win: u64, slot: u64) {
         if self.snap_assist.is_none() {
             return;
@@ -348,7 +348,7 @@ impl App {
             }
             self.schedule_sync(EVENT_DEBOUNCE_MS);
         }
-        // gagal (window sudah hilang): cukup muat ulang daftarnya
+        // Failed (window already closed): just refresh the list.
         let more = self
             .snap_assist
             .as_ref()
@@ -358,8 +358,8 @@ impl App {
         }
     }
 
-    /// Akhiri sesi: daftar window disembunyikan, slot yang tersisa dibuang (zonanya
-    /// tetap kosong). `apply` = tata ulang window setelah slot dibuang.
+    /// End the session: hide the window list and remove remaining slots (those zones
+    /// stay empty). `apply` = rearrange windows after removing the slots.
     pub(crate) unsafe fn snap_assist_end(&mut self, apply: bool) {
         self.snap_assist = None;
         snap_slots::hide();
@@ -369,14 +369,14 @@ impl App {
         }
     }
 
-    /// Dipanggil sync(): sesi berakhir kalau fokus pindah ke window di luar preset ini
-    /// (klik window lain, Alt+Tab).
+    /// Called by sync(): end the session if focus moves to a window outside this
+    /// preset (click another window, Alt+Tab).
     pub(crate) unsafe fn snap_assist_follow_focus(&mut self, fg: HWND) {
         let Some(a) = self.snap_assist.as_ref() else {
             return;
         };
         if fg.0.is_null() || snap_slots::is_ours(fg) || a.members.contains(&wid(fg)) {
-            return; // foreground sedang transisi / milik kita / bagian dari preset
+            return; // Foreground is transitioning / owned by us / part of the preset.
         }
         self.snap_assist_end(true);
     }

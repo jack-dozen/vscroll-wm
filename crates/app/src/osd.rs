@@ -1,9 +1,9 @@
-//! OSD workspace: panel flyout ringkas khas Windows 11 di bagian bawah layar yang
-//! muncul sebentar setiap pindah workspace ("Workspace 2" + indikator pil membulat),
-//! meluncur & memudar masuk/keluar dengan kurva Fluent Motion.
+//! Workspace OSD: a compact Windows 11-style flyout at the bottom of the screen
+//! that briefly appears on each workspace switch ("Workspace 2" + rounded pill
+//! indicator), sliding and fading in/out with a Fluent Motion curve.
 //!
-//! Tidak pernah merebut fokus dan tidak menangkap klik. Mengikuti tema gelap/terang
-//! & warna aksen Windows 11 (atau warna kustom di konfigurasi). Dimatikan lewat
+//! It never takes focus or captures clicks. Follows the Windows 11 dark/light theme
+//! and accent color (or custom config colors). Disabled via
 //! `workspace_osd = off`.
 
 use std::sync::atomic::{AtomicIsize, AtomicUsize, Ordering};
@@ -24,7 +24,7 @@ use crate::config::OverviewColors;
 use crate::theme::{self, Canvas, Palette};
 use crate::winutil::animations_enabled;
 
-/// Berapa lama panel bertahan tampil penuh (ms).
+/// How long the panel remains fully visible (ms).
 const SHOW_MS: u32 = 900;
 const FADE_IN_MS: f32 = 140.0;
 const FADE_OUT_MS: f32 = 180.0;
@@ -38,7 +38,7 @@ const ANIM_TICK_MS: u32 = 16;
 
 const PANEL_H_DOTS: i32 = 82;
 const PANEL_H_COMPACT: i32 = 54;
-/// Jarak panel dari tepi bawah area kerja (piksel).
+/// Panel distance from the bottom edge of the work area (pixels).
 const BOTTOM_MARGIN: i32 = 44;
 const MIN_PANEL_W: i32 = 224;
 const COMPACT_PANEL_W: i32 = 196;
@@ -67,11 +67,11 @@ struct OsdState {
 
 static OSD_HWND: AtomicIsize = AtomicIsize::new(0);
 static FONT: AtomicIsize = AtomicIsize::new(0);
-/// Workspace yang terakhir diumumkan; panel hanya muncul kalau berubah.
+/// Last announced workspace; the panel appears only when it changes.
 static LAST: AtomicUsize = AtomicUsize::new(0);
 static STATE: Mutex<Option<OsdState>> = Mutex::new(None);
 
-/// Lebar panel untuk `total` workspace.
+/// Panel width for `total` workspaces.
 pub fn panel_width(total: usize) -> i32 {
     let row = total as i32 * (PILL + PILL_GAP);
     (row + 56).max(MIN_PANEL_W)
@@ -118,7 +118,7 @@ unsafe fn paint(hwnd: HWND) {
         );
 
         if show_dots {
-            // Indikator halaman ala Windows 11: pil memanjang untuk workspace aktif, titik halus untuk lainnya
+            // Windows 11-style page indicator: elongated pill for the active workspace, small dots for the rest.
             let n = total as i32;
             let row_w = if n > 0 {
                 PILL + (n - 1) * DOT + (n - 1) * PILL_GAP
@@ -242,13 +242,13 @@ unsafe extern "system" fn osd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             }
             LRESULT(0)
         }
-        WM_NCHITTEST => LRESULT(-1), // HTTRANSPARENT: klik menembus panel
+        WM_NCHITTEST => LRESULT(-1), // HTTRANSPARENT: clicks pass through the panel.
         WM_MOUSEACTIVATE => LRESULT(3), // MA_NOACTIVATE
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
 }
 
-/// Buat jendela panel (tersembunyi) sekali di awal.
+/// Create the (hidden) panel window once at startup.
 pub unsafe fn init() -> bool {
     let Ok(hmod) = GetModuleHandleW(None) else {
         return false;
@@ -288,9 +288,9 @@ pub unsafe fn init() -> bool {
     true
 }
 
-/// Umumkan workspace aktif. Tidak melakukan apa-apa kalau workspace-nya sama dengan
-/// yang terakhir diumumkan. `total` = jumlah workspace yang ditampilkan sebagai indikator
-/// kalau `show_dots` aktif.
+/// Announce the active workspace. Does nothing if it is the same as the last one
+/// announced. `total` = number of workspaces shown in the indicator when
+/// `show_dots` is enabled.
 pub unsafe fn notify(
     active: usize,
     total: usize,
@@ -380,7 +380,7 @@ pub unsafe fn notify(
     let _ = SetTimer(Some(h), HOLD_TIMER_ID, SHOW_MS, None);
 }
 
-/// Sembunyikan segera (mis. saat dijeda).
+/// Hide immediately (e.g. when paused).
 pub unsafe fn hide() {
     let hw = OSD_HWND.load(Ordering::Relaxed);
     if hw != 0 {
