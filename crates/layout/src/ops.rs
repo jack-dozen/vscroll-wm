@@ -456,10 +456,14 @@ impl Strip {
     ///                                    tekan lagi untuk pindah ke sisi itu
     ///  - penuh lebar                  -> masuk lajur, dengan aturan penghuni (X)
     ///    yang terdekat di sekitarnya:
+    ///      * lajur tujuan berakhir di atas dasar blok (ada ruang kosong di bawahnya)
+    ///                                 -> ISI RUANG: window masuk di ujung bawah lajur,
+    ///                                    tinggi tetap; window lain tidak bergerak
+    ///                                    (`fill_lane_gap`)
     ///      * seberang X kosong        -> SWAP: X pindah ke seberang, window ambil posisi X
     ///      * seberang X berisi window yang tidak lebih tinggi dari X
     ///        (baris kuarter sudah penuh) -> window masuk DI BAWAH X
-    ///      * seberang X lebih tinggi dari X (mis. setengah layar)
+    ///      * seberang X lebih tinggi dari X dan tidak ada ruang kosong
     ///                                 -> window di ATAS X, X tergeser ke bawah
     ///      * tidak ada X              -> cukup pindah lajur
     fn snap_side(&mut self, i: usize, target: Span) {
@@ -502,6 +506,12 @@ impl Strip {
             return;
         };
 
+        // lajur tujuan lebih pendek dari bloknya: isi ruang kosong di ujung bawahnya,
+        // tanpa menggeser window yang sudah ada
+        if self.fill_lane_gap(i, target, run_start, run_end) {
+            return;
+        }
+
         let (tj, bj) = (flow[j].top, flow[j].bottom());
         let beside: Vec<Flow> = flow
             .iter()
@@ -524,6 +534,40 @@ impl Strip {
         let w = self.items.remove(i);
         let jj = if j > i { j - 1 } else { j };
         self.items.insert(if above { jj } else { jj + 1 }, w);
+    }
+
+    /// Bagian dari `snap_side`: window penuh lebar `i` masuk ke lajur `target` di blok
+    /// `lo..hi` (rentang termasuk `i`). Kalau lajur itu berakhir di atas dasar blok
+    /// (ada ruang kosong di bawahnya), window disisipkan di ujung bawah lajur dengan
+    /// tinggi tetap miliknya sendiri (boleh lebih tinggi dari ruangnya; atur dengan
+    /// `Win+Atas/Bawah`). Susunan window lain tidak berubah.
+    ///
+    /// Posisi dihitung dari `flow()` tanpa window ini (sudah termasuk gap, tinggi
+    /// minimum, window tersembunyi). False (strip tidak berubah) kalau tidak ada ruang
+    /// kosong di bawah lajur itu.
+    fn fill_lane_gap(&mut self, i: usize, target: Span, lo: usize, hi: usize) -> bool {
+        let me = self.items.remove(i);
+        let hi = hi - 1; // indeks setelah `i` bergeser satu
+        let flow = self.flow();
+        let in_lane = |k: &usize| self.items[*k].span == target;
+        let in_block = |k: &usize| matches!(self.items[*k].span, Span::Left | Span::Right);
+        let lane_end = (lo..hi).filter(in_lane).last();
+        let lane_bottom = (lo..hi).filter(in_lane).map(|k| flow[k].bottom()).max();
+        let block_bottom = (lo..hi).filter(in_block).map(|k| flow[k].bottom()).max();
+        let (Some(end), Some(lane_bottom), Some(block_bottom)) =
+            (lane_end, lane_bottom, block_bottom)
+        else {
+            self.items.insert(i, me);
+            return false;
+        };
+        if block_bottom <= lane_bottom {
+            self.items.insert(i, me);
+            return false;
+        }
+        let mut w = me;
+        w.span = target;
+        self.items.insert(end + 1, w);
+        true
     }
 
     /// Kembalikan window yang fokus jadi penuh (lebar + tinggi), di bawah

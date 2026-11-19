@@ -116,16 +116,119 @@ fn y_right_x_top_left() -> Strip {
 }
 
 #[test]
-fn push_down_when_opposite_lane_is_occupied() {
+fn fills_gap_below_occupant_without_moving_it() {
     let mut s = y_right_x_top_left();
     assert_eq!(r(&s, X), rect(0, 0, 960, 540));
     s.add_window(B);
     s.snap(Dir::Up);
     s.snap(Dir::Left);
-    // B di kiri atas, X turun ke bawahnya, A (kanan penuh) tidak tergeser
-    assert_eq!(r(&s, B), rect(0, 0, 960, 540));
-    assert_eq!(r(&s, X), rect(0, 540, 960, 540));
+    // B mengisi ruang kosong di bawah X; X dan A (kanan penuh) tidak tergeser
+    assert_eq!(r(&s, X), rect(0, 0, 960, 540));
+    assert_eq!(r(&s, B), rect(0, 540, 960, 540));
     assert_eq!(r(&s, A), rect(960, 0, 960, 1080));
+}
+
+/// Posisi di koordinat strip (tanpa scroll).
+fn at(s: &Strip, id: WindowId) -> Rect {
+    s.overview().items.into_iter().find(|i| i.id == id).unwrap().rect
+}
+
+/// A kiri tinggi penuh, B kanan atas setengah tinggi (ruang kosong di bawah B).
+fn a_left_full_b_right_half() -> Strip {
+    let mut s = strip();
+    s.add_window(A);
+    s.snap(Dir::Left);
+    s.add_window(B);
+    s.snap(Dir::Up);
+    s.snap(Dir::Right);
+    s
+}
+
+#[test]
+fn full_window_snapped_right_goes_below_shorter_occupant() {
+    // A kiri tinggi penuh; B kanan atas setengah tinggi; C penuh di bawah blok.
+    let mut s = a_left_full_b_right_half();
+    s.add_window(C);
+    s.snap(Dir::Right);
+    // A dan B tidak bergeser; C di bawah B, tinggi tetap penuh
+    assert_eq!(at(&s, A), rect(0, 0, 960, 1080));
+    assert_eq!(at(&s, B), rect(960, 0, 960, 540));
+    assert_eq!(at(&s, C), rect(960, 540, 960, 1080));
+}
+
+#[test]
+fn full_window_snapped_left_goes_below_shorter_occupant_mirrored() {
+    let mut s = strip();
+    s.add_window(A);
+    s.snap(Dir::Right);
+    s.add_window(B);
+    s.snap(Dir::Up);
+    s.snap(Dir::Left);
+    s.add_window(C);
+    s.snap(Dir::Left);
+    assert_eq!(at(&s, A), rect(960, 0, 960, 1080));
+    assert_eq!(at(&s, B), rect(0, 0, 960, 540));
+    assert_eq!(at(&s, C), rect(0, 540, 960, 1080));
+}
+
+#[test]
+fn window_shorter_than_the_gap_keeps_its_height() {
+    let mut s = a_left_full_b_right_half();
+    s.add_window(C);
+    s.snap(Dir::Up);
+    s.snap(Dir::Up); // C: 1/3
+    s.snap(Dir::Right);
+    assert_eq!(at(&s, B), rect(960, 0, 960, 540));
+    assert_eq!(at(&s, C), rect(960, 540, 960, 360));
+}
+
+#[test]
+fn gap_fill_goes_below_every_window_of_the_lane() {
+    let mut s = strip();
+    s.add_window(A);
+    s.snap(Dir::Left);
+    s.add_window(B);
+    s.snap(Dir::Up);
+    s.snap(Dir::Up);
+    s.snap(Dir::Right); // B: kanan, 1/3
+    s.add_window(D);
+    s.snap(Dir::Up);
+    s.snap(Dir::Up);
+    s.snap(Dir::Right); // D: 1/3 di bawah B
+    assert_eq!(at(&s, D), rect(960, 360, 960, 360));
+    s.add_window(C);
+    s.snap(Dir::Right);
+    assert_eq!(at(&s, A), rect(0, 0, 960, 1080));
+    assert_eq!(at(&s, B), rect(960, 0, 960, 360));
+    assert_eq!(at(&s, D), rect(960, 360, 960, 360));
+    assert_eq!(at(&s, C), rect(960, 720, 960, 1080));
+}
+
+#[test]
+fn gap_fill_ignores_hidden_windows_in_the_lane() {
+    let mut s = a_left_full_b_right_half();
+    s.add_window(D);
+    s.snap(Dir::Up);
+    s.snap(Dir::Right); // D di bawah B
+    assert!(s.set_hidden(D, true));
+    s.set_focus(B);
+    s.add_window(C);
+    s.snap(Dir::Right);
+    assert_eq!(at(&s, B), rect(960, 0, 960, 540));
+    assert_eq!(at(&s, C), rect(960, 540, 960, 1080));
+}
+
+#[test]
+fn gap_fill_works_with_a_gap_setting() {
+    let mut s = a_left_full_b_right_half();
+    s.set_gap(10);
+    s.add_window(C);
+    s.snap(Dir::Right);
+    let (a, b, c) = (r(&s, A), r(&s, B), r(&s, C));
+    assert_eq!(b.y, a.y);
+    assert_eq!(c.x, b.x);
+    assert_eq!(c.y, b.y + b.h + 10); // tepat di bawah B, dipisah gap
+    assert_eq!(c.h, a.h); // tinggi tetap penuh
 }
 
 #[test]
@@ -248,11 +351,11 @@ fn min_height_pushes_window_below_in_same_lane() {
     let mut s = y_right_x_top_left();
     s.add_window(B);
     s.snap(Dir::Up);
-    s.snap(Dir::Left);
-    s.set_focus(B);
-    s.set_min_height(B, 700);
-    assert_eq!(r(&s, B).h, 700);
-    assert_eq!(r(&s, X).y, r(&s, B).y + 700);
+    s.snap(Dir::Left); // kiri: X (atas), B (bawah)
+    s.set_focus(X);
+    s.set_min_height(X, 700);
+    assert_eq!(r(&s, X).h, 700);
+    assert_eq!(r(&s, B).y, r(&s, X).y + 700);
 }
 
 #[test]
@@ -268,16 +371,16 @@ fn focus_follows_screen_geometry() {
     let mut s = y_right_x_top_left();
     s.add_window(B);
     s.snap(Dir::Up);
-    s.snap(Dir::Left); // kiri: B (atas), X (bawah). kanan: A
+    s.snap(Dir::Left); // kiri: X (atas), B (bawah). kanan: A
     assert_eq!(s.focused(), Some(B));
-    s.focus(Dir::Down);
-    assert_eq!(s.focused(), Some(X));
     s.focus(Dir::Up);
+    assert_eq!(s.focused(), Some(X));
+    s.focus(Dir::Down);
     assert_eq!(s.focused(), Some(B));
     s.focus(Dir::Right);
     assert_eq!(s.focused(), Some(A));
-    s.focus(Dir::Left);
-    assert_eq!(s.focused(), Some(B));
+    s.focus(Dir::Left); // dua kandidat sama dekat: yang paling atas
+    assert_eq!(s.focused(), Some(X));
 }
 
 #[test]
@@ -342,12 +445,12 @@ fn maximize_goes_below_neighbors_without_dragging_them() {
     let mut s = strip();
     s.add_window(C);
     s.snap(Dir::Right);
-    s.add_window(A);
-    s.snap(Dir::Up);
-    s.snap(Dir::Left);
     s.add_window(B);
     s.snap(Dir::Up);
-    s.snap(Dir::Left); // B di atas A
+    s.snap(Dir::Left);
+    s.add_window(A);
+    s.snap(Dir::Up);
+    s.snap(Dir::Left); // A mengisi ruang di bawah B
     s.set_focus(A);
     s.maximize();
     assert_eq!(r(&s, A).w, 1920);
@@ -383,11 +486,11 @@ fn move_window_in_same_lane_swaps_positions_not_sizes() {
     let mut s = strip();
     s.add_window(A); // A = Y
     s.snap(Dir::Right);
+    s.add_window(B); // B = W
+    s.snap(Dir::Left); // lajur kiri masih kosong: tinggi penuh
     s.add_window(X);
     s.snap(Dir::Up);
-    s.snap(Dir::Left);
-    s.add_window(B); // B = W
-    s.snap(Dir::Left); // di atas X, tinggi penuh
+    s.snap(Dir::Left); // tidak ada ruang kosong: di bawah W
     s.set_focus(X);
     let (wh, xh) = (r(&s, B).h, r(&s, X).h);
     assert_eq!((wh, xh), (1080, 540));
