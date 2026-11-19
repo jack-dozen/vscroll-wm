@@ -196,3 +196,15 @@ overview_wrap = on
 # bind.focus_left = alt+h
 # bind.focus_right = alt+l
 # bind.overview = win+o, win+alt+space
+
+# --- Window rules (rule = ...) ---
+# Reloaded together with vscroll-wm.ignore via tray -> "Reload configuration" (no restart).
+# Each line is comma-separated: one or more matchers + an action. First matching rule wins.
+#   Matchers: exe:<name.exe>, class:<ClassName>, title:<substring>, max_width=<px>, max_height=<px>
+#   Actions:  float [width=<px>] [height=<px>]
+#             or workspace=<1-9>, span=left|right|full, height=1/3|1/2|full|40%
+# Examples:
+# rule = exe:vlc.exe, float, width=900, height=540
+# rule = exe:discord.exe, workspace=2
+# rule = exe:code.exe, workspace=1, span=left, height=full
+# rule = class:CabinetWClass, max_width=500, max_height=400, float

@@ -192,6 +192,34 @@ impl Workspaces {
         self.normalize();
     }
 
+    /// Tambah window baru dengan workspace (0-indexed, 0..=8), lebar, dan tinggi awal
+    /// opsional (dipakai window rules).
+    pub fn add_window_with(
+        &mut self,
+        id: WindowId,
+        workspace: Option<usize>,
+        span: Option<Span>,
+        height: Option<Height>,
+    ) {
+        if self.workspace_of(id).is_some() {
+            return;
+        }
+        let target = match workspace {
+            Some(n) => {
+                let n = n.min(8);
+                while self.strips.len() <= n {
+                    let mut s = Strip::new(self.viewport);
+                    s.set_gap(self.gap);
+                    self.strips.push(s);
+                }
+                n
+            }
+            None => self.active,
+        };
+        self.strips[target].add_window_with(id, span, height);
+        self.normalize();
+    }
+
     /// Remove a window from any workspace.
     pub fn remove_window(&mut self, id: WindowId) {
         if let Some(n) = self.workspace_of(id) {
@@ -895,5 +923,18 @@ mod tests {
         // C stays in ws 1; it does not move.
         assert_eq!(w.workspace_of(C), Some(1));
         assert_eq!(w.workspace_of(B), Some(0));
+    }
+
+    #[test]
+    fn add_window_with_places_window_in_target_workspace_with_span_and_height() {
+        let mut w = ws();
+        w.add_window(A);
+        // Buka B langsung di workspace 2 (indeks 1), lajur kanan, tinggi 1/2
+        w.add_window_with(B, Some(1), Some(Span::Right), Some(Height::Half));
+        assert_eq!(w.workspace_of(A), Some(0));
+        assert_eq!(w.workspace_of(B), Some(1));
+        assert_eq!(w.active(), 0); // workspace aktif tidak berubah sendiri
+        let b = w.strip(1).unwrap().items()[0];
+        assert_eq!((b.id, b.span, b.height), (B, Span::Right, Height::Half));
     }
 }

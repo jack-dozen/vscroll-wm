@@ -33,7 +33,7 @@ use crate::winutil::{
     animations_enabled, bounds, collect, ext_bounds, place, set_border, title, wid, work_area,
     Bounds,
 };
-use crate::{bindings, config, overview, safety, taskbar};
+use crate::{bindings, config, overview, rules, safety, taskbar};
 use workspace::{slide_dir, Slide};
 
 /// `join` targeting mode: hold the modifier to point `src` at `target` with the arrows,
@@ -190,6 +190,37 @@ impl App {
                 continue;
             }
             if !self.map.contains_key(&id) {
+                if let Some(rule) = rules::match_rule(&self.cfg.rules, h) {
+                    match rule.action {
+                        rules::RuleAction::Float { width, height } => {
+                            if width.is_some() || height.is_some() {
+                                let cur = ext_bounds(h);
+                                let w = width.unwrap_or(cur.right - cur.left).min(work.w);
+                                let hh = height.unwrap_or(cur.bottom - cur.top).min(work.h);
+                                let target = layout::Rect {
+                                    x: work.x + (work.w - w) / 2,
+                                    y: work.y + (work.h - hh) / 2,
+                                    w,
+                                    h: hh,
+                                };
+                                let _ = place(h, target);
+                            }
+                            self.floating.insert(id, h);
+                            continue;
+                        }
+                        rules::RuleAction::Tile {
+                            workspace,
+                            span,
+                            height,
+                        } => {
+                            safety::remember(h, work);
+                            self.map.insert(id, h);
+                            self.ws.add_window_with(id, workspace, span, height);
+                            added = true;
+                            continue;
+                        }
+                    }
+                }
                 safety::remember(h, work); // Original position, to restore on exit.
                 self.map.insert(id, h);
                 self.ws.add_window(id); // Add to the active workspace.
@@ -412,11 +443,61 @@ impl App {
         });
     }
 
-    /// Reload the config file (tray menu). Ignore rules require a restart.
+    /// Reload the config file and `vscroll-wm.ignore` without restart.
     pub(crate) unsafe fn reload_config(&mut self) {
         self.snap_reset(false); // Preset indices in the menu / slots may change.
+        rules::reload();
         let report = config::load();
         self.apply_config(&report.cfg);
+        let work = work_area();
+        let now_ignored: Vec<(WindowId, HWND, Option<i32>, Option<i32>)> = self
+            .map
+            .iter()
+            .filter_map(|(&id, &h)| {
+                if rules::ignored(h).is_some() {
+                    return Some((id, h, None, None));
+                }
+                if let Some(rule) = rules::match_rule(&self.cfg.rules, h) {
+                    if let rules::RuleAction::Float { width, height } = rule.action {
+                        return Some((id, h, width, height));
+                    }
+                }
+                None
+            })
+            .collect();
+        for (id, h, width, height) in now_ignored {
+            self.ws.remove_window(id);
+            self.map.remove(&id);
+            self.hidden.remove(&id);
+            self.actual.remove(&id);
+            self.anim.remove(&id);
+            let was_parked = self.parked.remove(&id);
+            self.leaving.remove(&id);
+            if was_parked {
+                taskbar::show(h);
+            }
+            if width.is_some() || height.is_some() || was_parked {
+                let cur = ext_bounds(h);
+                let w = width
+                    .unwrap_or((cur.right - cur.left).max(400))
+                    .min(work.w);
+                let hh = height
+                    .unwrap_or((cur.bottom - cur.top).max(300))
+                    .min(work.h);
+                let _ = place(
+                    h,
+                    layout::Rect {
+                        x: work.x + (work.w - w) / 2,
+                        y: work.y + (work.h - hh) / 2,
+                        w,
+                        h: hh,
+                    },
+                );
+            }
+            safety::forget(h);
+            self.floating.insert(id, h);
+        }
+        self.sync();
         self.apply();
         actions::show_config_problems(&report);
     }

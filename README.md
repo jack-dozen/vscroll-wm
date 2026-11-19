@@ -72,6 +72,7 @@ Reload config anytime from the tray menu → **Reload configuration**.
 | `height_mode` / `height_step` | `preset` / `80` | `Win` + `↑` `↓`: jump between 1/3, 1/2, full (`preset`) or move per step (`step`, in px) |
 | `cheatsheet_key` | `slash` | Key used with Win to open the shortcut cheatsheet (or `off`) |
 | `bind.<action>` | *(see below)* | Custom shortcut for an action, e.g. `bind.close = win+w` |
+| `rule` | *(none)* | Window rule (multiple lines allowed; reloaded with config): match `exe:`, `class:`, `title:`, `max_width=`, `max_height=`; act `float` (optional `width=`, `height=`) or `workspace=1..9`, `span=left\|right\|full`, `height=1/3\|1/2\|full\|40%` |
 | `overview_hint` | `on` | Show key hints at the bottom of the overview |
 | `overview_thumbnails` | `on` | Show window thumbnails in overview |
 | `overview_label` | `title` | Label style: `title` / `app` / `reverse` |

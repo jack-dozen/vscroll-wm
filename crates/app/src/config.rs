@@ -48,6 +48,7 @@
 use std::path::PathBuf;
 
 use crate::bindings::{self, Bindings, Chord, WIN};
+use crate::rules::WindowRule;
 
 pub const DEFAULT_GAP: i32 = 16;
 
@@ -146,6 +147,8 @@ pub struct Config {
     pub snap_layouts: Vec<layout::SnapPreset>,
     /// Keys for each action (defaults + `bind.*` + overview_key / cheatsheet_key).
     pub bindings: Bindings,
+    /// Window rules (`rule = ...`), in file order.
+    pub rules: Vec<WindowRule>,
 }
 
 impl Default for Config {
@@ -176,6 +179,7 @@ impl Default for Config {
             snap_assist: true,
             snap_layouts: layout::builtin_presets(),
             bindings: Bindings::defaults(),
+            rules: Vec::new(),
         }
     }
 }
@@ -219,6 +223,10 @@ impl Config {
                 "join_border" => match parse_color(value) {
                     Some(color) => cfg.join_border = color,
                     None => warnings.push(format!("line {n}: join_border must be #RRGGBB or off")),
+                },
+                "rule" => match WindowRule::parse(value) {
+                    Ok(r) => cfg.rules.push(r),
+                    Err(e) => warnings.push(format!("line {n}: rule: {e}")),
                 },
                 "overview_hint" => match parse_bool(value) {
                     Some(b) => cfg.overview_hint = b,
@@ -648,6 +656,17 @@ mod tests {
         let (b, w) = Config::parse("join_border = off");
         assert!(w.is_empty());
         assert_eq!(b.join_border, None);
+    }
+
+    #[test]
+    fn parses_window_rule_lines_and_warns_on_bad_ones() {
+        let (cfg, w) = Config::parse(
+            "rule = exe:vlc.exe, float, width=800, height=500\n\
+             rule = exe:discord.exe, workspace=2, span=right, height=1/2\n\
+             rule = bad_token\n",
+        );
+        assert_eq!(cfg.rules.len(), 2);
+        assert_eq!(w.len(), 1);
     }
 
     #[test]

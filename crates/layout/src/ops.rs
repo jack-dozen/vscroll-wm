@@ -192,6 +192,25 @@ impl Strip {
         self.ensure_visible();
     }
 
+    /// Window baru dengan lebar (`span`) dan tinggi (`height`) awal opsional (window rules).
+    pub fn add_window_with(&mut self, id: WindowId, span: Option<Span>, height: Option<Height>) {
+        if self.index_of(id).is_some() {
+            return;
+        }
+        self.add_window(id);
+        if let Some(i) = self.index_of(id) {
+            if let Some(h) = height {
+                self.items[i].height = h;
+            }
+            if let Some(sp) = span {
+                if matches!(sp, Span::Left | Span::Right) {
+                    self.snap_side(i, sp);
+                }
+            }
+            self.ensure_visible();
+        }
+    }
+
     /// Insertion point for a new window in the opposite lane from item `i` (half-width),
     /// aligned with it: (insertion index, width). The nth item in each lane is aligned;
     /// if the opposite lane is shorter, insert at its bottom.
