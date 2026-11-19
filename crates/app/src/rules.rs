@@ -34,8 +34,9 @@ const BUILTIN_CLASSES: &[&str] = &[
     "ForegroundStaging",
     "Windows.UI.Core.CoreWindow",
     "Windows.UI.Composition.DesktopWindowContentBridge",
-    "Ghost",  // Placeholder for an unresponsive app.
-    "#32770", // Standard dialog (installer, "Run", etc.).
+    "Ghost",                 // Placeholder for an unresponsive app.
+    "#32770",                // Standard dialog (installer, "Run", etc.).
+    "OperationStatusWindow", // File Explorer copy / move / delete / replace dialog.
 ];
 
 #[derive(Debug, Default, PartialEq)]
