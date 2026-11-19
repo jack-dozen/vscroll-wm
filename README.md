@@ -118,6 +118,7 @@ that are actually in effect, including your custom ones.
 While overview is open:
 - Drag a window onto another workspace's column to move it there (like Task View). A marker shows the landing spot: on a full-width window = it is split in half (side by side, the dropped one on the cursor's side); on a half-width window = that window's height is halved and the dropped one takes the upper / lower half in the same column; on the empty half next to a window = it fills it; at the very top / bottom edge = full width above / below the block. Dropping on another window of the same workspace swaps them; Esc cancels the drag
 - Arrow keys → move selection (wraps around at the ends unless `overview_wrap = off`; `←` `→` at an edge continue into the neighbouring workspace)
+- `Space` → pick up the selected window (keyboard pick-and-drop: move the landing marker with arrows or `1`…`9`, `Enter` / `Space` to drop, `Esc` to cancel)
 - Tab / Shift+Tab (or the overview key while holding Win) → next / previous window in the workspace
 - `Ctrl` + `←` `→` or `1`…`9` → select a workspace
 - Enter or click → jump to the window; Esc → cancel

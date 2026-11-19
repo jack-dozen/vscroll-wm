@@ -27,8 +27,8 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, ReleaseCapture, SetCapture, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_LEFT, VK_RETURN,
-    VK_RIGHT, VK_SHIFT, VK_TAB, VK_UP,
+    GetKeyState, ReleaseCapture, SetCapture, VK_CONTROL, VK_DOWN, VK_ESCAPE, VK_LEFT, VK_MENU,
+    VK_RETURN, VK_RIGHT, VK_SHIFT, VK_SPACE, VK_TAB, VK_UP,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -111,6 +111,14 @@ struct Drag {
     slot: Option<DropSlot>,
 }
 static DRAG: Mutex<Option<Drag>> = Mutex::new(None);
+/// Mode angkat-dan-jatuhkan lewat keyboard di dalam overview (`Space` angkat, panah geser
+/// penanda, `Enter` jatuhkan lewat jalur `DROP` yang sama dengan mouse, `Esc` batal).
+struct KbPick {
+    src: u64,
+    slots: Vec<DropSlot>,
+    idx: usize,
+}
+static KB_PICK: Mutex<Option<KbPick>> = Mutex::new(None);
 /// Hasil drop yang menunggu diambil thread utama: (window yang diseret, tujuannya).
 type DropInfo = (u64, DropSlot);
 static DROP: Mutex<Option<DropInfo>> = Mutex::new(None);
@@ -350,6 +358,288 @@ fn clean_full(items: &[&DrawItem], x: &DrawItem) -> bool {
 fn slot_for(x: i32, y: i32, src: u64) -> Option<DropSlot> {
     let g = DRAW.lock().ok()?;
     slot_at(g.as_ref()?, x, y, src)
+}
+
+/// Hasilkan semua kandidat `DropSlot` terurut dari `Draw` (tanpa sampling piksel) untuk
+/// mode pick-and-drop keyboard: tepi atas kolom, isi tiap window (split kiri/kanan atau
+/// atas/bawah), setengah kosong (`Beside`) di sebelah window setengah lebar, dan tepi
+/// bawah tiap blok. Window `src` sendiri dikecualikan.
+pub fn drop_slots(d: &Draw, src: u64) -> Vec<DropSlot> {
+    let mut out: Vec<DropSlot> = Vec::new();
+    let push_unique = |out: &mut Vec<DropSlot>, sl: DropSlot| {
+        if !out
+            .iter()
+            .any(|e| e.number == sl.number && e.kind == sl.kind)
+        {
+            out.push(sl);
+        }
+    };
+
+    for col in &d.columns {
+        let mut items: Vec<&DrawItem> = d
+            .items
+            .iter()
+            .filter(|it| {
+                it.id != src
+                    && point_in(
+                        &col.rect,
+                        (it.rect.left + it.rect.right) / 2,
+                        (it.rect.top + it.rect.bottom) / 2,
+                    )
+            })
+            .collect();
+        if items.is_empty() {
+            continue;
+        }
+        items.sort_by_key(|it| (it.rect.top, it.rect.left));
+
+        // Kelompokkan ke blok vertikal (rentang y saling tumpang tindih).
+        let mut blocks: Vec<(i32, i32, Vec<&DrawItem>)> = Vec::new();
+        for &it in &items {
+            if let Some(last) = blocks.last_mut() {
+                if it.rect.top < last.1 - 2 {
+                    last.1 = last.1.max(it.rect.bottom);
+                    last.2.push(it);
+                    continue;
+                }
+            }
+            blocks.push((it.rect.top, it.rect.bottom, vec![it]));
+        }
+
+        let bar = |yy: i32| RECT {
+            left: col.rect.left,
+            top: yy - BAR / 2,
+            right: col.rect.right,
+            bottom: yy + BAR / 2,
+        };
+
+        // 1. Tepi atas kolom (penuh lebar di atas blok pertama)
+        if let Some((top, _, b_items)) = blocks.first() {
+            push_unique(
+                &mut out,
+                DropSlot {
+                    number: col.number,
+                    kind: SlotKind::Before(b_items[0].id),
+                    mark: bar(*top - MARGIN),
+                },
+            );
+        }
+
+        // 2. Untuk setiap blok: isi blok + tepi bawah blok
+        for (bi, (_, b_bot, b_items)) in blocks.iter().enumerate() {
+            for &it in b_items {
+                let r = it.rect;
+                if it.span == Span::Full {
+                    if clean_full(&items, it) {
+                        let mid = (r.left + r.right) / 2;
+                        push_unique(
+                            &mut out,
+                            DropSlot {
+                                number: col.number,
+                                kind: SlotKind::Split(it.id, true),
+                                mark: RECT {
+                                    left: r.left,
+                                    top: r.top,
+                                    right: mid,
+                                    bottom: r.bottom,
+                                },
+                            },
+                        );
+                        push_unique(
+                            &mut out,
+                            DropSlot {
+                                number: col.number,
+                                kind: SlotKind::Split(it.id, false),
+                                mark: RECT {
+                                    left: mid,
+                                    top: r.top,
+                                    right: r.right,
+                                    bottom: r.bottom,
+                                },
+                            },
+                        );
+                    }
+                } else {
+                    let mid = (r.top + r.bottom) / 2;
+                    push_unique(
+                        &mut out,
+                        DropSlot {
+                            number: col.number,
+                            kind: SlotKind::Split(it.id, true),
+                            mark: RECT {
+                                left: r.left,
+                                top: r.top,
+                                right: r.right,
+                                bottom: mid,
+                            },
+                        },
+                    );
+                    push_unique(
+                        &mut out,
+                        DropSlot {
+                            number: col.number,
+                            kind: SlotKind::Split(it.id, false),
+                            mark: RECT {
+                                left: r.left,
+                                top: mid,
+                                right: r.right,
+                                bottom: r.bottom,
+                            },
+                        },
+                    );
+                    // Setengah kosong di seberang `it`?
+                    let has_opposite = b_items.iter().any(|o| {
+                        o.id != it.id
+                            && o.span != Span::Full
+                            && o.span != it.span
+                            && o.rect.top < r.bottom
+                            && o.rect.bottom > r.top
+                    });
+                    if !has_opposite {
+                        push_unique(
+                            &mut out,
+                            DropSlot {
+                                number: col.number,
+                                kind: SlotKind::Beside(it.id),
+                                mark: beside_rect(it, &col.rect),
+                            },
+                        );
+                    }
+                }
+            }
+
+            let bar_y = if let Some((next_top, _, _)) = blocks.get(bi + 1) {
+                (*b_bot + *next_top) / 2
+            } else {
+                *b_bot + MARGIN
+            };
+            push_unique(
+                &mut out,
+                DropSlot {
+                    number: col.number,
+                    kind: SlotKind::After(b_items[0].id),
+                    mark: bar(bar_y),
+                },
+            );
+        }
+    }
+    out
+}
+
+/// Slot awal saat mengangkat `src`: yang paling dekat dengan posisi `src`.
+pub fn initial_drop_slot(slots: &[DropSlot], d: &Draw, src: u64) -> usize {
+    let Some(sr) = d.items.iter().find(|it| it.id == src).map(|it| it.rect) else {
+        return 0;
+    };
+    let (sx, sy) = ((sr.left + sr.right) / 2, (sr.top + sr.bottom) / 2);
+    slots
+        .iter()
+        .enumerate()
+        .min_by_key(|(_, s)| {
+            let cx = (s.mark.left + s.mark.right) / 2;
+            let cy = (s.mark.top + s.mark.bottom) / 2;
+            (cx - sx).abs() + (cy - sy).abs()
+        })
+        .map(|(i, _)| i)
+        .unwrap_or(0)
+}
+
+/// Geser penanda `DropSlot` ke arah `dir` (kiri/kanan di tepi kolom otomatis menyeberang
+/// ke kolom workspace sebelah).
+pub fn step_drop_slot(slots: &[DropSlot], cur: usize, dir: layout::Dir) -> Option<usize> {
+    let f = slots.get(cur)?;
+    let (fx0, fx1) = (f.mark.left, f.mark.right);
+    let (fy0, fy1) = (f.mark.top, f.mark.bottom);
+    let (fcx, fcy) = ((fx0 + fx1) / 2, (fy0 + fy1) / 2);
+    let is_bar = |k: SlotKind| matches!(k, SlotKind::Before(_) | SlotKind::After(_));
+
+    match dir {
+        layout::Dir::Up | layout::Dir::Down => {
+            let mut best: Option<((bool, i32, i32, i32), usize)> = None;
+            for (i, c) in slots.iter().enumerate() {
+                if i == cur || c.number != f.number {
+                    continue;
+                }
+                let (cx0, cx1) = (c.mark.left, c.mark.right);
+                let (ccx, ccy) = ((cx0 + cx1) / 2, (c.mark.top + c.mark.bottom) / 2);
+                let h_ov = (fx1.min(cx1) - fx0.max(cx0)).max(0);
+                let key = match dir {
+                    layout::Dir::Up if ccy < fcy - 1 => {
+                        Some((h_ov == 0, fcy - ccy, (ccx - fcx).abs(), c.mark.left))
+                    }
+                    layout::Dir::Down if ccy > fcy + 1 => {
+                        Some((h_ov == 0, ccy - fcy, (ccx - fcx).abs(), c.mark.left))
+                    }
+                    _ => None,
+                };
+                if let Some(k) = key {
+                    if best.map_or(true, |(bk, _)| k < bk) {
+                        best = Some((k, i));
+                    }
+                }
+            }
+            best.map(|(_, i)| i)
+        }
+        layout::Dir::Left | layout::Dir::Right => {
+            // 1. Coba sisi lain di kolom yang sama (lewati garis penuh lebar)
+            let mut same: Option<((i32, i32, i32), usize)> = None;
+            for (i, c) in slots.iter().enumerate() {
+                if i == cur || c.number != f.number || is_bar(c.kind) {
+                    continue;
+                }
+                let (ccx, ccy) = (
+                    (c.mark.left + c.mark.right) / 2,
+                    (c.mark.top + c.mark.bottom) / 2,
+                );
+                let v_ov = (fy1.min(c.mark.bottom) - fy0.max(c.mark.top)).max(0);
+                if v_ov <= 0 {
+                    continue;
+                }
+                let key = match dir {
+                    layout::Dir::Left if ccx < fcx - 1 => {
+                        Some((fcx - ccx, (ccy - fcy).abs(), c.mark.top))
+                    }
+                    layout::Dir::Right if ccx > fcx + 1 => {
+                        Some((ccx - fcx, (ccy - fcy).abs(), c.mark.top))
+                    }
+                    _ => None,
+                };
+                if let Some(k) = key {
+                    if same.map_or(true, |(bk, _)| k < bk) {
+                        same = Some((k, i));
+                    }
+                }
+            }
+            if let Some((_, i)) = same {
+                return Some(i);
+            }
+            // 2. Seberangi ke kolom workspace sebelah terdekat
+            let forward = dir == layout::Dir::Right;
+            let next_num = if forward {
+                slots
+                    .iter()
+                    .map(|s| s.number)
+                    .filter(|&n| n > f.number)
+                    .min()?
+            } else {
+                slots
+                    .iter()
+                    .map(|s| s.number)
+                    .filter(|&n| n < f.number)
+                    .max()?
+            };
+            slots
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| c.number == next_num)
+                .min_by_key(|(_, c)| {
+                    let ccy = (c.mark.top + c.mark.bottom) / 2;
+                    let edge_x = if forward { c.mark.left } else { -c.mark.right };
+                    (is_bar(c.kind), (ccy - fcy).abs(), edge_x, c.mark.top)
+                })
+                .map(|(i, _)| i)
+        }
+    }
 }
 
 /// Bingkai persegi (garis tebal `t`) di sekeliling `r`.
@@ -671,15 +961,28 @@ unsafe fn paint(hwnd: HWND) {
         let col_bg_active = brush(mix(colors.background, 0xFF_FFFF, 11));
         let col_hi = brush(mix(colors.background, colors.selected, 30));
         let slot_fill = brush(mix(colors.background, colors.selected, 60));
-        // kolom di bawah kursor saat window diseret
+        // kolom & penanda tujuan drop: dari drag mouse, atau mode pick-up keyboard
+        let kb_slot = KB_PICK
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().and_then(|p| p.slots.get(p.idx).copied()));
         let drop_col = DRAG
             .lock()
             .ok()
-            .and_then(|g| g.as_ref().filter(|d| d.active).and_then(|d| d.over));
+            .and_then(|g| g.as_ref().filter(|d| d.active).and_then(|d| d.over))
+            .or_else(|| {
+                let num = kb_slot?.number;
+                guard
+                    .as_ref()?
+                    .columns
+                    .iter()
+                    .position(|c| c.number == num)
+            });
         let drop_slot = DRAG
             .lock()
             .ok()
-            .and_then(|g| g.as_ref().filter(|d| d.active).and_then(|d| d.slot));
+            .and_then(|g| g.as_ref().filter(|d| d.active).and_then(|d| d.slot))
+            .or(kb_slot);
 
         FillRect(hdc, &client, bg);
         let font = FONT.load(Ordering::Relaxed);
@@ -850,10 +1153,12 @@ unsafe fn paint(hwnd: HWND) {
                     rgb(150, 158, 175)
                 };
                 SetTextColor(hdc, COLORREF(hint_color));
-                let hint_text = if d.multi {
-                    "←↑↓→ select (←→ at an edge = other workspace)  ·  Enter jump  ·  Esc cancel"
+                let hint_text = if kb_slot.is_some() {
+                    "←↑↓→ move marker  ·  Enter drop  ·  Esc cancel"
+                } else if d.multi {
+                    "←↑↓→ select  ·  Space pick up  ·  Enter jump  ·  Esc cancel"
                 } else {
-                    "←↑↓→ select  ·  Enter jump  ·  Esc cancel"
+                    "←↑↓→ select  ·  Space pick up  ·  Enter jump  ·  Esc cancel"
                 };
                 let mut hint: Vec<u16> = hint_text.encode_utf16().collect();
                 let mut hr = RECT {
@@ -913,7 +1218,77 @@ unsafe extern "system" fn ov_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         WM_KEYDOWN => {
             let vk = wparam.0 as u16;
             let ctrl = GetKeyState(VK_CONTROL.0 as i32) < 0;
-            if ctrl && vk == VK_LEFT.0 {
+            let shift = GetKeyState(VK_SHIFT.0 as i32) < 0;
+            let alt = GetKeyState(VK_MENU.0 as i32) < 0;
+
+            // Mode pick-up keyboard aktif: panah menggeser penanda, Enter / Space
+            // menjatuhkan lewat jalur `DROP` yang sama dengan mouse, Esc membatalkan.
+            let picking = KB_PICK.lock().ok().map_or(false, |g| g.is_some());
+            if picking {
+                if vk == VK_ESCAPE.0 {
+                    if let Ok(mut g) = KB_PICK.lock() {
+                        *g = None;
+                    }
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                } else if vk == VK_RETURN.0 || (vk == VK_SPACE.0 && !ctrl && !alt && !shift) {
+                    let chosen = KB_PICK.lock().ok().and_then(|mut g| {
+                        let p = g.take()?;
+                        p.slots.get(p.idx).copied().map(|sl| (p.src, sl))
+                    });
+                    if let Some(info) = chosen {
+                        if let Ok(mut d) = DROP.lock() {
+                            *d = Some(info);
+                        }
+                        post(WM_OV_DROP, 0);
+                    }
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                } else if let Some(dir) = match vk {
+                    x if x == VK_LEFT.0 && !ctrl => Some(layout::Dir::Left),
+                    x if x == VK_RIGHT.0 && !ctrl => Some(layout::Dir::Right),
+                    x if x == VK_UP.0 && !ctrl => Some(layout::Dir::Up),
+                    x if x == VK_DOWN.0 && !ctrl => Some(layout::Dir::Down),
+                    _ => None,
+                } {
+                    if let Ok(mut g) = KB_PICK.lock() {
+                        if let Some(p) = g.as_mut() {
+                            if let Some(next) = step_drop_slot(&p.slots, p.idx, dir) {
+                                p.idx = next;
+                            }
+                        }
+                    }
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                } else if (0x31..=0x39).contains(&vk) {
+                    let target_num = (vk - 0x31) as usize + 1;
+                    if let Ok(mut g) = KB_PICK.lock() {
+                        if let Some(p) = g.as_mut() {
+                            if let Some(i) = p.slots.iter().position(|s| s.number == target_num) {
+                                p.idx = i;
+                            }
+                        }
+                    }
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                }
+                return LRESULT(0);
+            }
+
+            if vk == VK_SPACE.0 && !ctrl && !alt && !shift {
+                let started = DRAW.lock().ok().and_then(|g| {
+                    let d = g.as_ref()?;
+                    let src = d.selected;
+                    let slots = drop_slots(d, src);
+                    if slots.is_empty() {
+                        return None;
+                    }
+                    let idx = initial_drop_slot(&slots, d, src);
+                    Some(KbPick { src, slots, idx })
+                });
+                if let Some(p) = started {
+                    if let Ok(mut g) = KB_PICK.lock() {
+                        *g = Some(p);
+                    }
+                    let _ = InvalidateRect(Some(hwnd), None, false);
+                }
+            } else if ctrl && vk == VK_LEFT.0 {
                 post(WM_OV_WS, 0);
             } else if ctrl && vk == VK_RIGHT.0 {
                 post(WM_OV_WS, 1);
@@ -942,7 +1317,7 @@ unsafe extern "system" fn ov_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     post(WM_OV_CANCEL, 0);
                 }
             } else if vk == VK_TAB.0 {
-                let back = GetKeyState(VK_SHIFT.0 as i32) < 0;
+                let back = shift;
                 post(WM_OV_CYCLE, if back { 0 } else { 1 });
             }
             LRESULT(0)
@@ -1132,6 +1507,9 @@ pub unsafe fn show(mut draw: Draw, thumbnails: bool) {
         *t = handles;
     }
     let p = draw.panel;
+    if let Ok(mut g) = KB_PICK.lock() {
+        *g = None;
+    }
     if let Ok(mut g) = DRAW.lock() {
         *g = Some(draw);
     }
@@ -1156,6 +1534,9 @@ pub unsafe fn hide() {
     unregister_thumbs();
     if OV_HWND.load(Ordering::Relaxed) != 0 {
         let _ = ShowWindow(hwnd(), SW_HIDE);
+    }
+    if let Ok(mut g) = KB_PICK.lock() {
+        *g = None;
     }
     if let Ok(mut g) = DRAW.lock() {
         *g = None;
@@ -1656,5 +2037,43 @@ mod tests {
         );
         let spans: Vec<Span> = d.items.iter().map(|i| i.span).collect();
         assert_eq!(spans, vec![Span::Left, Span::Right, Span::Full]);
+    }
+
+    #[test]
+    fn drop_slots_lists_edges_splits_and_empty_halves_without_src() {
+        let d = drop_draw(); // kolom 1: A (Left), B (Full, diapit), C (Left); kolom 2: D (Full)
+        let slots = drop_slots(&d, 4); // src = D (kolom 2): hanya kolom 1 yang punya target
+        assert!(slots.iter().all(|s| s.number == 1));
+        assert!(slots.iter().any(|s| s.kind == SlotKind::Before(1)));
+        assert!(slots.iter().any(|s| s.kind == SlotKind::Split(1, true)));
+        assert!(slots.iter().any(|s| s.kind == SlotKind::Split(1, false)));
+        assert!(slots.iter().any(|s| s.kind == SlotKind::Beside(1)));
+        assert!(slots.iter().any(|s| s.kind == SlotKind::After(3)));
+        // B diapit window setengah lebar -> tidak ditawarkan Split(2, _)
+        assert!(!slots.iter().any(|s| matches!(s.kind, SlotKind::Split(2, _))));
+    }
+
+    #[test]
+    fn step_drop_slot_moves_within_column_and_crosses_to_next_workspace() {
+        let d = drop_draw(); // src = C (kolom 1): kolom 1 punya A & B, kolom 2 punya D (Full bersih)
+        let slots = drop_slots(&d, 3);
+        let a_top = slots
+            .iter()
+            .position(|s| s.number == 1 && s.kind == SlotKind::Split(1, true))
+            .unwrap();
+        // Kanan dari A -> setengah kosong Beside(A)
+        let beside = step_drop_slot(&slots, a_top, layout::Dir::Right).unwrap();
+        assert_eq!(slots[beside].kind, SlotKind::Beside(1));
+        // Kanan lagi -> menyeberang ke kolom 2 (Split kiri D)
+        let col2 = step_drop_slot(&slots, beside, layout::Dir::Right).unwrap();
+        assert_eq!(slots[col2].number, 2);
+        assert_eq!(slots[col2].kind, SlotKind::Split(4, true));
+        // Kanan lagi di dalam D -> Split kanan D
+        let d_right = step_drop_slot(&slots, col2, layout::Dir::Right).unwrap();
+        assert_eq!(slots[d_right].kind, SlotKind::Split(4, false));
+        // Kiri balik ke Split kiri D -> Kiri lagi balik ke kolom 1
+        assert_eq!(step_drop_slot(&slots, d_right, layout::Dir::Left), Some(col2));
+        let back = step_drop_slot(&slots, col2, layout::Dir::Left).unwrap();
+        assert_eq!(slots[back].number, 1);
     }
 }

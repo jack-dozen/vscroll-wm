@@ -128,6 +128,11 @@ fn fixed_rows(cfg: &Config) -> Vec<(&'static str, String, String)> {
             "Enter / release Win",
             "jump to the selected window",
         ),
+        row(
+            bindings::G_OVERVIEW,
+            "Space → arrows → Enter",
+            "pick up and drop the selected window (Esc cancels)",
+        ),
         row(bindings::G_OVERVIEW, "Esc / click outside", "cancel"),
         row(bindings::G_OVERVIEW, "Click a window", "jump to it"),
         row(
