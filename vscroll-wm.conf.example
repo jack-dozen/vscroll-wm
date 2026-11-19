@@ -13,6 +13,10 @@ gap = 16
 # Warna border window yang fokus (Windows 11), format #RRGGBB. off = tidak diubah.
 # focus_border = #4FA8F5
 
+# Warna border window target saat membidik join (Windows 11), format #RRGGBB.
+# Kosong / off = ikut focus_border (atau #4FA8F5 kalau focus_border tidak diatur).
+# join_border = #FFBE3C
+
 # --- Lebar lajur ---
 # Win+] menggeser pembagi ke kanan, Win+[ ke kiri, Win+\ mengembalikannya ke 50/50.
 # Lebar dimiliki lajur (kiri / kanan), jadi semua window di lajur itu ikut berubah, dan
@@ -169,13 +173,16 @@ overview_wrap = on
 #   snap_down = win+down
 #   snap_left = win+left                move into the left column
 #   snap_right = win+right
+#   join_left / join_right / join_up / join_down = win+alt+shift+<arrow>
+#                                       quick join with adjacent window (split / stack)
+#   pick = win+alt+space                pick up window and choose drop spot (overlay)
 #   split_right = win+]                 move the column divider
 #   split_left = win+[
 #   split_reset = win+\                 divider back to 50/50
 #   maximize = win+enter                full width and height
 #   focus_left / focus_right / focus_up / focus_down = win+shift+<arrow>
 #   swap_left / swap_right / swap_up / swap_down = win+alt+<arrow>
-#   overview = win+tab, win+alt+space
+#   overview = win+tab
 #   workspace_prev = win+ctrl+left      workspace_next = win+ctrl+right
 #   workspace_goto = win+ctrl+1-9       workspace_send = win+ctrl+shift+1-9
 #   workspace_send_prev = win+ctrl+shift+left   workspace_send_next = win+ctrl+shift+right

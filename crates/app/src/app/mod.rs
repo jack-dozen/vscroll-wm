@@ -6,6 +6,7 @@ mod events;
 mod mouse;
 mod overview_ctl;
 mod persist;
+mod pick;
 mod snap;
 mod workspace;
 
@@ -24,6 +25,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 pub(crate) use self::actions::show_config_problems;
 use self::anim::Anim;
+use self::pick::PickSession;
 use self::snap::{SnapAssist, SnapDrag};
 use crate::consts::DEFAULT_ANIM_MS;
 use crate::hook::OVERVIEW_VK;
@@ -33,6 +35,14 @@ use crate::winutil::{
 };
 use crate::{bindings, config, overview, safety, taskbar};
 use workspace::{slide_dir, Slide};
+
+/// Mode bidik `join`: menahan modifier untuk mengarahkan `src` ke `target` dengan panah,
+/// lalu melepas modifier untuk menggabungkannya.
+#[derive(Clone, Copy)]
+pub(crate) struct JoinAim {
+    pub(crate) src: WindowId,
+    pub(crate) target: WindowId,
+}
 
 /// Overview yang sedang terbuka.
 pub(crate) struct OverviewSession {
@@ -95,6 +105,10 @@ pub(crate) struct App {
     pub(crate) snap_timer: usize,
     /// Sesi daftar window untuk zona preset yang masih kosong.
     pub(crate) snap_assist: Option<SnapAssist>,
+    /// Mode bidik `join` (tahan modifier + panah, lepas untuk gabung).
+    pub(crate) join_aim: Option<JoinAim>,
+    /// Mode angkat-dan-jatuhkan (`pick`) dengan marker overlay di desktop.
+    pub(crate) pick: Option<PickSession>,
 }
 
 impl App {
@@ -119,6 +133,8 @@ impl App {
             snap_drag: None,
             snap_timer: 0,
             snap_assist: None,
+            join_aim: None,
+            pick: None,
             anim_ms: DEFAULT_ANIM_MS,
             focus_border: None,
             border_applied: None,
@@ -190,13 +206,30 @@ impl App {
             self.recheck = true;
         }
 
+        // Kalau salah satu window yang sedang dibidik `join` atau `pick` hilang, batalkan.
+        if let Some(aim) = self.join_aim {
+            if !self.map.contains_key(&aim.src) || !self.map.contains_key(&aim.target) {
+                self.join_aim = None;
+                crate::hook::JOIN_ACTIVE.store(false, Ordering::Relaxed);
+            }
+        }
+        if let Some(ref p) = self.pick {
+            if !self.map.contains_key(&p.src) {
+                self.pick = None;
+                crate::hook::PICK_OPEN.store(false, Ordering::Relaxed);
+                crate::pick_overlay::hide();
+            }
+        }
         // ikuti window yang difokuskan user (klik, alt-tab, tombol taskbar). Window di
         // workspace lain membawa kita ke workspace itu. Foreground lama yang masih
         // tertinggal di window yang baru diparkir tidak dihitung.
         let fg_hwnd = GetForegroundWindow();
         self.snap_assist_follow_focus(fg_hwnd);
         let fg = wid(fg_hwnd);
-        if (added && !self.parked.contains(&fg)) || self.last_fg != Some(fg) {
+        if self.join_aim.is_none()
+            && self.pick.is_none()
+            && ((added && !self.parked.contains(&fg)) || self.last_fg != Some(fg))
+        {
             self.last_fg = Some(fg);
             if self.map.contains_key(&fg) && self.ws.cur().focused() != Some(fg) {
                 let old = self.ws.active();
@@ -334,12 +367,21 @@ impl App {
     /// Sengaja berdasar foreground sebenarnya, bukan tujuan fokus di strip: warna
     /// yang dipasang sebelum window selesai diaktifkan bisa hilang saat aktivasi.
     pub(crate) unsafe fn refresh_border(&mut self) {
-        let want = match self.focus_border {
-            Some(c) => {
-                let fg = GetForegroundWindow();
-                self.map.contains_key(&wid(fg)).then_some((fg, c))
+        let want = if let Some(aim) = self.join_aim {
+            let color = self
+                .cfg
+                .join_border
+                .or(self.focus_border)
+                .unwrap_or(self.cfg.overview_colors.active);
+            self.map.get(&aim.target).copied().map(|h| (h, color))
+        } else {
+            match self.focus_border {
+                Some(c) => {
+                    let fg = GetForegroundWindow();
+                    self.map.contains_key(&wid(fg)).then_some((fg, c))
+                }
+                None => None,
             }
-            None => None,
         };
         if want == self.border_applied {
             return;

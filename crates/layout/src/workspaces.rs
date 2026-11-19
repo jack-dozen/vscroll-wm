@@ -309,6 +309,36 @@ impl Workspaces {
         }
     }
 
+    /// Gabungkan window `src` ke `target`, baik di workspace yang sama maupun lintas
+    /// workspace. Kalau lintas workspace, `src` dipindahkan ke workspace `target`,
+    /// workspace itu menjadi aktif, dan workspace lama dirapikan kalau jadi kosong.
+    /// False (tidak ada yang berubah) kalau penempatan ditolak.
+    pub fn join_into(&mut self, src: WindowId, target: WindowId) -> bool {
+        let (Some(from), Some(to)) = (self.workspace_of(src), self.workspace_of(target)) else {
+            return false;
+        };
+        if from == to {
+            return self.strips[from].join_into(src, target);
+        }
+        let Some(item) = self.strips[from]
+            .items()
+            .iter()
+            .find(|it| it.id == src)
+            .copied()
+        else {
+            return false;
+        };
+        let min_h = self.strips[from].min_heights.get(&src).copied();
+        let min_w = self.strips[from].min_widths.get(&src).copied();
+        if !self.strips[to].join_external_into(item, min_h, min_w, target, from < to) {
+            return false;
+        }
+        self.strips[from].remove_window(src);
+        self.active = to;
+        self.normalize();
+        true
+    }
+
     /// Seperti `move_focused_to`, ke workspace sebelumnya / berikutnya (tidak berputar).
     pub fn move_focused_rel(&mut self, delta: i32) -> Option<WindowId> {
         let n = self.active as i64 + delta as i64;
@@ -819,5 +849,50 @@ mod tests {
         w.add_window(A);
         assert_eq!(w.wrapped_workspace(0, true), None);
         assert_eq!(w.wrapped_workspace(0, false), None);
+    }
+
+    #[test]
+    fn join_into_across_workspaces_splits_and_cleans_empty_source() {
+        let mut w = ws();
+        w.add_window(A); // ws 0: [A]
+        w.switch_to(1);
+        w.add_window(B); // ws 1: [B]
+        // A (dari kiri) digabung ke B (ws 1): A di kiri, B di kanan; ws 0 kosong -> dirapikan
+        assert!(w.join_into(A, B));
+        assert_eq!(w.active(), 0);
+        assert_eq!(w.workspace_of(A), Some(0));
+        assert_eq!(w.workspace_of(B), Some(0));
+        let ov = w.cur().overview();
+        let rect_of = |id| ov.items.iter().find(|i| i.id == id).unwrap().rect;
+        assert_eq!(rect_of(A), Rect { x: 0, y: 0, w: 960, h: 1080 });
+        assert_eq!(rect_of(B), Rect { x: 960, y: 0, w: 960, h: 1080 });
+        assert_eq!(w.cur().focused(), Some(A));
+
+        // Gabung C dari ws 1 (kanan) ke B (lajur kanan ws 0) -> bertumpuk di bawah B
+        w.switch_to(1);
+        w.add_window(C);
+        assert!(w.join_into(C, B));
+        assert_eq!(w.workspace_of(C), Some(0));
+        let ov = w.cur().overview();
+        let rect_of = |id| ov.items.iter().find(|i| i.id == id).unwrap().rect;
+        assert_eq!(rect_of(B).h, 540);
+        assert_eq!(rect_of(C).h, 540);
+        assert_eq!(rect_of(C).y, 540);
+        assert_eq!(rect_of(C).x, rect_of(B).x);
+    }
+
+    #[test]
+    fn join_into_across_workspaces_rejects_min_height_without_moving() {
+        let mut w = ws();
+        w.add_window(A);
+        w.add_window(B);
+        assert!(w.cur_mut().join(Dir::Up)); // A kiri, B kanan
+        w.cur_mut().set_min_height(B, 600);
+        w.switch_to(1);
+        w.add_window(C);
+        assert!(!w.join_into(C, B));
+        // C tetap di ws 1, tidak berpindah
+        assert_eq!(w.workspace_of(C), Some(1));
+        assert_eq!(w.workspace_of(B), Some(0));
     }
 }

@@ -508,7 +508,7 @@ impl Strip {
 
         // lajur tujuan lebih pendek dari bloknya: isi ruang kosong di ujung bawahnya,
         // tanpa menggeser window yang sudah ada
-        if self.fill_lane_gap(i, target, run_start, run_end) {
+        if self.fill_lane_gap(i, j, target) {
             return;
         }
 
@@ -536,18 +536,19 @@ impl Strip {
         self.items.insert(if above { jj } else { jj + 1 }, w);
     }
 
-    /// Bagian dari `snap_side`: window penuh lebar `i` masuk ke lajur `target` di blok
-    /// `lo..hi` (rentang termasuk `i`). Kalau lajur itu berakhir di atas dasar blok
-    /// (ada ruang kosong di bawahnya), window disisipkan di ujung bawah lajur dengan
-    /// tinggi tetap miliknya sendiri (boleh lebih tinggi dari ruangnya; atur dengan
-    /// `Win+Atas/Bawah`). Susunan window lain tidak berubah.
+    /// Dipakai `snap_side` dan `join`: window `i` masuk ke lajur `target` di blok yang
+    /// memuat `anchor`. Kalau lajur itu berakhir di atas dasar blok (ada ruang kosong di
+    /// bawahnya), window disisipkan di ujung bawah lajur dengan tinggi tetap miliknya
+    /// sendiri (boleh lebih tinggi dari ruangnya; atur dengan `Win+Atas/Bawah`). Susunan
+    /// window lain tidak berubah.
     ///
     /// Posisi dihitung dari `flow()` tanpa window ini (sudah termasuk gap, tinggi
     /// minimum, window tersembunyi). False (strip tidak berubah) kalau tidak ada ruang
     /// kosong di bawah lajur itu.
-    fn fill_lane_gap(&mut self, i: usize, target: Span, lo: usize, hi: usize) -> bool {
+    fn fill_lane_gap(&mut self, i: usize, anchor: usize, target: Span) -> bool {
         let me = self.items.remove(i);
-        let hi = hi - 1; // indeks setelah `i` bergeser satu
+        let anchor_after = if anchor > i { anchor - 1 } else { anchor };
+        let (lo, hi) = self.run_bounds(anchor_after);
         let flow = self.flow();
         let in_lane = |k: &usize| self.items[*k].span == target;
         let in_block = |k: &usize| matches!(self.items[*k].span, Span::Left | Span::Right);
@@ -566,8 +567,177 @@ impl Strip {
         }
         let mut w = me;
         w.span = target;
+        w.restore = target;
+        w.split = self.items[anchor_after].split;
         self.items.insert(end + 1, w);
         true
+    }
+
+    /// Tinggi minimum slot (termasuk gap) yang pernah terukur untuk window `id`.
+    fn min_slot_height(&self, id: WindowId) -> i32 {
+        self.min_heights
+            .get(&id)
+            .map_or(0, |m| m + 2 * (self.gap / 2))
+    }
+
+    /// Gabungkan window yang fokus ke tetangganya di arah `dir` (lihat `join_into`).
+    pub fn join(&mut self, dir: Dir) -> bool {
+        let Some(f) = self.focused else { return false };
+        let Some(t) = self.neighbor_of(f, dir) else {
+            return false;
+        };
+        self.join_into(f, t)
+    }
+
+    /// Gabungkan window `src` ke window `target` (versi keyboard dari drag-drop `Split`
+    /// di overview; `target` boleh tidak bersebelahan langsung dengan `src`):
+    ///  - `target` penuh lebar -> lebar dibagi dua, berdampingan menurut urutan baca
+    ///    (`src` di atas `target` -> `src` kiri; di bawah -> `src` kanan)
+    ///  - `target` setengah lebar -> kalau lajurnya punya ruang kosong di bawah, isi
+    ///    ruang itu tanpa mengecilkan `target`; selain itu tinggi `target` dibagi dua
+    ///    dan bertumpuk di lajur yang sama (`src` lebih atas -> di atas `target`)
+    ///  - `src == target`, satu lajur di blok yang sama, tersembunyi, tinggi sudah di
+    ///    batas bawah (~1/4), atau tinggi minimum tidak muat -> ditolak, susunan tetap.
+    pub fn join_into(&mut self, src: WindowId, target: WindowId) -> bool {
+        if src == target {
+            return false;
+        }
+        let (Some(fi), Some(ti)) = (self.index_of(src), self.index_of(target)) else {
+            return false;
+        };
+        let (fs, ts) = (self.items[fi].span, self.items[ti].span);
+        if fs == Span::Hidden || ts == Span::Hidden {
+            return false;
+        }
+        let ch = self.content().h;
+
+        let first = match ts {
+            Span::Full => {
+                let target_px = self.items[ti].height.pixels(ch);
+                if self.min_slot_height(src) > target_px {
+                    return false;
+                }
+                let flow = self.flow();
+                flow[fi].top < flow[ti].top // urutan baca: src di atas -> kiri, di bawah -> kanan
+            }
+            Span::Left | Span::Right => {
+                if ts == fs && self.run_bounds(fi) == self.run_bounds(ti) {
+                    return false; // sudah satu lajur di blok yang sama
+                }
+                if self.fill_lane_gap(fi, ti, ts) {
+                    self.focused = Some(src);
+                    self.ensure_visible();
+                    return true;
+                }
+                let can_halve = match self.items[ti].height {
+                    Height::Full | Height::Half | Height::Third => true,
+                    Height::Custom(p) => p / 2 >= 150,
+                };
+                if !can_halve {
+                    return false;
+                }
+                let slot_px = self.items[ti].height.halved().pixels(ch);
+                if self.min_slot_height(src) > slot_px || self.min_slot_height(target) > slot_px {
+                    return false;
+                }
+                let flow = self.flow();
+                flow[fi].top <= flow[ti].top
+            }
+            Span::Hidden => return false,
+        };
+        self.reinsert_window(src, InsertPosition::Split(target, first))
+    }
+
+    /// Gabungkan window dari workspace lain (`item`, belum ada di strip ini) ke `target`.
+    /// `from_left`: datang dari workspace sebelah kiri (`true` -> di kiri target penuh).
+    /// False (strip tidak berubah) kalau target tidak valid / batas minimum tidak muat.
+    pub(crate) fn join_external_into(
+        &mut self,
+        item: Item,
+        min_h: Option<i32>,
+        min_w: Option<i32>,
+        target: WindowId,
+        from_left: bool,
+    ) -> bool {
+        if self.index_of(item.id).is_some() {
+            return false;
+        }
+        let Some(ti) = self.index_of(target) else {
+            return false;
+        };
+        let ts = self.items[ti].span;
+        if ts == Span::Hidden {
+            return false;
+        }
+        let ch = self.content().h;
+        let src_min_slot = min_h.map_or(0, |m| m + 2 * (self.gap / 2));
+
+        let ok = match ts {
+            Span::Full => {
+                if src_min_slot > self.items[ti].height.pixels(ch) {
+                    return false;
+                }
+                self.insert_window(item.id, InsertPosition::Split(target, from_left))
+            }
+            Span::Left | Span::Right => {
+                // cek ruang kosong di bawah lajur target
+                let (lo, hi) = self.run_bounds(ti);
+                let flow = self.flow();
+                let in_lane = |k: &usize| self.items[*k].span == ts;
+                let in_block = |k: &usize| matches!(self.items[*k].span, Span::Left | Span::Right);
+                let lane_end = (lo..hi).filter(in_lane).last();
+                let lane_bottom = (lo..hi).filter(in_lane).map(|k| flow[k].bottom()).max();
+                let block_bottom = (lo..hi).filter(in_block).map(|k| flow[k].bottom()).max();
+                if let (Some(end), Some(lb), Some(bb)) = (lane_end, lane_bottom, block_bottom) {
+                    if bb > lb {
+                        let mut w = item;
+                        w.span = ts;
+                        w.restore = ts;
+                        w.split = self.items[ti].split;
+                        self.items.insert(end + 1, w);
+                        self.focused = Some(item.id);
+                        true
+                    } else {
+                        self.split_external_into_lane(item.id, ti, target, src_min_slot, ch)
+                    }
+                } else {
+                    self.split_external_into_lane(item.id, ti, target, src_min_slot, ch)
+                }
+            }
+            Span::Hidden => false,
+        };
+        if ok {
+            if let Some(h) = min_h {
+                self.min_heights.insert(item.id, h);
+            }
+            if let Some(w) = min_w {
+                self.min_widths.insert(item.id, w);
+            }
+            self.ensure_visible();
+        }
+        ok
+    }
+
+    fn split_external_into_lane(
+        &mut self,
+        src: WindowId,
+        ti: usize,
+        target: WindowId,
+        src_min_slot: i32,
+        ch: i32,
+    ) -> bool {
+        let can_halve = match self.items[ti].height {
+            Height::Full | Height::Half | Height::Third => true,
+            Height::Custom(p) => p / 2 >= 150,
+        };
+        if !can_halve {
+            return false;
+        }
+        let slot_px = self.items[ti].height.halved().pixels(ch);
+        if src_min_slot > slot_px || self.min_slot_height(target) > slot_px {
+            return false;
+        }
+        self.insert_window(src, InsertPosition::Split(target, false))
     }
 
     /// Kembalikan window yang fokus jadi penuh (lebar + tinggi), di bawah

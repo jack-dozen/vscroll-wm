@@ -107,6 +107,8 @@ pub struct Config {
     pub anim_ms: Option<f32>,
     /// Warna border fokus sebagai COLORREF (0x00BBGGRR). None = tidak diubah.
     pub focus_border: Option<u32>,
+    /// Warna border target saat membidik `join` (COLORREF). None = ikut `focus_border`.
+    pub join_border: Option<u32>,
     pub overview_hint: bool,
     pub overview_thumbnails: bool,
     pub overview_label: LabelMode,
@@ -149,6 +151,7 @@ impl Default for Config {
             gap: DEFAULT_GAP,
             anim_ms: None,
             focus_border: None,
+            join_border: None,
             overview_hint: true,
             overview_thumbnails: true,
             overview_label: LabelMode::Title,
@@ -208,6 +211,10 @@ impl Config {
                 "focus_border" => match parse_color(value) {
                     Some(color) => cfg.focus_border = color,
                     None => warnings.push(format!("line {n}: focus_border must be #RRGGBB or off")),
+                },
+                "join_border" => match parse_color(value) {
+                    Some(color) => cfg.join_border = color,
+                    None => warnings.push(format!("line {n}: join_border must be #RRGGBB or off")),
                 },
                 "overview_hint" => match parse_bool(value) {
                     Some(b) => cfg.overview_hint = b,
@@ -352,11 +359,11 @@ impl Config {
         // overview_key / cheatsheet_key (cara lama) = tombol bawaan kedua aksi itu,
         // kecuali kalau sudah diatur lewat bind.*
         if let Some(i) = bindings::find_action("overview").filter(|i| !explicit.contains(i)) {
-            let mut list = Vec::new();
-            if cfg.overview_key != 0 {
-                list.push(Chord::new(WIN, cfg.overview_key));
-            }
-            list.push(Chord::new(WIN | ALT, 0x20)); // Win+Alt+Space: selalu ada
+            let list = if cfg.overview_key != 0 {
+                vec![Chord::new(WIN, cfg.overview_key)]
+            } else {
+                Vec::new()
+            };
             binds.set(i, list);
         }
         if let Some(i) = bindings::find_action("cheatsheet").filter(|i| !explicit.contains(i)) {
@@ -621,6 +628,16 @@ mod tests {
     }
 
     #[test]
+    fn join_border_accepts_hex_and_off() {
+        let (a, w) = Config::parse("join_border = #FFBE3C");
+        assert!(w.is_empty());
+        assert_eq!(a.join_border, Some(0x003C_BEFF));
+        let (b, w) = Config::parse("join_border = off");
+        assert!(w.is_empty());
+        assert_eq!(b.join_border, None);
+    }
+
+    #[test]
     fn focus_border_rejects_bad_colors() {
         let (cfg, w) = Config::parse("focus_border = merah\nfocus_border = #12345");
         assert_eq!(cfg.focus_border, None);
@@ -860,15 +877,15 @@ mod tests {
         assert!(w.is_empty(), "{w:?}");
         assert_eq!(cfg.bindings.lookup(WIN, 0x5A), Some(crate::consts::HOTKEY_OVERVIEW));
         assert_eq!(cfg.bindings.lookup(WIN, 0x70), Some(crate::consts::HOTKEY_CHEATSHEET));
-        assert_eq!(cfg.bindings.lookup(WIN | ALT, 0x20), Some(crate::consts::HOTKEY_OVERVIEW));
+        assert_eq!(cfg.bindings.lookup(WIN | ALT, 0x20), Some(crate::consts::HOTKEY_PICK));
         assert_eq!(cfg.bindings.lookup(WIN, 0x09), None);
         // bind.* menang atas overview_key
         let (cfg, _) = Config::parse("overview_key = z\nbind.overview = win+o\n");
         assert_eq!(cfg.bindings.lookup(WIN, 0x4F), Some(crate::consts::HOTKEY_OVERVIEW));
         assert_eq!(cfg.bindings.lookup(WIN, 0x5A), None);
-        // overview_key = off: Win+Alt+Space tetap ada
+        // overview_key = off: overview tanpa tombol
         let (cfg, _) = Config::parse("overview_key = off\n");
-        assert_eq!(cfg.bindings.lookup(WIN | ALT, 0x20), Some(crate::consts::HOTKEY_OVERVIEW));
+        assert_eq!(cfg.bindings.lookup(WIN, 0x09), None);
         assert_eq!(cfg.bindings.overview_cycle_vk(), 0);
     }
 

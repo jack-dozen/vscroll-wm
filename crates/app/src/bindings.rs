@@ -18,8 +18,9 @@
 use std::sync::RwLock;
 
 use crate::consts::{
-    HOTKEY_CHEATSHEET, HOTKEY_CLOSE, HOTKEY_FLOAT, HOTKEY_INSPECT, HOTKEY_MAXIMIZE,
-    HOTKEY_MINIMIZE, HOTKEY_OVERVIEW, HOTKEY_QUIT, HOTKEY_SPLIT_LEFT, HOTKEY_SPLIT_RESET,
+    HOTKEY_CHEATSHEET, HOTKEY_CLOSE, HOTKEY_FLOAT, HOTKEY_INSPECT, HOTKEY_JOIN_DOWN,
+    HOTKEY_JOIN_LEFT, HOTKEY_JOIN_RIGHT, HOTKEY_JOIN_UP, HOTKEY_MAXIMIZE, HOTKEY_MINIMIZE,
+    HOTKEY_OVERVIEW, HOTKEY_PICK, HOTKEY_QUIT, HOTKEY_SPLIT_LEFT, HOTKEY_SPLIT_RESET,
     HOTKEY_SPLIT_RIGHT, HOTKEY_WS_GO, HOTKEY_WS_NEXT, HOTKEY_WS_NOOP, HOTKEY_WS_PREV,
     HOTKEY_WS_SEND, HOTKEY_WS_SEND_NEXT, HOTKEY_WS_SEND_PREV,
 };
@@ -123,6 +124,7 @@ const fn num(
 
 const D_HEIGHT: &str = "shorter / taller{height_note}";
 const D_COLUMN: &str = "move into the left / right column";
+const D_JOIN: &str = "join with the neighbouring window (split / stack)";
 const D_DIVIDER: &str = "move the column divider (±{resize_step} px)";
 const D_FOCUS: &str = "focus the neighbouring window";
 const D_SWAP: &str = "swap places with the neighbouring window";
@@ -136,6 +138,17 @@ pub const ACTIONS: &[ActionDef] = &[
     rep("snap_down", 4, G_LAYOUT, D_HEIGHT, &["win+down"]),
     rep("snap_left", 1, G_LAYOUT, D_COLUMN, &["win+left"]),
     rep("snap_right", 2, G_LAYOUT, D_COLUMN, &["win+right"]),
+    act("join_left", HOTKEY_JOIN_LEFT, G_LAYOUT, D_JOIN, &["win+alt+shift+left"]),
+    act("join_right", HOTKEY_JOIN_RIGHT, G_LAYOUT, D_JOIN, &["win+alt+shift+right"]),
+    act("join_up", HOTKEY_JOIN_UP, G_LAYOUT, D_JOIN, &["win+alt+shift+up"]),
+    act("join_down", HOTKEY_JOIN_DOWN, G_LAYOUT, D_JOIN, &["win+alt+shift+down"]),
+    act(
+        "pick",
+        HOTKEY_PICK,
+        G_LAYOUT,
+        "pick up window and choose drop spot",
+        &["win+alt+space"],
+    ),
     rep("split_right", HOTKEY_SPLIT_RIGHT, G_LAYOUT, D_DIVIDER, &["win+]"]),
     rep("split_left", HOTKEY_SPLIT_LEFT, G_LAYOUT, D_DIVIDER, &["win+["]),
     act(
@@ -166,7 +179,7 @@ pub const ACTIONS: &[ActionDef] = &[
         HOTKEY_OVERVIEW,
         G_MOVE,
         "overview: map of the whole strip",
-        &["win+tab", "win+alt+space"],
+        &["win+tab"],
     ),
     // Workspaces
     act("workspace_prev", HOTKEY_WS_PREV, G_WORKSPACE, D_WS_STEP, &["win+ctrl+left"]),
@@ -733,6 +746,11 @@ mod tests {
         assert_eq!(b.lookup(WIN, 0x26), Some(3)); // Win+Up = lebih pendek
         assert_eq!(b.lookup(WIN | SHIFT, 0x27), Some(6)); // fokus kanan
         assert_eq!(b.lookup(WIN | ALT, 0x28), Some(13)); // tukar bawah
+        assert_eq!(b.lookup(WIN | ALT | SHIFT, 0x25), Some(HOTKEY_JOIN_LEFT));
+        assert_eq!(b.lookup(WIN | ALT | SHIFT, 0x27), Some(HOTKEY_JOIN_RIGHT));
+        assert_eq!(b.lookup(WIN | ALT | SHIFT, 0x26), Some(HOTKEY_JOIN_UP));
+        assert_eq!(b.lookup(WIN | ALT | SHIFT, 0x28), Some(HOTKEY_JOIN_DOWN));
+        assert!(!repeat_allowed(HOTKEY_JOIN_UP));
         assert_eq!(b.lookup(WIN, 0x0D), Some(HOTKEY_MAXIMIZE));
         assert_eq!(b.lookup(WIN, 0x51), Some(HOTKEY_CLOSE));
         assert_eq!(b.lookup(WIN, 0x4D), Some(HOTKEY_MINIMIZE));
@@ -742,7 +760,7 @@ mod tests {
         assert_eq!(b.lookup(WIN, 0xDB), Some(HOTKEY_SPLIT_LEFT));
         assert_eq!(b.lookup(WIN, 0xDC), Some(HOTKEY_SPLIT_RESET));
         assert_eq!(b.lookup(WIN, VK_TAB), Some(HOTKEY_OVERVIEW));
-        assert_eq!(b.lookup(WIN | ALT, VK_SPACE), Some(HOTKEY_OVERVIEW));
+        assert_eq!(b.lookup(WIN | ALT, VK_SPACE), Some(HOTKEY_PICK));
         assert_eq!(b.lookup(WIN, 0xBF), Some(HOTKEY_CHEATSHEET));
         assert_eq!(b.lookup(WIN | CTRL, 0x25), Some(HOTKEY_WS_PREV));
         assert_eq!(b.lookup(WIN | CTRL, 0x27), Some(HOTKEY_WS_NEXT));

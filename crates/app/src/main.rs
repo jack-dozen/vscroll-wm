@@ -5,9 +5,11 @@
 //! Win+Shift+Arrow       -> pindah fokus
 //! Win+Enter             -> kembalikan window aktif ke penuh
 //! Win+Alt+Arrow         -> tukar posisi dengan window tetangga
+//! Win+Alt+Shift+Arrow   -> gabung cepat ke window tetangga (split / bertumpuk)
+//! Win+Alt+Space         -> angkat window & pilih tempat mendarat (panah + marker overlay)
 //! Win+Alt+F             -> float / tile window aktif
 //! Win+Alt+I             -> cetak info window aktif (class / exe / title) di console
-//! Win+Tab / Win+Alt+Space -> overview: peta strip (tombol: overview_key)
+//! Win+Tab               -> overview: peta strip (tombol: overview_key)
 //! Win+] / Win+[         -> lebarkan / sempitkan lajur window aktif (geser pembagi)
 //! Win+\                 -> kembalikan pembagi lajur ke 50/50
 //! Win+/                 -> cheatsheet pintasan keyboard (tombol: cheatsheet_key)
@@ -35,6 +37,7 @@ mod hook;
 mod layout_state;
 mod osd;
 mod overview;
+mod pick_overlay;
 mod rules;
 mod safety;
 mod snap_menu;
@@ -61,7 +64,8 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use crate::app::App;
 use crate::consts::{
     DIRS, HOTKEY_FLOAT, HOTKEY_INSPECT, HOTKEY_MAXIMIZE, HOTKEY_OVERVIEW, HOTKEY_QUIT, RECHECK_MS,
-    WM_ACTION, WM_SNAP_CANCEL, WM_SNAP_PICK, WM_WINEVENT,
+    WM_ACTION, WM_JOIN_CANCEL, WM_JOIN_COMMIT, WM_PICK_ACCEPT, WM_PICK_CANCEL, WM_PICK_MOVE,
+    WM_SNAP_CANCEL, WM_SNAP_PICK, WM_WINEVENT,
 };
 use crate::hook::{kb_hook, win_event_proc, MAIN_THREAD};
 use crate::winutil::{single_instance, work_area};
@@ -137,6 +141,9 @@ fn main() {
         }
         if !osd::init() {
             eprintln!("gagal membuat jendela osd workspace");
+        }
+        if !pick_overlay::init() {
+            eprintln!("gagal membuat jendela overlay pick");
         }
         let dpi_scale = GetDpiForSystem() as f32 / 96.0;
         if !snap_menu::init(dpi_scale) {
@@ -225,6 +232,11 @@ fn main() {
                 overview::WM_OV_DROP => app.overview_drop(),
                 WM_SNAP_PICK => app.snap_assist_pick(msg.wParam.0 as u64, msg.lParam.0 as u64),
                 WM_SNAP_CANCEL => app.snap_assist_end(true),
+                WM_JOIN_COMMIT => app.join_commit(),
+                WM_JOIN_CANCEL => app.join_cancel(),
+                WM_PICK_MOVE => app.pick_move(msg.wParam.0),
+                WM_PICK_ACCEPT => app.pick_accept(),
+                WM_PICK_CANCEL => app.pick_cancel(),
                 WM_WINEVENT => {
                     if !tray::PAUSED.load(Ordering::Relaxed) {
                         app.on_event(msg.wParam.0 as u32, HWND(msg.lParam.0 as *mut c_void));

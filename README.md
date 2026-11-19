@@ -58,6 +58,7 @@ Reload config anytime from the tray menu → **Reload configuration**.
 | `gap` | `16` | Gap between windows and screen edges (pixels, 0–200) |
 | `anim_ms` | `160` | Animation duration in ms. `0` = off. Auto-disabled if Windows animation effects are turned off |
 | `focus_border` | *(none)* | Focus border color on Windows 11 (`#RRGGBB` or `off`) |
+| `join_border` | *(same as `focus_border`)* | Target border color while aiming `join` on Windows 11 (`#RRGGBB` or `off`; falls back to `#4FA8F5` if `focus_border` is unset) |
 | `overview_key` | `tab` | Key used with Win for overview (`tab`, `space`, `grave`, single letter/number, or `off`). `Win+Alt+Space` is always available |
 | `overview_size` | `70` | Overview panel size as % of work area (30–100) |
 | `mouse_drag` | `on` | Drag a window onto another to swap; drag the edge next to the column divider to move it; in the overview, drag a window onto another workspace to move it |
@@ -95,13 +96,14 @@ that are actually in effect, including your custom ones.
 |----------|--------|
 | `Win` + `↑` `↓` | Shorter / taller (presets or steps, see `height_mode`) |
 | `Win` + `←` `→` | Move into the left / right column |
+| `Win` + `Alt` + `Shift` + Arrow | Quick join with the adjacent window (side-by-side if full width, stacked in its column if half width) |
+| `Win` + `Alt` + `Space` | Pick up active window and choose where to drop it with Arrow keys + translucent marker overlay (between windows as full width, split/stack, empty half, or across workspaces via `←` / `→` at the edge); `Enter` / `Space` drops, `Esc` cancels |
 | `Win` + `]` / `[` | Move the column divider (`resize_step`) |
 | `Win` + `\` | Column divider back to 50/50 |
 | `Win` + `Enter` | Back to full width and height |
 | `Win` + `Shift` + Arrow | Move focus to the neighbouring window |
 | `Win` + `Alt` + Arrow | Swap places with the neighbouring window |
 | `Win` + `Tab` *(or configured key)* | Open overview (strip map) |
-| `Win` + `Alt` + `Space` | Overview (second default chord) |
 | `Win` + `Ctrl` + `←` `→` | Previous / next workspace |
 | `Win` + `Ctrl` + `1`…`9` | Go to workspace n |
 | `Win` + `Ctrl` + `Shift` + `←` `→` / `1`…`9` | Send the active window to another workspace |

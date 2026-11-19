@@ -70,6 +70,21 @@ pub(crate) const WM_SNAP_PICK: u32 = WM_APP + 20;
 /// Snap layouts: daftar slot dibatalkan (Esc, tombol tutup, klik kanan).
 pub(crate) const WM_SNAP_CANCEL: u32 = WM_APP + 21;
 
+/// Mode bidik `join`: modifier dilepas -> gabungkan ke target terakhir.
+pub(crate) const WM_JOIN_COMMIT: u32 = WM_APP + 22;
+
+/// Mode bidik `join`: Esc ditekan -> batalkan dan kembalikan fokus ke window asal.
+pub(crate) const WM_JOIN_CANCEL: u32 = WM_APP + 23;
+
+/// Mode angkat-dan-jatuhkan (`pick`): geser marker (wParam = indeks di `DIRS`).
+pub(crate) const WM_PICK_MOVE: u32 = WM_APP + 24;
+
+/// Mode angkat-dan-jatuhkan (`pick`): jatuhkan window di marker terpilih.
+pub(crate) const WM_PICK_ACCEPT: u32 = WM_APP + 25;
+
+/// Mode angkat-dan-jatuhkan (`pick`): batalkan.
+pub(crate) const WM_PICK_CANCEL: u32 = WM_APP + 26;
+
 /// Interval (ms) memantau kursor selama window diseret untuk menu snap layouts.
 pub(crate) const SNAP_TICK_MS: u32 = 16;
 
@@ -78,6 +93,15 @@ pub(crate) const HOTKEY_WS_GO: i32 = 30;
 
 /// Win+Ctrl+Shift+1..9 -> HOTKEY_WS_SEND + 0..8 (kirim window aktif ke workspace n).
 pub(crate) const HOTKEY_WS_SEND: i32 = 40;
+
+/// Win+Alt+Shift+Panah -> gabung ke tetangga (urut seperti `DIRS`: Left, Right, Up, Down).
+pub(crate) const HOTKEY_JOIN_LEFT: i32 = 50;
+pub(crate) const HOTKEY_JOIN_RIGHT: i32 = 51;
+pub(crate) const HOTKEY_JOIN_UP: i32 = 52;
+pub(crate) const HOTKEY_JOIN_DOWN: i32 = 53;
+
+/// Win+Alt+Space -> angkat window aktif dan pilih tempat mendarat dengan panah + overlay.
+pub(crate) const HOTKEY_PICK: i32 = 54;
 
 /// Posisi x parkir window workspace lain: batas bawah USER32 (i16::MIN); nilai yang
 /// lebih kecil dijepit ke sini. Sengaja bukan -32000 (posisi "minimized" lama).

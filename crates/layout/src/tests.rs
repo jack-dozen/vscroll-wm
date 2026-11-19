@@ -1281,3 +1281,196 @@ fn custom_height_snaps_to_next_preset_and_scales_with_viewport() {
     s.snap(Dir::Down);
     assert_eq!(s.items()[0].height, Height::Full);
 }
+
+#[test]
+fn join_full_windows_splits_side_by_side_in_reading_order() {
+    // T di atas (Up) -> fokus di kanan
+    let mut s = strip();
+    s.add_window(A);
+    s.add_window(B);
+    assert!(s.join(Dir::Up));
+    assert_eq!(s.focused(), Some(B));
+    assert_eq!(r(&s, A), rect(0, 0, 960, 1080));
+    assert_eq!(r(&s, B), rect(960, 0, 960, 1080));
+
+    // T di bawah (Down) -> fokus di kiri
+    let mut s = strip();
+    s.add_window(A);
+    s.add_window(B);
+    s.set_focus(A);
+    assert!(s.join(Dir::Down));
+    assert_eq!(s.focused(), Some(A));
+    assert_eq!(r(&s, A), rect(0, 0, 960, 1080));
+    assert_eq!(r(&s, B), rect(960, 0, 960, 1080));
+}
+
+#[test]
+fn join_third_window_into_half_width_stacks_in_lane() {
+    // A kiri, B kanan; C penuh di bawah -> join Up menumpuk di bawah A (stack-main)
+    let mut s = strip();
+    s.add_window(A);
+    s.add_window(B);
+    assert!(s.join(Dir::Up));
+    s.add_window(C);
+    assert!(s.join(Dir::Up));
+    assert_eq!(s.focused(), Some(C));
+    assert_eq!(r(&s, A), rect(0, 0, 960, 540));
+    assert_eq!(r(&s, C), rect(0, 540, 960, 540));
+    assert_eq!(r(&s, B), rect(960, 0, 960, 1080));
+
+    // Beda lajur: B (kanan) join ke kiri -> bertumpuk di atas A (top sama)
+    let mut s = strip();
+    s.add_window(A);
+    s.add_window(B);
+    assert!(s.join(Dir::Up));
+    s.set_focus(B);
+    assert!(s.join(Dir::Left));
+    assert_eq!(r(&s, B), rect(0, 0, 960, 540));
+    assert_eq!(r(&s, A), rect(0, 540, 960, 540));
+}
+
+#[test]
+fn join_into_lane_with_empty_space_fills_gap_without_halving() {
+    // C penuh di atas; di bawahnya blok: A kiri 1/2 (ruang kosong di bawah), B kanan penuh.
+    let mut s = strip();
+    s.add_window(C);
+    s.add_window(A);
+    s.snap(Dir::Up);
+    s.snap(Dir::Left);
+    s.add_window(B);
+    s.snap(Dir::Right);
+    s.set_focus(C);
+
+    assert!(s.join(Dir::Down));
+    // A tidak dibagi dua; C mengisi ruang di bawah A
+    assert_eq!(at(&s, A), rect(0, 0, 960, 540));
+    assert_eq!(at(&s, C), rect(0, 540, 960, 1080));
+    assert_eq!(at(&s, B), rect(960, 0, 960, 1080));
+}
+
+#[test]
+fn join_in_same_lane_is_rejected() {
+    let mut s = strip();
+    s.add_window(A);
+    s.add_window(B);
+    assert!(s.join(Dir::Up));
+    s.add_window(C);
+    assert!(s.join(Dir::Up)); // A (atas) dan C (bawah) di lajur kiri
+    let before = s.items().to_vec();
+
+    s.set_focus(C);
+    assert!(!s.join(Dir::Up));
+    assert_eq!(s.items(), &before[..]);
+
+    s.set_focus(A);
+    assert!(!s.join(Dir::Down));
+    assert_eq!(s.items(), &before[..]);
+}
+
+#[test]
+fn join_rejects_at_minimum_height_and_preserves_layout() {
+    // Target sudah 1/4 (Custom(250)): membagi dua lagi melewati batas 15% -> ditolak
+    let mut s = strip();
+    s.add_window(A);
+    s.add_window(B);
+    assert!(s.join(Dir::Up));
+    s.set_focus(A);
+    s.snap(Dir::Up); // Half
+    s.set_focus(B);
+    s.snap(Dir::Up); // Half
+    // Bagi dua A dan B sehingga kedua lajur berisi 1/4 + 1/4 (tanpa ruang kosong)
+    s.add_window(X);
+    assert!(s.reinsert_window(X, InsertPosition::Split(A, false)));
+    s.add_window(D);
+    assert!(s.reinsert_window(D, InsertPosition::Split(B, false)));
+    let target_w = WindowId(99);
+    s.add_window(target_w);
+    let before = s.items().to_vec();
+    assert!(!s.join(Dir::Up));
+    assert_eq!(s.items(), &before[..]);
+}
+
+#[test]
+fn join_rejects_when_min_height_does_not_fit() {
+    // Target A punya min_height 600 (> 540 = 1/2 layar): ditolak, susunan utuh
+    let mut s = strip();
+    s.add_window(A);
+    s.add_window(B);
+    assert!(s.join(Dir::Up));
+    s.set_min_height(A, 600);
+    s.add_window(C);
+    let before = s.items().to_vec();
+    assert!(!s.join(Dir::Up));
+    assert_eq!(s.items(), &before[..]);
+
+    // Window yang fokus (C) punya min_height 600: juga ditolak
+    let mut s = strip();
+    s.add_window(A);
+    s.add_window(B);
+    assert!(s.join(Dir::Up));
+    s.add_window(C);
+    s.set_min_height(C, 600);
+    let before = s.items().to_vec();
+    assert!(!s.join(Dir::Up));
+    assert_eq!(s.items(), &before[..]);
+}
+
+#[test]
+fn join_without_neighbor_returns_false() {
+    let mut s = strip();
+    s.add_window(A);
+    for dir in [Dir::Up, Dir::Down, Dir::Left, Dir::Right] {
+        assert!(!s.join(dir));
+    }
+    s.add_window(B);
+    assert!(!s.join(Dir::Left));
+    assert!(!s.join(Dir::Right));
+    assert!(!s.join(Dir::Down));
+}
+
+#[test]
+fn join_into_can_target_non_adjacent_window_and_pick_right_lane() {
+    // A, B, C, D penuh lebar: D (paling bawah) digabung langsung ke A (paling atas),
+    // melewati B dan C tanpa mengubah keduanya
+    let mut s = strip();
+    for w in [A, B, C, D] {
+        s.add_window(w);
+    }
+    assert!(s.join_into(D, A));
+    assert_eq!(s.focused(), Some(D));
+    assert_eq!(at(&s, A), rect(0, 0, 960, 1080));
+    assert_eq!(at(&s, D), rect(960, 0, 960, 1080));
+    assert_eq!(at(&s, B), rect(0, 1080, 1920, 1080));
+    assert_eq!(at(&s, C), rect(0, 2160, 1920, 1080));
+
+    // C dibidik langsung ke lajur KANAN (D), bukan kiri (A)
+    assert!(s.join_into(C, D));
+    assert_eq!(at(&s, A), rect(0, 0, 960, 1080));
+    assert_eq!(at(&s, D), rect(960, 0, 960, 540));
+    assert_eq!(at(&s, C), rect(960, 540, 960, 540));
+    assert_eq!(at(&s, B), rect(0, 1080, 1920, 1080));
+
+    // ke diri sendiri -> ditolak
+    let before = s.items().to_vec();
+    assert!(!s.join_into(C, C));
+    assert_eq!(s.items(), &before[..]);
+}
+
+#[test]
+fn join_into_allows_same_side_across_different_blocks() {
+    // Blok 1: A (kiri), B (kanan). Pemisah: X (penuh). Blok 2: C (kiri), D (kanan).
+    // C (kiri blok 2) boleh digabung ke A (kiri blok 1).
+    let mut s = strip();
+    s.add_window(A);
+    s.add_window(B);
+    assert!(s.join(Dir::Up));
+    s.add_window(X);
+    s.add_window(C);
+    s.add_window(D);
+    assert!(s.join(Dir::Up));
+
+    assert!(s.join_into(C, A));
+    assert_eq!(at(&s, A), rect(0, 0, 960, 540));
+    assert_eq!(at(&s, C), rect(0, 540, 960, 540));
+    assert_eq!(at(&s, B), rect(960, 0, 960, 1080));
+}

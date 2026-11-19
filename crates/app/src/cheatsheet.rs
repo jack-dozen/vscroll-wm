@@ -237,26 +237,27 @@ pub struct Sheet {
     pub cells: Vec<Cell>,
 }
 
-fn group_height(g: &Group) -> i32 {
-    HEADER_H + g.rows.len() as i32 * ROW_H + GROUP_GAP
+fn group_height(g: &Group, row_h: i32) -> i32 {
+    HEADER_H + g.rows.len() as i32 * row_h + GROUP_GAP
 }
 
 /// Bagi kelompok ke `n` kolom (yang terpendek dulu). Mengembalikan tinggi tiap kolom
 /// dan isinya (indeks kelompok).
-fn assign(groups: &[Group], n: i32) -> (Vec<i32>, Vec<Vec<usize>>) {
+fn assign(groups: &[Group], n: i32, row_h: i32) -> (Vec<i32>, Vec<Vec<usize>>) {
     let n = n.max(1) as usize;
     let mut heights = vec![0; n];
     let mut members: Vec<Vec<usize>> = vec![Vec::new(); n];
     for (i, g) in groups.iter().enumerate() {
         let col = (0..n).min_by_key(|&c| heights[c]).unwrap_or(0);
-        heights[col] += group_height(g);
+        heights[col] += group_height(g, row_h);
         members[col].push(i);
     }
     (heights, members)
 }
 
 /// Hitung panel dan posisi semua teks. Dua kolom kalau lebar layar cukup
-/// (tampil lebih ringkas); satu kolom kalau tidak.
+/// (tampil lebih ringkas); satu kolom kalau tidak. Kalau masih melebihi batas tinggi
+/// layar, jarak baris dipersempit (sampai batas terbaca) supaya tetap muat.
 pub fn compute(groups: &[Group], work: Rect) -> Sheet {
     let longest = groups
         .iter()
@@ -273,7 +274,7 @@ pub fn compute(groups: &[Group], work: Rect) -> Sheet {
 
     let mut columns = by_width;
     for n in by_width.min(2)..=by_width {
-        let (heights, _) = assign(groups, n);
+        let (heights, _) = assign(groups, n, ROW_H);
         let h = TITLE_H + heights.iter().copied().max().unwrap_or(0) + FOOTER_H + PAD;
         if h <= max_h {
             columns = n;
@@ -281,7 +282,15 @@ pub fn compute(groups: &[Group], work: Rect) -> Sheet {
         }
     }
 
-    let (heights, members) = assign(groups, columns);
+    let mut row_h = ROW_H;
+    let (mut heights, mut members) = assign(groups, columns, row_h);
+    while row_h > 24 && TITLE_H + heights.iter().copied().max().unwrap_or(0) + FOOTER_H + PAD > max_h
+    {
+        row_h -= 1;
+        let next = assign(groups, columns, row_h);
+        heights = next.0;
+        members = next.1;
+    }
     let body_h = heights.iter().copied().max().unwrap_or(0);
     let panel_w = columns * col_w + (columns - 1) * COL_GAP + 2 * PAD;
     let panel_h = TITLE_H + body_h + FOOTER_H + PAD;
@@ -336,7 +345,7 @@ pub fn compute(groups: &[Group], work: Rect) -> Sheet {
                         left: x0,
                         top: y,
                         right: x0 + keys_w - 12,
-                        bottom: y + ROW_H,
+                        bottom: y + row_h,
                     },
                 });
                 cells.push(Cell {
@@ -346,10 +355,10 @@ pub fn compute(groups: &[Group], work: Rect) -> Sheet {
                         left: x0 + keys_w,
                         top: y,
                         right: x0 + col_w,
-                        bottom: y + ROW_H,
+                        bottom: y + row_h,
                     },
                 });
-                y += ROW_H;
+                y += row_h;
             }
             y += GROUP_GAP;
         }
@@ -664,7 +673,7 @@ mod tests {
             ("Win + Ctrl + Shift + 1 … 9", "send window to workspace n"),
             ("Win + ] / [", "move the column divider (±80 px)"),
             ("Win + Tab", "overview: map of the whole strip"),
-            ("Win + Alt + Space", "overview: map of the whole strip (alternate)"),
+            ("Win + Alt + Space", "pick up window and choose drop spot"),
             ("Win + Q", "close the window"),
         ] {
             assert!(rows.iter().any(|(rk, rd)| rk == k && rd == d), "{k} / {d}");

@@ -1,6 +1,6 @@
 //! Hook keyboard tingkat rendah dan event hook Windows, beserta tabel aksi tombolnya.
 
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU8, Ordering};
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::UI::Accessibility::HWINEVENTHOOK;
@@ -12,7 +12,8 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::bindings::{self, ALT, CTRL, SHIFT, WIN};
 use crate::consts::{
-    DIRS, HOTKEY_OVERVIEW, HOTKEY_QUIT, HOTKEY_WS_GO, HOTKEY_WS_NEXT, HOTKEY_WS_PREV, WM_ACTION,
+    DIRS, HOTKEY_OVERVIEW, HOTKEY_PICK, HOTKEY_QUIT, HOTKEY_WS_GO, HOTKEY_WS_NEXT, HOTKEY_WS_PREV,
+    WM_ACTION, WM_JOIN_CANCEL, WM_JOIN_COMMIT, WM_PICK_ACCEPT, WM_PICK_CANCEL, WM_PICK_MOVE,
     WM_SNAP_CANCEL, WM_WINEVENT,
 };
 use crate::{overview, tray};
@@ -37,6 +38,25 @@ pub(crate) static SNAP_OPEN: AtomicBool = AtomicBool::new(false);
 /// Pilihan sudah digeser sejak overview dibuka. Kalau Win dilepas dalam keadaan ini,
 /// overview langsung loncat ke window yang dipilih (gaya Alt+Tab).
 pub(crate) static OV_MOVED: AtomicBool = AtomicBool::new(false);
+
+/// Mode angkat-dan-jatuhkan (`pick`) sedang aktif: panah menggeser marker, Enter / Space
+/// menjatuhkan, Esc membatalkan.
+pub(crate) static PICK_OPEN: AtomicBool = AtomicBool::new(false);
+
+/// Mode bidik `join` aktif (disimpan untuk jaga-jaga kalau mode tahan-modifier dipakai
+/// lagi): melepas salah satu modifier di `JOIN_MODS` mengirim `WM_JOIN_COMMIT`; Esc batal.
+pub(crate) static JOIN_ACTIVE: AtomicBool = AtomicBool::new(false);
+static JOIN_MODS: AtomicU8 = AtomicU8::new(0);
+
+fn modifier_bit(vk: u16) -> u8 {
+    match VIRTUAL_KEY(vk) {
+        VK_LWIN | VK_RWIN => WIN,
+        VK_SHIFT | VK_LSHIFT | VK_RSHIFT => SHIFT,
+        VK_MENU | VK_LMENU | VK_RMENU => ALT,
+        VK_CONTROL | VK_LCONTROL | VK_RCONTROL => CTRL,
+        _ => 0,
+    }
+}
 
 /// Aksi tombol Win+... saat overview terbuka: (pesan, wParam, menggeser pilihan?).
 /// `bound` = id hotkey yang terikat pada kombinasi ini menurut konfigurasi (bindings.rs).
@@ -120,7 +140,7 @@ unsafe fn held_mods() -> u8 {
 
 /// Kirim aksi `id` ke thread utama dan telan tombolnya. Pengulangan karena tombol
 /// ditahan diabaikan kecuali aksinya memang boleh berulang.
-unsafe fn fire(vk: u16, id: i32, down: bool) -> LRESULT {
+unsafe fn fire(vk: u16, id: i32, down: bool, _mods: u8) -> LRESULT {
     if down {
         let repeat = HELD_VK.swap(vk, Ordering::Relaxed) == vk;
         if repeat && !bindings::repeat_allowed(id) {
@@ -132,6 +152,11 @@ unsafe fn fire(vk: u16, id: i32, down: bool) -> LRESULT {
             OV_OPEN.store(true, Ordering::Relaxed);
             OV_MOVED.store(false, Ordering::Relaxed);
         }
+        // Quick join langsung eksekusi; untuk kembali ke mode tahan-modifier:
+        // if (HOTKEY_JOIN_LEFT..=HOTKEY_JOIN_DOWN).contains(&id) {
+        //     JOIN_MODS.store(_mods, Ordering::Relaxed);
+        //     JOIN_ACTIVE.store(true, Ordering::Relaxed);
+        // }
         let _ = PostThreadMessageW(
             MAIN_THREAD.load(Ordering::Relaxed),
             WM_ACTION,
@@ -154,6 +179,88 @@ pub(crate) unsafe extern "system" fn kb_hook(code: i32, wparam: WPARAM, lparam: 
             let vk = k.vkCode as u16;
             if !down && HELD_VK.load(Ordering::Relaxed) == vk {
                 HELD_VK.store(0, Ordering::Relaxed);
+            }
+            // Mode angkat-dan-jatuhkan (`pick`): panah geser marker, Enter / Space
+            // jatuhkan, Esc / tombol pick membatalkan. Win+Ctrl+Esc tetap keluar darurat.
+            if PICK_OPEN.load(Ordering::Relaxed) {
+                let win = WIN_DOWN.load(Ordering::Relaxed);
+                let held = held_mods();
+                let emergency_quit = vk == VK_ESCAPE.0 && win && (held & CTRL != 0);
+                let bound = if win {
+                    bindings::lookup_active(WIN | held, vk)
+                } else if held != 0 {
+                    bindings::lookup_active(held, vk)
+                } else {
+                    None
+                };
+                if !emergency_quit {
+                    let action = if bound == Some(HOTKEY_PICK) {
+                        Some((WM_PICK_CANCEL, 0usize, false))
+                    } else if let Some(i) = arrow_index(vk).filter(|_| held & CTRL == 0) {
+                        Some((WM_PICK_MOVE, i as usize, true))
+                    } else if vk == VK_RETURN.0
+                        || (vk == VK_SPACE.0 && !win && held == 0)
+                    {
+                        Some((WM_PICK_ACCEPT, 0, false))
+                    } else if vk == VK_ESCAPE.0 {
+                        Some((WM_PICK_CANCEL, 0, false))
+                    } else {
+                        None
+                    };
+                    if let Some((msg, wp, repeat_ok)) = action {
+                        if down {
+                            let repeat = HELD_VK.swap(vk, Ordering::Relaxed) == vk;
+                            if repeat && !repeat_ok {
+                                return LRESULT(1);
+                            }
+                            let _ = PostThreadMessageW(
+                                MAIN_THREAD.load(Ordering::Relaxed),
+                                msg,
+                                WPARAM(wp),
+                                LPARAM(0),
+                            );
+                            if win {
+                                cancel_start_menu();
+                            }
+                        }
+                        return LRESULT(1);
+                    }
+                }
+            }
+            // Mode bidik join: Esc membatalkan (kecuali Win+Ctrl+Esc keluar darurat);
+            // melepas salah satu modifier yang ditahan langsung mengeksekusi join.
+            if JOIN_ACTIVE.load(Ordering::Relaxed) {
+                let emergency_quit =
+                    vk == VK_ESCAPE.0 && WIN_DOWN.load(Ordering::Relaxed) && (held_mods() & CTRL != 0);
+                if down && vk == VK_ESCAPE.0 && !emergency_quit {
+                    JOIN_ACTIVE.store(false, Ordering::Relaxed);
+                    JOIN_MODS.store(0, Ordering::Relaxed);
+                    let _ = PostThreadMessageW(
+                        MAIN_THREAD.load(Ordering::Relaxed),
+                        WM_JOIN_CANCEL,
+                        WPARAM(0),
+                        LPARAM(0),
+                    );
+                    if WIN_DOWN.load(Ordering::Relaxed) {
+                        cancel_start_menu();
+                    }
+                    return LRESULT(1);
+                }
+                if !down {
+                    let bit = modifier_bit(vk);
+                    if bit != 0
+                        && (JOIN_MODS.load(Ordering::Relaxed) & bit) != 0
+                        && JOIN_ACTIVE.swap(false, Ordering::Relaxed)
+                    {
+                        JOIN_MODS.store(0, Ordering::Relaxed);
+                        let _ = PostThreadMessageW(
+                            MAIN_THREAD.load(Ordering::Relaxed),
+                            WM_JOIN_COMMIT,
+                            WPARAM(0),
+                            LPARAM(0),
+                        );
+                    }
+                }
             }
             // Esc tanpa modifier menutup daftar window snap layouts
             if down
@@ -230,7 +337,7 @@ pub(crate) unsafe extern "system" fn kb_hook(code: i32, wparam: WPARAM, lparam: 
                     };
                 }
                 if let Some(id) = bound {
-                    return fire(vk, id, down);
+                    return fire(vk, id, down, WIN | held);
                 }
             } else {
                 // Pintasan tanpa Win (mis. Alt+H atau Ctrl+Alt+O): hanya kalau ada modifier
@@ -240,7 +347,7 @@ pub(crate) unsafe extern "system" fn kb_hook(code: i32, wparam: WPARAM, lparam: 
                 if held != 0 {
                     if let Some(id) = bindings::lookup_active(held, vk) {
                         if !OV_OPEN.load(Ordering::Relaxed) || id == HOTKEY_OVERVIEW {
-                            return fire(vk, id, down);
+                            return fire(vk, id, down, held);
                         }
                     }
                 }
@@ -355,8 +462,9 @@ mod tests {
             act(VK_ESCAPE.0, false, false, false),
             Some((overview::WM_OV_CANCEL, 0, false))
         );
+        // overview dengan custom chord tetap bisa menutup overview
         assert_eq!(
-            act(VK_SPACE.0, false, true, false),
+            overview_hook_action(VK_SPACE.0, false, true, false, TAB, Some(HOTKEY_OVERVIEW)),
             Some((WM_ACTION, HOTKEY_OVERVIEW as usize, false))
         );
     }
