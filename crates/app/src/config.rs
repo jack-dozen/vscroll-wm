@@ -149,6 +149,8 @@ pub struct Config {
     pub bindings: Bindings,
     /// Window rules (`rule = ...`), in file order.
     pub rules: Vec<WindowRule>,
+    /// Auto-minimize non-sticky floating windows when focus moves to another window.
+    pub float_auto_minimize: bool,
 }
 
 impl Default for Config {
@@ -180,6 +182,7 @@ impl Default for Config {
             snap_layouts: layout::builtin_presets(),
             bindings: Bindings::defaults(),
             rules: Vec::new(),
+            float_auto_minimize: true,
         }
     }
 }
@@ -227,6 +230,12 @@ impl Config {
                 "rule" => match WindowRule::parse(value) {
                     Ok(r) => cfg.rules.push(r),
                     Err(e) => warnings.push(format!("line {n}: rule: {e}")),
+                },
+                "float_auto_minimize" => match parse_bool(value) {
+                    Some(b) => cfg.float_auto_minimize = b,
+                    None => warnings.push(format!(
+                        "line {n}: float_auto_minimize must be on/off"
+                    )),
                 },
                 "overview_hint" => match parse_bool(value) {
                     Some(b) => cfg.overview_hint = b,

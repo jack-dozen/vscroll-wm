@@ -179,8 +179,13 @@ impl App {
         self.apply();
         if (5..=8).contains(&id) {
             if let Some(h) = self.ws.cur().focused().and_then(|f| self.map.get(&f).copied()) {
+                let prev = self.last_fg;
                 let _ = SetForegroundWindow(h);
-                self.last_fg = Some(wid(h));
+                let next = wid(h);
+                self.last_fg = Some(next);
+                if let Some(p) = prev {
+                    self.auto_minimize_float(p, next);
+                }
             }
         }
     }

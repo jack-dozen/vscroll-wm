@@ -117,6 +117,14 @@ pub struct DrawMinimap {
     pub items: Vec<MinimapItem>,
 }
 
+/// Floating / sticky window pill shown in the compact strip above the overview hint bar.
+pub struct DrawFloatPill {
+    pub id: u64,
+    pub label: String,
+    pub sticky: bool,
+    pub rect: RECT,
+}
+
 pub struct Draw {
     /// Panel position and size on screen (centered in the work area).
     pub panel: Rect,
@@ -134,6 +142,8 @@ pub struct Draw {
     pub minimap: Option<DrawMinimap>,
     /// Workspace card bar at the bottom (populated when there is more than one workspace).
     pub dock: Vec<DrawDockCard>,
+    /// Floating / sticky window pills (empty when no floating windows exist).
+    pub floating: Vec<DrawFloatPill>,
     /// More than one workspace.
     pub multi: bool,
     pub selected: u64,
@@ -1171,11 +1181,68 @@ pub fn build(
         columns,
         minimap,
         dock,
+        floating: Vec::new(),
         multi,
         selected,
         focused,
         hint: opts.hint,
         colors: opts.colors,
+    }
+}
+
+/// Pasang baris pill window floating / sticky di bagian bawah panel overview (di atas
+/// baris petunjuk). Tidak mengubah apa-apa kalau `list` kosong.
+pub fn attach_floating(d: &mut Draw, list: &[(u64, String, bool)]) {
+    if list.is_empty() {
+        return;
+    }
+    const FLOAT_BAR_H: i32 = 34;
+    const PILL_H: i32 = 26;
+    const PILL_GAP: i32 = 8;
+    const PREFIX_W: i32 = 72;
+
+    let shift = FLOAT_BAR_H + 4;
+    d.stage.bottom = (d.stage.bottom - shift).max(d.stage.top + 60);
+    if let Some(ref mut mm) = d.minimap {
+        mm.rect.bottom = (mm.rect.bottom - shift).max(mm.rect.top + 40);
+    }
+    for card in &mut d.dock {
+        card.rect.top -= shift;
+        card.rect.bottom -= shift;
+        card.preview.top -= shift;
+        card.preview.bottom -= shift;
+        for mr in &mut card.mini_items {
+            mr.top -= shift;
+            mr.bottom -= shift;
+        }
+    }
+
+    let hint_h = if d.hint { HINT_H } else { 4 };
+    let bar_top = d.panel.h - hint_h - FLOAT_BAR_H;
+    let avail_w = (d.panel.w - 2 * PAD - PREFIX_W).max(80);
+    let n = list.len() as i32;
+    let pill_w = ((avail_w - (n - 1).max(0) * PILL_GAP) / n.max(1)).clamp(84, 180);
+    let max_fit = ((avail_w + PILL_GAP) / (pill_w + PILL_GAP)).max(1) as usize;
+    let shown = &list[..list.len().min(max_fit)];
+    let total_w =
+        PREFIX_W + shown.len() as i32 * pill_w + (shown.len() as i32 - 1).max(0) * PILL_GAP;
+    let mut x = ((d.panel.w - total_w) / 2).max(PAD) + PREFIX_W;
+    let y = bar_top + (FLOAT_BAR_H - PILL_H) / 2;
+
+    d.floating.clear();
+    for (id, label, sticky) in shown {
+        d.floating.push(DrawFloatPill {
+            id: *id,
+            label: label.clone(),
+            sticky: *sticky,
+            rect: RECT {
+                left: x,
+                top: y,
+                right: x + pill_w,
+                bottom: y + PILL_H,
+            },
+        });
+        x += pill_w + PILL_GAP;
     }
 }
 
@@ -1704,6 +1771,50 @@ unsafe fn paint(hwnd: HWND) {
                 }
             }
 
+            // 2b. Floating / sticky window pills (only shown when any exist).
+            if !d.floating.is_empty() {
+                let first = &d.floating[0].rect;
+                let lbl_rect = RECT {
+                    left: (first.left - 72).max(PAD),
+                    top: first.top,
+                    right: first.left - 6,
+                    bottom: first.bottom,
+                };
+                canvas.draw_text(
+                    "Floating:",
+                    lbl_rect,
+                    font_cap,
+                    pal.text_muted,
+                    DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+                );
+                for pill in &d.floating {
+                    canvas.fill_round_rect(pill.rect, 6.0, pal.layer, 255);
+                    if pill.sticky {
+                        canvas.stroke_round_rect(pill.rect, 6.0, pal.accent, 255, 1.5);
+                    } else {
+                        canvas.stroke_round_rect(pill.rect, 6.0, pal.stroke, 220, 1.0);
+                    }
+                    let text = if pill.sticky {
+                        format!("★ {}", pill.label)
+                    } else {
+                        pill.label.clone()
+                    };
+                    let tr = RECT {
+                        left: pill.rect.left + 8,
+                        top: pill.rect.top,
+                        right: (pill.rect.right - 8).max(pill.rect.left + 9),
+                        bottom: pill.rect.bottom,
+                    };
+                    canvas.draw_text(
+                        &text,
+                        tr,
+                        font_cap,
+                        if pill.sticky { pal.text } else { pal.text_secondary },
+                        DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+                    );
+                }
+            }
+
             // 3. Key hints at the very bottom (if enabled).
             if d.hint {
                 let hint_text = if kb_slot.is_some() {
@@ -2169,6 +2280,18 @@ unsafe extern "system" fn ov_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
                     post(WM_OV_DROP, 0);
                 }
                 let _ = InvalidateRect(Some(hwnd), None, false);
+                return LRESULT(0);
+            }
+            // Click a floating pill -> summon & focus that floating/sticky window.
+            let float_hit = DRAW.lock().ok().and_then(|g| {
+                g.as_ref()?
+                    .floating
+                    .iter()
+                    .find(|p| point_in(&p.rect, x, y))
+                    .map(|p| p.id)
+            });
+            if let Some(fid) = float_hit {
+                post(WM_OV_PICK, fid as usize);
                 return LRESULT(0);
             }
             // Click a card in the bottom dock -> switch workspaces in the overview.
@@ -2653,6 +2776,7 @@ mod tests {
                 dock_card(1, true, 50, 480, 190, 570),
                 dock_card(2, false, 210, 480, 350, 570),
             ],
+            floating: Vec::new(),
             multi: true,
             selected: 3,
             focused: 3,

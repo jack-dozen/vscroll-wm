@@ -51,6 +51,28 @@ impl App {
         maps
     }
 
+    /// Daftar window floating / sticky untuk baris pill di overview: `(id, label, sticky)`.
+    unsafe fn overview_floating_list(&self) -> Vec<(u64, String, bool)> {
+        let mode = self.cfg.overview_label;
+        let mut out: Vec<(u64, String, bool)> = self
+            .floating
+            .iter()
+            .filter(|(_, &h)| safety::alive(h))
+            .map(|(&id, &h)| {
+                let t = title(h);
+                let exe = if mode == config::LabelMode::App {
+                    rules::exe_name(h)
+                } else {
+                    None
+                };
+                let lbl = config::label(mode, &t, exe.as_deref(), &self.cfg.aliases);
+                (id.0, lbl, self.sticky.contains_key(&id))
+            })
+            .collect();
+        out.sort_by(|a, b| (!a.2).cmp(&(!b.2)).then_with(|| a.1.cmp(&b.1)));
+        out
+    }
+
     pub(crate) unsafe fn try_open_overview(&mut self) -> bool {
         if !overview::available() {
             return false;
@@ -101,7 +123,8 @@ impl App {
             big: center,
             active_ws: active,
         };
-        let draw = overview::build(
+        let floating = self.overview_floating_list();
+        let mut draw = overview::build(
             &model,
             &titles,
             &sources,
@@ -110,6 +133,7 @@ impl App {
             work_area(),
             &self.overview_options(),
         );
+        overview::attach_floating(&mut draw, &floating);
         self.overview = Some(OverviewSession {
             selected,
             prev_fg: GetForegroundWindow(),
@@ -157,7 +181,7 @@ impl App {
         }
         s.model.big = col;
         s.model.first = first;
-        let draw = overview::build(
+        let mut draw = overview::build(
             &s.model,
             &s.titles,
             &s.sources,
@@ -166,6 +190,8 @@ impl App {
             work_area(),
             &opts,
         );
+        let floating = self.overview_floating_list();
+        overview::attach_floating(&mut draw, &floating);
         overview::show(draw, thumbs);
     }
 
@@ -275,12 +301,13 @@ impl App {
             // Empty workspace at the end: show its empty stage as a drop target.
             let opts = self.overview_options();
             let thumbs = self.cfg.overview_thumbnails;
+            let floating = self.overview_floating_list();
             let Some(s) = self.overview.as_mut() else {
                 return;
             };
             s.model.big = col;
             s.model.first = overview::scroll(s.model.first, s.model.visible, col);
-            let draw = overview::build(
+            let mut draw = overview::build(
                 &s.model,
                 &s.titles,
                 &s.sources,
@@ -289,6 +316,7 @@ impl App {
                 work_area(),
                 &opts,
             );
+            overview::attach_floating(&mut draw, &floating);
             overview::show(draw, thumbs);
         }
     }
@@ -299,6 +327,7 @@ impl App {
         let opts = self.overview_options();
         let thumbs = self.cfg.overview_thumbnails;
         let frac = overview::current_scroll_frac();
+        let floating = self.overview_floating_list();
         let Some(s) = self.overview.as_ref() else {
             return;
         };
@@ -311,6 +340,7 @@ impl App {
             work_area(),
             &opts,
         );
+        overview::attach_floating(&mut draw, &floating);
         if let Some(f) = frac {
             draw.apply_scroll_frac(f);
         }
@@ -379,6 +409,7 @@ impl App {
             .position(|(_, o)| o.items.iter().any(|it| it.id == selected))
             .unwrap_or(0);
         let (first, visible) = overview::window_for(maps.len(), col);
+        let floating = self.overview_floating_list();
         let Some(s) = self.overview.as_mut() else {
             return;
         };
@@ -390,7 +421,7 @@ impl App {
             big: col,
             active_ws: active,
         };
-        let draw = overview::build(
+        let mut draw = overview::build(
             &s.model,
             &s.titles,
             &s.sources,
@@ -399,6 +430,7 @@ impl App {
             work_area(),
             &opts,
         );
+        overview::attach_floating(&mut draw, &floating);
         overview::show(draw, thumbs);
     }
 
@@ -419,6 +451,15 @@ impl App {
         };
         overview::hide();
         if accept {
+            if let Some(&h) = self.floating.get(&s.selected) {
+                if IsIconic(h).as_bool() {
+                    let _ = ShowWindow(h, SW_RESTORE);
+                }
+                let _ = SetForegroundWindow(h);
+                self.last_fg = Some(wid(h));
+                self.schedule_sync(EVENT_DEBOUNCE_MS);
+                return;
+            }
             let old = self.ws.active();
             if self.ws.focus_window(s.selected) {
                 // The window is in another workspace: switch with a slide animation.

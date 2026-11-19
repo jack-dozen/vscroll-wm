@@ -281,7 +281,11 @@ impl App {
             && self.pick.is_none()
             && ((added && !self.parked.contains(&fg)) || self.last_fg != Some(fg))
         {
+            let prev_fg = self.last_fg;
             self.last_fg = Some(fg);
+            if let Some(prev) = prev_fg {
+                self.auto_minimize_float(prev, fg);
+            }
             if self.map.contains_key(&fg) && self.ws.cur().focused() != Some(fg) {
                 let old = self.ws.active();
                 if self.ws.focus_window(fg) {
@@ -294,6 +298,27 @@ impl App {
         // Foreground can change without changing the layout (e.g. after Win+Shift+Arrow).
         self.refresh_border();
         changed || self.drifted()
+    }
+
+    /// Jika `float_auto_minimize` aktif dan fokus berpindah dari window float (non-sticky)
+    /// ke window lain yang kita kelola, otomatis minimize window float itu agar tidak
+    /// menutupi tile.
+    pub(crate) unsafe fn auto_minimize_float(&self, prev: WindowId, fg: WindowId) {
+        if !self.cfg.float_auto_minimize || prev == fg {
+            return;
+        }
+        if self.sticky.contains_key(&prev) {
+            return;
+        }
+        let Some(&ph) = self.floating.get(&prev) else {
+            return;
+        };
+        if !(self.map.contains_key(&fg) || self.floating.contains_key(&fg)) {
+            return; // fokus ke dialog anak / menu / Alt+Tab: jangan minimize
+        }
+        if safety::alive(ph) && !IsIconic(ph).as_bool() {
+            let _ = ShowWindow(ph, SW_MINIMIZE);
+        }
     }
 
     /// True if any window's position does not match our last placement.

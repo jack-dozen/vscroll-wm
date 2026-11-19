@@ -197,6 +197,12 @@ overview_wrap = on
 # bind.focus_right = alt+l
 # bind.overview = win+o, win+alt+space
 
+# --- Floating windows ---
+# on (default): automatically minimize non-sticky floating windows when focus moves to
+# another managed window (so they stay out of the way until summoned with Alt+Tab or from
+# the overview's Floating bar). Sticky windows (Win+Alt+S) never auto-minimize.
+float_auto_minimize = on
+
 # --- Window rules (rule = ...) ---
 # Reloaded together with vscroll-wm.ignore via tray -> "Reload configuration" (no restart).
 # Each line is comma-separated: one or more matchers + an action. First matching rule wins.
