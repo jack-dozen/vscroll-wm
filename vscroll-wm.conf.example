@@ -187,7 +187,7 @@ overview_wrap = on
 #   workspace_prev = win+ctrl+left      workspace_next = win+ctrl+right
 #   workspace_goto = win+ctrl+1-9       workspace_send = win+ctrl+shift+1-9
 #   workspace_send_prev = win+ctrl+shift+left   workspace_send_next = win+ctrl+shift+right
-#   close = win+q       minimize = win+m       float = win+alt+f       inspect = win+alt+i
+#   close = win+q       minimize = win+m       float = win+alt+f       sticky = win+alt+s       inspect = win+alt+i
 #   cheatsheet = win+/
 #
 # Examples:
@@ -201,10 +201,11 @@ overview_wrap = on
 # Reloaded together with vscroll-wm.ignore via tray -> "Reload configuration" (no restart).
 # Each line is comma-separated: one or more matchers + an action. First matching rule wins.
 #   Matchers: exe:<name.exe>, class:<ClassName>, title:<substring>, max_width=<px>, max_height=<px>
-#   Actions:  float [width=<px>] [height=<px>]
+#   Actions:  float | sticky [width=<px>] [height=<px>]
 #             or workspace=<1-9>, span=left|right|full, height=1/3|1/2|full|40%
 # Examples:
 # rule = exe:vlc.exe, float, width=900, height=540
+# rule = title:Picture in Picture, sticky, width=480, height=270
 # rule = exe:discord.exe, workspace=2
 # rule = exe:code.exe, workspace=1, span=left, height=full
 # rule = class:CabinetWClass, max_width=500, max_height=400, float

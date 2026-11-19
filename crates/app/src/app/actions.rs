@@ -13,7 +13,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use super::App;
-use crate::winutil::{title, unmanaged_reason, wid};
+use crate::winutil::{ext_bounds, place, title, unmanaged_reason, wid, work_area};
 use crate::{bindings, cheatsheet, osd, rules, safety, taskbar, tray};
 
 /// Show config issues in a message box (release builds have no console).
@@ -101,6 +101,7 @@ impl App {
             osd::hide();
             self.finish_all_anims();
             self.stop_sync_timer();
+            self.unstick_all();
             safety::restore_all(); // Also restores border colors.
             taskbar::show_all();
             self.parked.clear();
@@ -180,29 +181,104 @@ impl App {
         let fg = GetForegroundWindow();
         let id = wid(fg);
         if self.floating.remove(&id).is_some() {
+            if let Some(h) = self.sticky.remove(&id) {
+                let _ = SetWindowPos(
+                    h,
+                    Some(HWND_NOTOPMOST),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                );
+            }
             println!("tile: {}", title(fg)); // It rejoins the strip on the next sync.
             return;
         }
-        let Some(h) = self.map.remove(&id) else {
-            return;
-        };
+        self.detach_to_float(id);
+    }
+
+    /// Lepas window `id` dari strip ke mode float (kalau sedang ditata), lalu perkecil
+    /// sedikit dan tengahkan di layar supaya langsung terlihat bedanya dengan tile.
+    unsafe fn detach_to_float(&mut self, id: WindowId) -> Option<HWND> {
+        let h = self.map.remove(&id)?;
         self.ws.remove_window(id);
         self.hidden.remove(&id);
         self.actual.remove(&id);
-        if let Some(a) = self.anim.remove(&id) {
-            // Finish the movement first so it stops at its final position.
-            let _ = SetWindowPos(
-                h,
-                None,
-                a.to.0 - a.inset.0,
-                a.to.1 - a.inset.1,
-                0,
-                0,
-                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
-            );
-        }
+        self.anim.remove(&id);
+        let work = work_area();
+        let cur = ext_bounds(h);
+        let cw = (cur.right - cur.left).max(1);
+        let ch = (cur.bottom - cur.top).max(1);
+        let w = (cw * 80 / 100).min(work.w * 72 / 100).max(480.min(work.w));
+        let hh = (ch * 80 / 100).min(work.h * 72 / 100).max(320.min(work.h));
+        let _ = place(
+            h,
+            layout::Rect {
+                x: work.x + (work.w - w) / 2,
+                y: work.y + (work.h - hh) / 2,
+                w,
+                h: hh,
+            },
+        );
         safety::forget(h); // Do not move it when the app exits.
         self.floating.insert(id, h);
         println!("float: {}", title(h));
+        Some(h)
+    }
+
+    /// Win+Alt+S: toggle sticky overlay (float selalu di atas di semua workspace).
+    pub(crate) unsafe fn toggle_sticky(&mut self) {
+        let fg = GetForegroundWindow();
+        let id = wid(fg);
+        if let Some(h) = self.sticky.remove(&id) {
+            let _ = SetWindowPos(
+                h,
+                Some(HWND_NOTOPMOST),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+            self.floating.remove(&id); // kembali ke tile pada sync berikutnya
+            println!("unstick: {}", title(h));
+            return;
+        }
+        let h = if let Some(&h) = self.floating.get(&id) {
+            h
+        } else if let Some(h) = self.detach_to_float(id) {
+            h
+        } else {
+            return;
+        };
+        let _ = SetWindowPos(
+            h,
+            Some(HWND_TOPMOST),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+        self.sticky.insert(id, h);
+        println!("sticky: {}", title(h));
+    }
+
+    /// Lepas flag always-on-top dari semua window sticky (dipanggil saat pause / keluar).
+    pub(crate) unsafe fn unstick_all(&mut self) {
+        for (_, h) in self.sticky.drain() {
+            if safety::alive(h) {
+                let _ = SetWindowPos(
+                    h,
+                    Some(HWND_NOTOPMOST),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                );
+            }
+        }
     }
 }

@@ -15,9 +15,9 @@ use super::{App, JoinAim};
 use crate::consts::{
     DIRS, EVENT_DEBOUNCE_MS, HOTKEY_CHEATSHEET, HOTKEY_CLOSE, HOTKEY_FLOAT, HOTKEY_INSPECT,
     HOTKEY_JOIN_DOWN, HOTKEY_JOIN_LEFT, HOTKEY_MAXIMIZE, HOTKEY_MINIMIZE, HOTKEY_OVERVIEW,
-    HOTKEY_PICK, HOTKEY_SPLIT_LEFT, HOTKEY_SPLIT_RESET, HOTKEY_SPLIT_RIGHT, HOTKEY_WS_GO,
-    HOTKEY_WS_NEXT, HOTKEY_WS_NOOP, HOTKEY_WS_PREV, HOTKEY_WS_SEND, HOTKEY_WS_SEND_NEXT,
-    HOTKEY_WS_SEND_PREV,
+    HOTKEY_PICK, HOTKEY_SPLIT_LEFT, HOTKEY_SPLIT_RESET, HOTKEY_SPLIT_RIGHT, HOTKEY_STICKY,
+    HOTKEY_WS_GO, HOTKEY_WS_NEXT, HOTKEY_WS_NOOP, HOTKEY_WS_PREV, HOTKEY_WS_SEND,
+    HOTKEY_WS_SEND_NEXT, HOTKEY_WS_SEND_PREV,
 };
 use crate::winutil::{manageable, wid, work_area};
 use crate::{cheatsheet, hook, tray};
@@ -143,6 +143,10 @@ impl App {
             HOTKEY_FLOAT => {
                 self.toggle_float();
                 self.sync(); // Add the newly tiled window to the strip.
+            }
+            HOTKEY_STICKY => {
+                self.toggle_sticky();
+                self.sync();
             }
             10..=13 => self.ws.cur_mut().move_window(DIRS[(id - 10) as usize].1),
             HOTKEY_WS_PREV => {

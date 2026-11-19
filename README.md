@@ -5,7 +5,7 @@
 
 [![Status](https://img.shields.io/badge/status-development%20%2F%20testing-orange)](https://github.com/jack-dozen/vscroll-wm)
 [![Platform](https://img.shields.io/badge/platform-Windows-blue)](https://github.com/jack-dozen/vscroll-wm)
-[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![License](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 
 > A vertical scrolling tiling window manager for Windows, inspired by Windows Snap and niri.
 
@@ -111,6 +111,7 @@ that are actually in effect, including your custom ones.
 | `Win` + `Q` | Close active window |
 | `Win` + `M` | Minimize active window |
 | `Win` + `Alt` + `F` | Toggle float / tile |
+| `Win` + `Alt` + `S` | Toggle sticky overlay (always on top across all workspaces) |
 | `Win` + `Alt` + `I` | Show window info (class / exe / title) |
 | `Win` + `/` | Shortcut cheatsheet |
 | `Win` + `Ctrl` + `Esc` | Quit and restore all windows (fixed) |
@@ -191,3 +192,5 @@ Right now it only supports **Windows**. The long-term wish is to support more op
 ---
 
 ## License
+
+Licensed under the [GNU General Public License v3.0](LICENSE).

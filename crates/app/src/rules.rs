@@ -139,6 +139,7 @@ pub enum RuleAction {
     Float {
         width: Option<i32>,
         height: Option<i32>,
+        sticky: bool,
     },
     Tile {
         /// Indeks workspace 0..=8 (ditulis 1..=9 di config).
@@ -219,6 +220,7 @@ impl WindowRule {
         let mut max_height = None;
 
         let mut is_float = false;
+        let mut is_sticky = false;
         let mut float_w = None;
         let mut raw_height: Option<String> = None;
         let mut workspace = None;
@@ -228,6 +230,11 @@ impl WindowRule {
             let lower = tok.to_lowercase();
             if lower == "float" {
                 is_float = true;
+                continue;
+            }
+            if lower == "sticky" {
+                is_float = true;
+                is_sticky = true;
                 continue;
             }
             // dukung pemisah `:` (gaya ignore) maupun `=` (gaya config)
@@ -288,6 +295,7 @@ impl WindowRule {
             RuleAction::Float {
                 width: float_w,
                 height,
+                sticky: is_sticky,
             }
         } else {
             if float_w.is_some() {
@@ -466,6 +474,17 @@ mod tests {
             RuleAction::Float {
                 width: Some(900),
                 height: Some(540),
+                sticky: false,
+            }
+        );
+
+        let rs = WindowRule::parse("title:Picture in Picture, sticky, width=480, height=270").unwrap();
+        assert_eq!(
+            rs.action,
+            RuleAction::Float {
+                width: Some(480),
+                height: Some(270),
+                sticky: true,
             }
         );
 

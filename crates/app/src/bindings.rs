@@ -22,8 +22,8 @@ use crate::consts::{
     HOTKEY_CHEATSHEET, HOTKEY_CLOSE, HOTKEY_FLOAT, HOTKEY_INSPECT, HOTKEY_JOIN_DOWN,
     HOTKEY_JOIN_LEFT, HOTKEY_JOIN_RIGHT, HOTKEY_JOIN_UP, HOTKEY_MAXIMIZE, HOTKEY_MINIMIZE,
     HOTKEY_OVERVIEW, HOTKEY_PICK, HOTKEY_QUIT, HOTKEY_SPLIT_LEFT, HOTKEY_SPLIT_RESET,
-    HOTKEY_SPLIT_RIGHT, HOTKEY_WS_GO, HOTKEY_WS_NEXT, HOTKEY_WS_NOOP, HOTKEY_WS_PREV,
-    HOTKEY_WS_SEND, HOTKEY_WS_SEND_NEXT, HOTKEY_WS_SEND_PREV,
+    HOTKEY_SPLIT_RIGHT, HOTKEY_STICKY, HOTKEY_WS_GO, HOTKEY_WS_NEXT, HOTKEY_WS_NOOP,
+    HOTKEY_WS_PREV, HOTKEY_WS_SEND, HOTKEY_WS_SEND_NEXT, HOTKEY_WS_SEND_PREV,
 };
 
 // ---------------------------------------------------------------- modifiers
@@ -217,6 +217,13 @@ pub const ACTIONS: &[ActionDef] = &[
     act("close", HOTKEY_CLOSE, G_WINDOW, "close the window", &["win+q"]),
     act("minimize", HOTKEY_MINIMIZE, G_WINDOW, "minimize the window", &["win+m"]),
     act("float", HOTKEY_FLOAT, G_WINDOW, "float / tile the window", &["win+alt+f"]),
+    act(
+        "sticky",
+        HOTKEY_STICKY,
+        G_WINDOW,
+        "sticky overlay (always on top, all workspaces)",
+        &["win+alt+s"],
+    ),
     act(
         "inspect",
         HOTKEY_INSPECT,
@@ -756,6 +763,7 @@ mod tests {
         assert_eq!(b.lookup(WIN, 0x51), Some(HOTKEY_CLOSE));
         assert_eq!(b.lookup(WIN, 0x4D), Some(HOTKEY_MINIMIZE));
         assert_eq!(b.lookup(WIN | ALT, 0x46), Some(HOTKEY_FLOAT));
+        assert_eq!(b.lookup(WIN | ALT, 0x53), Some(HOTKEY_STICKY));
         assert_eq!(b.lookup(WIN | ALT, 0x49), Some(HOTKEY_INSPECT));
         assert_eq!(b.lookup(WIN, 0xDD), Some(HOTKEY_SPLIT_RIGHT));
         assert_eq!(b.lookup(WIN, 0xDB), Some(HOTKEY_SPLIT_LEFT));

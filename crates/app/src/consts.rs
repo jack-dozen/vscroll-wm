@@ -103,6 +103,9 @@ pub(crate) const HOTKEY_JOIN_DOWN: i32 = 53;
 /// Win+Alt+Space -> lift the active window and choose a destination with the arrows + overlay.
 pub(crate) const HOTKEY_PICK: i32 = 54;
 
+/// Win+Alt+S -> sticky overlay (always on top across all workspaces).
+pub(crate) const HOTKEY_STICKY: i32 = 55;
+
 /// Parking x-position for windows in other workspaces: the USER32 lower bound (i16::MIN);
 /// smaller values are clamped to this. Deliberately not -32000 (the old "minimized" position).
 pub(crate) const PARK_X: i32 = i16::MIN as i32;

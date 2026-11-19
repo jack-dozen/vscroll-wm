@@ -1,3 +1,6 @@
 [workspace]
 resolver = "2"
 members = ["crates/layout", "crates/app"]
+
+[workspace.package]
+license = "GPL-3.0"

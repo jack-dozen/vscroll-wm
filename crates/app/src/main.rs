@@ -293,6 +293,7 @@ fn main() {
             let _ = UnhookWindowsHookEx(h);
         }
         tray::remove();
+        app.unstick_all();
         safety::restore_all();
         taskbar::shutdown();
         theme::shutdown();

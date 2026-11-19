@@ -80,6 +80,8 @@ pub(crate) struct App {
     pub(crate) slide: Option<Slide>,
     /// Windows deliberately left floating (not tiled) via Win+Alt+F.
     pub(crate) floating: HashMap<WindowId, HWND>,
+    /// Floating windows pinned always-on-top across all workspaces (Win+Alt+S).
+    pub(crate) sticky: HashMap<WindowId, HWND>,
     /// Windows that refuse control (higher privileges). Leave them floating.
     pub(crate) blocked: HashMap<WindowId, HWND>,
     /// 0 = animation timer is stopped (no idle overhead).
@@ -124,6 +126,7 @@ impl App {
             leaving: HashSet::new(),
             slide: None,
             floating: HashMap::new(),
+            sticky: HashMap::new(),
             blocked: HashMap::new(),
             anim_timer: 0,
             sync_timer: 0,
@@ -150,6 +153,7 @@ impl App {
         let live: HashMap<WindowId, HWND> = list.iter().map(|&h| (wid(h), h)).collect();
         let mut changed = false;
         self.floating.retain(|_, h| safety::alive(*h)); // Closed windows no longer need tracking.
+        self.sticky.retain(|_, h| safety::alive(*h));
         self.blocked.retain(|_, h| safety::alive(*h));
 
         let gone: Vec<WindowId> = self
@@ -192,7 +196,11 @@ impl App {
             if !self.map.contains_key(&id) {
                 if let Some(rule) = rules::match_rule(&self.cfg.rules, h) {
                     match rule.action {
-                        rules::RuleAction::Float { width, height } => {
+                        rules::RuleAction::Float {
+                            width,
+                            height,
+                            sticky,
+                        } => {
                             if width.is_some() || height.is_some() {
                                 let cur = ext_bounds(h);
                                 let w = width.unwrap_or(cur.right - cur.left).min(work.w);
@@ -204,6 +212,18 @@ impl App {
                                     h: hh,
                                 };
                                 let _ = place(h, target);
+                            }
+                            if sticky {
+                                let _ = SetWindowPos(
+                                    h,
+                                    Some(HWND_TOPMOST),
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                                );
+                                self.sticky.insert(id, h);
                             }
                             self.floating.insert(id, h);
                             continue;
@@ -409,7 +429,9 @@ impl App {
             match self.focus_border {
                 Some(c) => {
                     let fg = GetForegroundWindow();
-                    self.map.contains_key(&wid(fg)).then_some((fg, c))
+                    let id = wid(fg);
+                    (self.map.contains_key(&id) || self.floating.contains_key(&id))
+                        .then_some((fg, c))
                 }
                 None => None,
             }
@@ -450,22 +472,27 @@ impl App {
         let report = config::load();
         self.apply_config(&report.cfg);
         let work = work_area();
-        let now_ignored: Vec<(WindowId, HWND, Option<i32>, Option<i32>)> = self
+        let now_ignored: Vec<(WindowId, HWND, Option<i32>, Option<i32>, bool)> = self
             .map
             .iter()
             .filter_map(|(&id, &h)| {
                 if rules::ignored(h).is_some() {
-                    return Some((id, h, None, None));
+                    return Some((id, h, None, None, false));
                 }
                 if let Some(rule) = rules::match_rule(&self.cfg.rules, h) {
-                    if let rules::RuleAction::Float { width, height } = rule.action {
-                        return Some((id, h, width, height));
+                    if let rules::RuleAction::Float {
+                        width,
+                        height,
+                        sticky,
+                    } = rule.action
+                    {
+                        return Some((id, h, width, height, sticky));
                     }
                 }
                 None
             })
             .collect();
-        for (id, h, width, height) in now_ignored {
+        for (id, h, width, height, sticky) in now_ignored {
             self.ws.remove_window(id);
             self.map.remove(&id);
             self.hidden.remove(&id);
@@ -493,6 +520,18 @@ impl App {
                         h: hh,
                     },
                 );
+            }
+            if sticky {
+                let _ = SetWindowPos(
+                    h,
+                    Some(HWND_TOPMOST),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                );
+                self.sticky.insert(id, h);
             }
             safety::forget(h);
             self.floating.insert(id, h);
