@@ -266,33 +266,29 @@ impl App {
         self.schedule_sync(EVENT_DEBOUNCE_MS);
     }
 
-    /// Window yang bisa mengisi slot: semua window terbuka yang ditata (workspace aktif
-    /// dulu, urut seperti di strip) selain `members` dan yang sedang disembunyikan.
+    /// Window yang bisa mengisi slot: hanya window terbuka yang ditata di workspace aktif
+    /// (urut seperti di strip), selain `members` dan yang sedang disembunyikan.
     unsafe fn snap_candidates(&self, members: &[WindowId]) -> Vec<snap_slots::Candidate> {
         let mode = self.cfg.overview_label;
-        let active = self.ws.active();
-        let order = std::iter::once(active).chain((0..self.ws.count()).filter(|&n| n != active));
         let mut out = Vec::new();
-        for n in order {
-            for id in self.ws.window_ids(n) {
-                if id.is_slot() || members.contains(&id) || self.hidden.contains(&id) {
-                    continue;
-                }
-                let Some(&h) = self.map.get(&id) else {
-                    continue;
-                };
-                let t = title(h);
-                let exe = if mode == config::LabelMode::App {
-                    rules::exe_name(h)
-                } else {
-                    None
-                };
-                out.push(snap_slots::Candidate {
-                    id: id.0,
-                    label: config::label(mode, &t, exe.as_deref(), &self.cfg.aliases),
-                    source: h.0 as isize,
-                });
+        for id in self.ws.window_ids(self.ws.active()) {
+            if id.is_slot() || members.contains(&id) || self.hidden.contains(&id) {
+                continue;
             }
+            let Some(&h) = self.map.get(&id) else {
+                continue;
+            };
+            let t = title(h);
+            let exe = if mode == config::LabelMode::App {
+                rules::exe_name(h)
+            } else {
+                None
+            };
+            out.push(snap_slots::Candidate {
+                id: id.0,
+                label: config::label(mode, &t, exe.as_deref(), &self.cfg.aliases),
+                source: h.0 as isize,
+            });
         }
         out
     }
