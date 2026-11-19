@@ -129,7 +129,13 @@ impl App {
                 .max()
                 .unwrap_or(0)
                 .max(active + 1);
-            osd::notify(active, total, self.cfg.overview_colors, work_area());
+            osd::notify(
+                active,
+                total,
+                self.cfg.overview_colors,
+                work_area(),
+                self.cfg.workspace_osd_dots,
+            );
         }
     }
 

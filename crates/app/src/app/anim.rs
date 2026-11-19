@@ -41,14 +41,14 @@ pub(crate) struct Anim {
 
 impl Anim {
     /// Posisi frame pada waktu `now` dan apakah animasi sudah selesai.
-    /// Kurva ease-out cubic: cepat di awal, melambat di akhir.
+    /// Kurva Fluent Decelerate khas Windows 11: cepat & responsif di awal, mendarat halus.
     pub(crate) fn pos_at(&self, now: Instant) -> ((i32, i32), bool) {
         let t = if self.dur_ms <= 0.0 {
             1.0
         } else {
             (now.duration_since(self.start).as_secs_f32() * 1000.0 / self.dur_ms).min(1.0)
         };
-        let e = 1.0 - (1.0 - t).powi(3);
+        let e = crate::theme::ease_fluent_out(t);
         let f = |a: i32, b: i32| (a as f32 + (b - a) as f32 * e).round() as i32;
         (
             (f(self.from.0, self.to.0), f(self.from.1, self.to.1)),

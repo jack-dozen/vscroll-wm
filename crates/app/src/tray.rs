@@ -82,29 +82,54 @@ pub fn set_autostart(on: bool) -> bool {
 
 // --------------------------------------------------------------------- ikon
 
-/// Ikon 32x32 gambar sendiri: dua panel kiri bertumpuk + satu panel kanan tinggi.
-/// Simetris vertikal, jadi urutan baris bitmap tidak berpengaruh.
+/// Ikon 32x32 bergaya Fluent Windows 11: latar membulat + tiga panel membulat
+/// memakai warna aksen Windows aktif (anti-aliased).
 unsafe fn make_icon() -> Option<HICON> {
     const N: usize = 32;
-    let in_rect = |x: usize, y: usize, x0: usize, x1: usize, y0: usize, y1: usize| {
-        x >= x0 && x < x1 && y >= y0 && y < y1
+    let pal = crate::theme::Palette::resolve(crate::config::OverviewColors::default());
+    let (ar, ag, ab) = (
+        (pal.accent & 0xFF) as f32,
+        ((pal.accent >> 8) & 0xFF) as f32,
+        ((pal.accent >> 16) & 0xFF) as f32,
+    );
+    let (br, bg, bb) = (
+        (pal.surface & 0xFF) as f32,
+        ((pal.surface >> 8) & 0xFF) as f32,
+        ((pal.surface >> 16) & 0xFF) as f32,
+    );
+
+    let rrect_cov = |px: f32, py: f32, x0: f32, y0: f32, x1: f32, y1: f32, rad: f32| -> f32 {
+        let cx = (x0 + x1) * 0.5;
+        let cy = (y0 + y1) * 0.5;
+        let hx = (x1 - x0) * 0.5 - rad;
+        let hy = (y1 - y0) * 0.5 - rad;
+        let qx = (px - cx).abs() - hx;
+        let qy = (py - cy).abs() - hy;
+        let dist = (qx.max(0.0).hypot(qy.max(0.0))) + qx.max(qy).min(0.0) - rad;
+        (0.5 - dist).clamp(0.0, 1.0)
     };
+
     let mut xor = vec![0u8; N * N * 4];
     for y in 0..N {
         for x in 0..N {
-            let pane = in_rect(x, y, 3, 15, 3, 15)
-                || in_rect(x, y, 3, 15, 17, 29)
-                || in_rect(x, y, 17, 29, 3, 29);
-            let (b, g, r) = if pane {
-                (0xF5, 0xA8, 0x4F)
-            } else {
-                (0x30, 0x26, 0x20)
-            };
+            let px = x as f32 + 0.5;
+            let py = y as f32 + 0.5;
+            let bg_cov = rrect_cov(px, py, 1.0, 1.0, 31.0, 31.0, 6.0);
+            let p1 = rrect_cov(px, py, 4.5, 4.5, 14.5, 14.5, 2.5);
+            let p2 = rrect_cov(px, py, 4.5, 17.5, 14.5, 27.5, 2.5);
+            let p3 = rrect_cov(px, py, 17.5, 4.5, 27.5, 27.5, 2.5);
+            let pane_cov = p1.max(p2).max(p3);
+
+            let r = br + (ar - br) * pane_cov;
+            let g = bg + (ag - bg) * pane_cov;
+            let b = bb + (ab - bb) * pane_cov;
+            let a = (bg_cov * 255.0).round() as u8;
+
             let i = (y * N + x) * 4;
-            xor[i] = b;
-            xor[i + 1] = g;
-            xor[i + 2] = r;
-            xor[i + 3] = 0xFF;
+            xor[i] = b.round() as u8;
+            xor[i + 1] = g.round() as u8;
+            xor[i + 2] = r.round() as u8;
+            xor[i + 3] = a;
         }
     }
     let and = vec![0u8; N * N / 8];

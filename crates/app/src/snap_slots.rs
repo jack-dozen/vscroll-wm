@@ -11,32 +11,30 @@
 
 use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
 use std::sync::Mutex;
+use std::time::Instant;
 
 use layout::Rect;
 use windows::core::{w, BOOL};
-use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM};
+use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Dwm::{
     DwmQueryThumbnailSourceSize, DwmRegisterThumbnail, DwmUnregisterThumbnail,
     DwmUpdateThumbnailProperties, DWM_THUMBNAIL_PROPERTIES, DWM_TNP_OPACITY,
     DWM_TNP_RECTDESTINATION, DWM_TNP_VISIBLE,
 };
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateFontIndirectW, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect,
-    InvalidateRect, SelectObject, SetBkMode, SetTextColor, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT,
-    DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DRAW_TEXT_FORMAT, HBRUSH, HDC, HGDIOBJ, LOGFONTW,
-    PAINTSTRUCT, TRANSPARENT,
+    BeginPaint, EndPaint, InvalidateRect, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX,
+    DT_SINGLELINE, DT_VCENTER, HFONT, PAINTSTRUCT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::config::{rgb, OverviewColors};
+use crate::config::OverviewColors;
 use crate::consts::{WM_SNAP_CANCEL, WM_SNAP_PICK};
-use crate::overview::luminance;
-use crate::snap_menu::mix;
+use crate::theme::{self, Canvas, Palette};
+use crate::winutil::animations_enabled;
 
 /// Jumlah panel yang disiapkan = zona terbanyak satu preset.
 const POOL: usize = layout::MAX_ZONES;
-const HEADER_H: i32 = 34;
 const PAD: i32 = 12;
 const CARD_GAP: i32 = 10;
 const LABEL_BAND: i32 = 26;
@@ -68,15 +66,17 @@ struct Card {
     band: Option<RECT>,
 }
 
-#[derive(Default)]
+const ANIM_TIMER_ID: usize = 1;
+const ANIM_TICK_MS: u32 = 16;
+const FADE_IN_MS: f32 = 130.0;
+
 struct Panel {
     hwnd: isize,
     slot: u64,
     cards: Vec<Card>,
-    close: RECT,
     hover: Option<usize>,
-    hover_close: bool,
     thumbs: Vec<isize>,
+    anim_start: Option<Instant>,
 }
 
 static HANDLES: Mutex<Vec<isize>> = Mutex::new(Vec::new());
@@ -91,13 +91,12 @@ static COLORS: Mutex<OverviewColors> = Mutex::new(OverviewColors {
 static FONT: AtomicIsize = AtomicIsize::new(0);
 static MAIN_THREAD: AtomicU32 = AtomicU32::new(0);
 
-/// Letak `n` kartu di panel berukuran `w` x `h` (koordinat relatif panel): di bawah
-/// header, kolom dan baris dipilih supaya kartunya sebesar mungkin. Kalau tidak semua
-/// muat dengan ukuran minimum, hanya yang muat yang diberi tempat (hasilnya bisa
-/// kurang dari `n`).
+/// Letak `n` kartu di panel berukuran `w` x `h` (koordinat relatif panel): kolom dan
+/// baris dipilih supaya kartunya sebesar mungkin. Kalau tidak semua muat dengan ukuran
+/// minimum, hanya yang muat yang diberi tempat (hasilnya bisa kurang dari `n`).
 pub(crate) fn card_grid(n: usize, w: i32, h: i32) -> Vec<Rect> {
     let aw = w - 2 * PAD;
-    let ah = h - HEADER_H - PAD;
+    let ah = h - 2 * PAD;
     if n == 0 || aw < 1 || ah < 1 {
         return Vec::new();
     }
@@ -122,7 +121,7 @@ pub(crate) fn card_grid(n: usize, w: i32, h: i32) -> Vec<Rect> {
                     let (c, r) = (k % cols, k / cols);
                     Rect {
                         x: PAD + c * (cw + CARD_GAP),
-                        y: HEADER_H + r * (ch + CARD_GAP),
+                        y: PAD + r * (ch + CARD_GAP),
                         w: cw,
                         h: ch,
                     }
@@ -133,7 +132,7 @@ pub(crate) fn card_grid(n: usize, w: i32, h: i32) -> Vec<Rect> {
     // panel terlalu kecil untuk kartu biasa: satu kartu memenuhi ruangnya
     vec![Rect {
         x: PAD,
-        y: HEADER_H,
+        y: PAD,
         w: aw,
         h: ah,
     }]
@@ -169,32 +168,19 @@ fn fit(area: RECT, sw: i32, sh: i32) -> RECT {
     }
 }
 
-/// Bingkai persegi (garis tebal `t`) di sekeliling `r`.
-unsafe fn frame(hdc: HDC, r: &RECT, brush: HBRUSH, t: i32) {
-    for e in [
-        RECT { left: r.left, top: r.top, right: r.right, bottom: r.top + t },
-        RECT { left: r.left, top: r.bottom - t, right: r.right, bottom: r.bottom },
-        RECT { left: r.left, top: r.top, right: r.left + t, bottom: r.bottom },
-        RECT { left: r.right - t, top: r.top, right: r.right, bottom: r.bottom },
-    ] {
-        FillRect(hdc, &e, brush);
-    }
-}
-
-unsafe fn text(hdc: HDC, s: &str, r: &RECT, flags: DRAW_TEXT_FORMAT) {
-    let mut wide: Vec<u16> = s.encode_utf16().collect();
-    let mut rr = *r;
-    DrawTextW(hdc, &mut wide, &mut rr, flags);
-}
-
 /// Pasang thumbnail DWM `source` di kartu `card`. Mengembalikan (handle thumbnail,
 /// pita label) kalau kartunya cukup besar.
-unsafe fn register_thumb(dest: HWND, source: isize, card: &RECT) -> Option<(isize, RECT)> {
+unsafe fn register_thumb(
+    dest: HWND,
+    source: isize,
+    card: &RECT,
+    init_opacity: u8,
+) -> Option<(isize, RECT)> {
     let inner = RECT {
-        left: card.left + 3,
-        top: card.top + 3,
-        right: card.right - 3,
-        bottom: card.bottom - 3,
+        left: card.left + 4,
+        top: card.top + 4,
+        right: card.right - 4,
+        bottom: card.bottom - 4,
     };
     let area = RECT {
         left: inner.left + 4,
@@ -211,7 +197,7 @@ unsafe fn register_thumb(dest: HWND, source: isize, card: &RECT) -> Option<(isiz
         dwFlags: DWM_TNP_RECTDESTINATION | DWM_TNP_VISIBLE | DWM_TNP_OPACITY,
         rcDestination: fit(area, size.cx, size.cy),
         rcSource: RECT::default(),
-        opacity: 255,
+        opacity: init_opacity,
         fVisible: BOOL(1),
         fSourceClientAreaOnly: BOOL(0),
     };
@@ -248,89 +234,93 @@ unsafe fn paint(hwnd: HWND) {
 
     if let Ok(g) = PANELS.lock() {
         if let Some(p) = g.iter().find(|p| p.hwnd == hwnd.0 as isize) {
-            let fg = if luminance(colors.background) <= 150 {
-                rgb(232, 235, 243)
-            } else {
-                rgb(25, 28, 36)
-            };
-            let bg = CreateSolidBrush(COLORREF(colors.background));
-            let card = CreateSolidBrush(COLORREF(colors.box_fill));
-            let card_hot = CreateSolidBrush(COLORREF(mix(colors.box_fill, colors.active, 40)));
-            let accent = CreateSolidBrush(COLORREF(colors.active));
-            let sel = CreateSolidBrush(COLORREF(colors.selected));
-            FillRect(hdc, &client, bg);
-            SetBkMode(hdc, TRANSPARENT);
-            SelectObject(hdc, HGDIOBJ(FONT.load(Ordering::Relaxed) as *mut _));
-            SetTextColor(hdc, COLORREF(fg));
-
-            // header: petunjuk + tombol tutup
-            let head = RECT {
-                left: PAD,
-                top: 0,
-                right: p.close.left,
-                bottom: HEADER_H,
-            };
-            text(
-                hdc,
-                "Choose a window for this zone  (Esc cancels)",
-                &head,
-                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
-            );
-            if p.hover_close {
-                FillRect(hdc, &p.close, accent);
-            }
-            text(
-                hdc,
-                "\u{00D7}",
-                &p.close,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
-            );
+            let pal = Palette::resolve(colors);
+            let mut canvas = Canvas::new(hdc, client);
+            canvas.fill_rect(client, pal.surface, 255);
+            let font = HFONT(FONT.load(Ordering::Relaxed) as *mut _);
 
             for (i, c) in p.cards.iter().enumerate() {
                 let hot = p.hover == Some(i);
-                FillRect(hdc, &c.rect, if hot { card_hot } else { card });
+                let fill = if hot {
+                    theme::mix(pal.card_hover, pal.accent, 12)
+                } else {
+                    pal.card
+                };
+                canvas.fill_round_rect(c.rect, 8.0, fill, 255);
                 if hot {
-                    frame(hdc, &c.rect, sel, 2);
+                    canvas.stroke_round_rect(c.rect, 8.0, pal.accent, 255, 2.0);
+                } else {
+                    canvas.stroke_round_rect(c.rect, 8.0, pal.stroke, 255, 1.0);
                 }
                 match c.band {
                     Some(band) => {
                         let r = RECT {
-                            left: band.left + 6,
+                            left: band.left + 8,
                             top: band.top,
-                            right: band.right - 6,
+                            right: band.right - 8,
                             bottom: band.bottom,
                         };
-                        text(
-                            hdc,
+                        canvas.draw_text(
                             &c.label,
-                            &r,
+                            r,
+                            font,
+                            pal.text,
                             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
                         );
                     }
                     None => {
                         let r = RECT {
-                            left: c.rect.left + 8,
+                            left: c.rect.left + 10,
                             top: c.rect.top,
-                            right: c.rect.right - 8,
+                            right: c.rect.right - 10,
                             bottom: c.rect.bottom,
                         };
-                        text(
-                            hdc,
+                        canvas.draw_text(
                             &c.label,
-                            &r,
+                            r,
+                            font,
+                            pal.text,
                             DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
                         );
                     }
                 }
             }
-            // tepi panel: menandai zona yang akan diisi
-            frame(hdc, &client, accent, 3);
-            for b in [bg, card, card_hot, accent, sel] {
-                let _ = DeleteObject(HGDIOBJ(b.0));
-            }
+            canvas.present();
         }
     }
     let _ = EndPaint(hwnd, &ps);
+}
+
+unsafe fn tick_anim(hwnd: HWND) {
+    let mut thumbs_step: Option<(Vec<isize>, u8, bool)> = None;
+    if let Ok(mut g) = PANELS.lock() {
+        if let Some(p) = g.iter_mut().find(|p| p.hwnd == hwnd.0 as isize) {
+            if let Some(start) = p.anim_start {
+                let t = (start.elapsed().as_secs_f32() * 1000.0 / FADE_IN_MS).min(1.0);
+                let alpha = (255.0 * theme::ease_fluent_out(t)).round() as u8;
+                let done = t >= 1.0;
+                if done {
+                    p.anim_start = None;
+                }
+                thumbs_step = Some((p.thumbs.clone(), alpha, done));
+            }
+        }
+    }
+    if let Some((thumbs, alpha, done)) = thumbs_step {
+        let props = DWM_THUMBNAIL_PROPERTIES {
+            dwFlags: DWM_TNP_OPACITY,
+            opacity: alpha,
+            ..Default::default()
+        };
+        for th in thumbs {
+            let _ = DwmUpdateThumbnailProperties(th, &props);
+        }
+        if done {
+            let _ = KillTimer(Some(hwnd), ANIM_TIMER_ID);
+        }
+    } else {
+        let _ = KillTimer(Some(hwnd), ANIM_TIMER_ID);
+    }
 }
 
 /// Perbarui sorotan di bawah kursor; gambar ulang kalau berubah.
@@ -339,10 +329,8 @@ unsafe fn hover_at(hwnd: HWND, x: i32, y: i32) {
     if let Ok(mut g) = PANELS.lock() {
         if let Some(p) = g.iter_mut().find(|p| p.hwnd == hwnd.0 as isize) {
             let hover = p.cards.iter().position(|c| point_in(&c.rect, x, y));
-            let hover_close = point_in(&p.close, x, y);
-            if hover != p.hover || hover_close != p.hover_close {
+            if hover != p.hover {
                 p.hover = hover;
-                p.hover_close = hover_close;
                 changed = true;
             }
         }
@@ -353,21 +341,16 @@ unsafe fn hover_at(hwnd: HWND, x: i32, y: i32) {
 }
 
 unsafe fn click_at(hwnd: HWND, x: i32, y: i32) {
-    // (id window yang dipilih, id slot) atau tutup
-    let mut action: Option<(Option<u64>, u64)> = None;
+    let mut action: Option<(u64, u64)> = None;
     if let Ok(g) = PANELS.lock() {
         if let Some(p) = g.iter().find(|p| p.hwnd == hwnd.0 as isize) {
-            if point_in(&p.close, x, y) {
-                action = Some((None, p.slot));
-            } else if let Some(c) = p.cards.iter().find(|c| point_in(&c.rect, x, y)) {
-                action = Some((Some(c.id), p.slot));
+            if let Some(c) = p.cards.iter().find(|c| point_in(&c.rect, x, y)) {
+                action = Some((c.id, p.slot));
             }
         }
     }
-    match action {
-        Some((Some(id), slot)) => post(WM_SNAP_PICK, id as usize, slot as isize),
-        Some((None, _)) => post(WM_SNAP_CANCEL, 0, 0),
-        None => {}
+    if let Some((id, slot)) = action {
+        post(WM_SNAP_PICK, id as usize, slot as isize);
     }
 }
 
@@ -378,6 +361,10 @@ unsafe extern "system" fn slot_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
             LRESULT(0)
         }
         WM_ERASEBKGND => LRESULT(1),
+        WM_TIMER if wparam.0 == ANIM_TIMER_ID => {
+            tick_anim(hwnd);
+            LRESULT(0)
+        }
         WM_MOUSEACTIVATE => LRESULT(3), // MA_NOACTIVATE: klik tidak mengubah window aktif
         WM_MOUSEMOVE => {
             let (x, y) = lparam_xy(lparam);
@@ -415,8 +402,10 @@ pub unsafe fn init(main_thread: u32, scale: f32) -> bool {
     if RegisterClassW(&wc) == 0 {
         return false;
     }
+    let pal = Palette::resolve(OverviewColors::default());
     let mut handles = Vec::new();
     for _ in 0..POOL {
+        // Sengaja tanpa WS_EX_LAYERED agar thumbnail DWM tampil tajam.
         let Ok(hwnd) = CreateWindowExW(
             WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
             class,
@@ -433,18 +422,14 @@ pub unsafe fn init(main_thread: u32, scale: f32) -> bool {
         ) else {
             return false;
         };
+        theme::apply_window_chrome(hwnd, &pal, false);
         handles.push(hwnd.0 as isize);
     }
     if let Ok(mut g) = HANDLES.lock() {
         *g = handles;
     }
-    let mut lf: LOGFONTW = std::mem::zeroed();
-    lf.lfHeight = -((16.0 * scale).round() as i32);
-    lf.lfWeight = 400;
-    for (i, ch) in "Segoe UI".encode_utf16().enumerate() {
-        lf.lfFaceName[i] = ch;
-    }
-    FONT.store(CreateFontIndirectW(&lf).0 as isize, Ordering::Relaxed);
+    let fh = -((14.0 * scale).round() as i32);
+    FONT.store(theme::create_font(fh, 400).0 as isize, Ordering::Relaxed);
     true
 }
 
@@ -469,11 +454,15 @@ pub unsafe fn show(
     if let Ok(mut c) = COLORS.lock() {
         *c = colors;
     }
+    let pal = Palette::resolve(colors);
+    let anim = animations_enabled();
+    let now = Instant::now();
     let mut panels: Vec<Panel> = Vec::new();
     for (view, &hw) in slots.iter().zip(handles.iter()) {
         let r = view.rect;
         let (w, h) = (r.w.max(1), r.h.max(1));
         let dest = HWND(hw as *mut _);
+        theme::apply_window_chrome(dest, &pal, false);
         let mut cards = Vec::new();
         let mut thumbs = Vec::new();
         for (cand, cr) in cands.iter().zip(card_grid(cands.len(), w, h)) {
@@ -485,7 +474,9 @@ pub unsafe fn show(
             };
             let mut band = None;
             if thumbnails && cand.source != 0 {
-                if let Some((t, b)) = register_thumb(dest, cand.source, &rect) {
+                if let Some((t, b)) =
+                    register_thumb(dest, cand.source, &rect, if anim { 0 } else { 255 })
+                {
                     thumbs.push(t);
                     band = Some(b);
                 }
@@ -501,15 +492,9 @@ pub unsafe fn show(
             hwnd: hw,
             slot: view.slot,
             cards,
-            close: RECT {
-                left: w - HEADER_H,
-                top: 0,
-                right: w,
-                bottom: HEADER_H,
-            },
             hover: None,
-            hover_close: false,
             thumbs,
+            anim_start: anim.then_some(now),
         });
     }
     // sebelum ditampilkan, supaya WM_PAINT pertama sudah menemukan datanya
@@ -533,6 +518,9 @@ pub unsafe fn show(
             SWP_SHOWWINDOW | SWP_NOACTIVATE,
         );
         let _ = InvalidateRect(Some(h), None, false);
+        if anim {
+            let _ = SetTimer(Some(h), ANIM_TIMER_ID, ANIM_TICK_MS, None);
+        }
     }
 }
 
@@ -543,10 +531,12 @@ pub unsafe fn hide() {
         .map(|mut g| std::mem::take(&mut *g))
         .unwrap_or_default();
     for p in &old {
+        let h = HWND(p.hwnd as *mut _);
+        let _ = KillTimer(Some(h), ANIM_TIMER_ID);
         for t in &p.thumbs {
             let _ = DwmUnregisterThumbnail(*t);
         }
-        let _ = ShowWindow(HWND(p.hwnd as *mut _), SW_HIDE);
+        let _ = ShowWindow(h, SW_HIDE);
     }
 }
 
@@ -555,7 +545,7 @@ mod tests {
     use super::*;
 
     fn inside(outer: (i32, i32), r: &Rect) -> bool {
-        r.x >= 0 && r.y >= HEADER_H && r.x + r.w <= outer.0 && r.y + r.h <= outer.1
+        r.x >= PAD && r.y >= PAD && r.x + r.w <= outer.0 - PAD && r.y + r.h <= outer.1 - PAD
     }
 
     fn overlap(a: &Rect, b: &Rect) -> bool {

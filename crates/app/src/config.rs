@@ -28,6 +28,7 @@
 //!   remember_layout = on      simpan susunan workspace; dipulihkan kalau vscroll-wm dijalankan
 //!                     ulang selagi window-windownya masih terbuka
 //!   workspace_osd = on        panel kecil sesaat di bagian bawah layar setiap pindah workspace
+//!   workspace_osd_dots = off  tampilkan indikator titik/pil jumlah workspace di bawah teks OSD
 //!   overview_wrap = on        panah di overview berputar: dari ujung loncat ke ujung seberang
 //!   snap_layouts = on         menu preset layout muncul saat window diseret ke tepi atas layar;
 //!                     lepas di sebuah zona = window mengisi zona itu
@@ -46,7 +47,7 @@
 
 use std::path::PathBuf;
 
-use crate::bindings::{self, Bindings, Chord, ALT, WIN};
+use crate::bindings::{self, Bindings, Chord, WIN};
 
 pub const DEFAULT_GAP: i32 = 16;
 
@@ -129,6 +130,8 @@ pub struct Config {
     pub overview_wrap: bool,
     /// Panel kecil sesaat setiap pindah workspace.
     pub workspace_osd: bool,
+    /// Tampilkan deretan titik/pil indikator workspace di OSD (bawaan: mati).
+    pub workspace_osd_dots: bool,
     /// Simpan / pulihkan susunan workspace (layout.state).
     pub remember_layout: bool,
     /// Drag mouse: tukar posisi, geser pembagi (di layar) dan pindah workspace (di overview).
@@ -165,6 +168,7 @@ impl Default for Config {
             overview_colors: OverviewColors::default(),
             overview_wrap: true,
             workspace_osd: true,
+            workspace_osd_dots: false,
             remember_layout: true,
             mouse_drag: true,
             snap_layouts_enabled: true,
@@ -287,6 +291,10 @@ impl Config {
                 "workspace_osd" => match parse_bool(value) {
                     Some(b) => cfg.workspace_osd = b,
                     None => warnings.push(format!("line {n}: workspace_osd must be on/off")),
+                },
+                "workspace_osd_dots" => match parse_bool(value) {
+                    Some(b) => cfg.workspace_osd_dots = b,
+                    None => warnings.push(format!("line {n}: workspace_osd_dots must be on/off")),
                 },
                 "overview_wrap" => match parse_bool(value) {
                     Some(b) => cfg.overview_wrap = b,
@@ -602,12 +610,17 @@ pub fn load() -> LoadReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bindings::ALT;
 
     #[test]
     fn empty_text_gives_defaults() {
         let (cfg, warnings) = Config::parse("");
         assert_eq!(cfg, Config::default());
+        assert!(!cfg.workspace_osd_dots);
         assert!(warnings.is_empty());
+        let (cfg, w) = Config::parse("workspace_osd_dots = on\n");
+        assert!(cfg.workspace_osd_dots);
+        assert!(w.is_empty());
     }
 
     #[test]

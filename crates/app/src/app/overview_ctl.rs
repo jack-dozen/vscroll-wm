@@ -35,20 +35,37 @@ impl App {
         }
     }
 
+    /// Semua workspace berisi window terlihat + 1 workspace kosong di ujung (supaya
+    /// selalu bisa melihat & drag window ke workspace baru meski baru 1 yang terisi).
+    fn overview_maps(&self) -> Vec<(usize, layout::Overview)> {
+        let mut maps = self.ws.overviews();
+        if maps.is_empty() {
+            return maps;
+        }
+        let last = self.ws.count().saturating_sub(1);
+        if maps.last().map_or(true, |(n, _)| *n != last) {
+            if let Some(st) = self.ws.strip(last) {
+                maps.push((last, st.overview()));
+            }
+        }
+        maps
+    }
+
     pub(crate) unsafe fn try_open_overview(&mut self) -> bool {
         if !overview::available() {
             return false;
         }
         self.snap_reset(true); // slot kosong tidak boleh ikut masuk peta overview
-        let maps = self.ws.overviews();
+        let maps = self.overview_maps();
         if maps.is_empty() {
             return false;
         }
-        // Kolom tengah = workspace aktif (atau yang terdekat kalau aktif kosong).
+        // Kolom tengah = workspace aktif (atau yang terdekat yang punya window).
         let active = self.ws.active();
         let center = maps
             .iter()
             .enumerate()
+            .filter(|(_, (_, o))| !o.items.is_empty())
             .min_by_key(|(_, (n, _))| (n.abs_diff(active), *n))
             .map_or(0, |(i, _)| i);
         let Some(selected) = self.ws.representative(maps[center].0) else {
@@ -225,23 +242,79 @@ impl App {
         self.ws.entry_window(target, forward, y)
     }
 
-    /// Win+Ctrl+Kiri/Kanan atau angka di overview: kursor lompat ke workspace lain.
+    /// Win+Ctrl+Kiri/Kanan, angka, klik dock, atau hover dock saat drag: pindah stage
+    /// ke workspace lain (termasuk workspace kosong di ujung).
     /// `code`: 0 sebelumnya, 1 berikutnya, n >= 2 workspace nomor n - 2 (mulai 0).
     pub(crate) unsafe fn overview_workspace(&mut self, code: usize) {
-        let Some(sel) = self.overview.as_ref().map(|s| s.selected) else {
+        let Some(cur_big) = self.overview.as_ref().map(|s| s.model.big) else {
             return;
         };
-        let Some(from) = self.ws.workspace_of(sel) else {
+        let target_col = {
+            let Some(s) = self.overview.as_ref() else {
+                return;
+            };
+            match code {
+                0 => cur_big.checked_sub(1),
+                1 => (cur_big + 1 < s.model.maps.len()).then_some(cur_big + 1),
+                n => {
+                    let ws_num = n - 2;
+                    s.model.maps.iter().position(|(ws, _)| *ws == ws_num)
+                }
+            }
+        };
+        let Some(col) = target_col else {
             return;
         };
-        let target = match code {
-            0 => self.ws.adjacent_workspace(from, false),
-            1 => self.ws.adjacent_workspace(from, true),
-            n => Some(n - 2),
+        let ws_num = match self.overview.as_ref().and_then(|s| s.model.maps.get(col)) {
+            Some((n, _)) => *n,
+            None => return,
         };
-        if let Some(w) = target.and_then(|t| self.ws.representative(t)) {
+        if let Some(w) = self.ws.representative(ws_num) {
             self.overview_select(w);
+        } else {
+            // Workspace kosong di ujung: tampilkan stage kosongnya agar bisa di-drop
+            let opts = self.overview_options();
+            let thumbs = self.cfg.overview_thumbnails;
+            let Some(s) = self.overview.as_mut() else {
+                return;
+            };
+            s.model.big = col;
+            s.model.first = overview::scroll(s.model.first, s.model.visible, col);
+            let draw = overview::build(
+                &s.model,
+                &s.titles,
+                &s.sources,
+                s.selected.0,
+                s.focused,
+                work_area(),
+                &opts,
+            );
+            overview::show(draw, thumbs);
         }
+    }
+
+    /// Zoom stage diubah (Ctrl+Wheel / +/-/0): bangun ulang panel pada skala baru
+    /// sambil mempertahankan posisi scroll yang sedang dilihat.
+    pub(crate) unsafe fn overview_zoom(&mut self) {
+        let opts = self.overview_options();
+        let thumbs = self.cfg.overview_thumbnails;
+        let frac = overview::current_scroll_frac();
+        let Some(s) = self.overview.as_ref() else {
+            return;
+        };
+        let mut draw = overview::build(
+            &s.model,
+            &s.titles,
+            &s.sources,
+            s.selected.0,
+            s.focused,
+            work_area(),
+            &opts,
+        );
+        if let Some(f) = frac {
+            draw.apply_scroll_frac(f);
+        }
+        overview::show(draw, thumbs);
     }
 
     /// Window diseret lalu dilepas di overview (lihat `overview::take_drop`):
@@ -262,16 +335,28 @@ impl App {
             return;
         };
         let to = slot.number.saturating_sub(1);
-        let at = match slot.kind {
-            overview::SlotKind::Beside(t) => InsertPosition::Beside(WindowId(t)),
-            overview::SlotKind::Before(t) => InsertPosition::FullBefore(WindowId(t)),
-            overview::SlotKind::After(t) => InsertPosition::FullAfter(WindowId(t)),
-            overview::SlotKind::Split(t, first) => InsertPosition::Split(WindowId(t), first),
-        };
-        let changed = if to != from {
-            self.ws.move_window_at(src, to, at)
-        } else {
-            self.ws.reposition_window(src, at)
+        let changed = match slot.kind {
+            overview::SlotKind::Workspace => {
+                if to != from {
+                    self.ws.move_window_to(src, to)
+                } else {
+                    false
+                }
+            }
+            other => {
+                let at = match other {
+                    overview::SlotKind::Beside(t) => InsertPosition::Beside(WindowId(t)),
+                    overview::SlotKind::Before(t) => InsertPosition::FullBefore(WindowId(t)),
+                    overview::SlotKind::After(t) => InsertPosition::FullAfter(WindowId(t)),
+                    overview::SlotKind::Split(t, first) => InsertPosition::Split(WindowId(t), first),
+                    overview::SlotKind::Workspace => unreachable!(),
+                };
+                if to != from {
+                    self.ws.move_window_at(src, to, at)
+                } else {
+                    self.ws.reposition_window(src, at)
+                }
+            }
         };
         if changed {
             self.apply(); // parkir / penataan mengikuti susunan baru
@@ -285,7 +370,7 @@ impl App {
         let opts = self.overview_options();
         let thumbs = self.cfg.overview_thumbnails;
         let active = self.ws.active();
-        let maps = self.ws.overviews();
+        let maps = self.overview_maps();
         if maps.is_empty() {
             return;
         }

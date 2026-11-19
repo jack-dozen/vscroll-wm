@@ -5,18 +5,16 @@
 //! Aksi baru cukup ditambah di `bindings::ACTIONS`; yang perlu diperbarui di sini hanya
 //! baris tetap (yang tidak bisa diubah): `fixed_rows()`.
 
-use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::Mutex;
+use std::time::Instant;
 
 use layout::Rect;
 use windows::core::w;
-use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE};
+use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateFontIndirectW, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect,
-    InvalidateRect, SelectObject, SetBkMode, SetTextColor, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX,
-    DT_SINGLELINE, DT_VCENTER, HGDIOBJ, LOGFONTW, PAINTSTRUCT, TRANSPARENT,
+    BeginPaint, EndPaint, GetTextExtentPoint32W, InvalidateRect, SelectObject, DT_END_ELLIPSIS,
+    DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, HFONT, HGDIOBJ, PAINTSTRUCT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -25,8 +23,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::bindings::{self, Chord};
-use crate::config::{rgb, Config, HeightMode, OverviewColors};
-use crate::overview::luminance;
+use crate::config::{Config, HeightMode, OverviewColors};
+use crate::theme::{self, Canvas, Palette};
+use crate::winutil::animations_enabled;
 
 const TITLE_TEXT: &str = "Keyboard shortcuts";
 const FOOTER_TEXT: &str = "press any key, or click, to close";
@@ -75,12 +74,7 @@ fn push_row(out: &mut Vec<Group>, group: &str, keys: String, desc: String) {
 /// overview, dan cadangan. (kelompok, tombol, keterangan)
 fn fixed_rows(cfg: &Config) -> Vec<(&'static str, String, String)> {
     let row = |g: &'static str, k: &str, d: &str| (g, k.to_string(), d.to_string());
-    let cycle = cfg.bindings.overview_cycle_vk();
-    let cycle_keys = if cycle != 0 && cycle != 0x09 {
-        format!("Tab / Win + {}", bindings::vk_label(cycle))
-    } else {
-        "Tab".to_string()
-    };
+    let cycle_keys = "Tab";
     let select = if cfg.overview_wrap {
         "select a window (wraps around at the ends)"
     } else {
@@ -125,7 +119,7 @@ fn fixed_rows(cfg: &Config) -> Vec<(&'static str, String, String)> {
         ),
         row(
             bindings::G_OVERVIEW,
-            "Enter / release Win",
+            "Enter",
             "jump to the selected window",
         ),
         row(
@@ -238,6 +232,7 @@ pub struct Cell {
 
 pub struct Sheet {
     pub panel: Rect,
+    #[allow(dead_code)]
     pub columns: i32,
     pub cells: Vec<Cell>,
 }
@@ -387,10 +382,32 @@ pub fn compute(groups: &[Group], work: Rect) -> Sheet {
 
 // ------------------------------------------------------------------- jendela
 
-static SHEET: Mutex<Option<(Sheet, OverviewColors)>> = Mutex::new(None);
+const ANIM_TIMER_ID: usize = 1;
+const ANIM_TICK_MS: u32 = 16;
+const FADE_IN_MS: f32 = 150.0;
+const FADE_OUT_MS: f32 = 100.0;
+const MAX_ALPHA: u8 = 248;
+const SLIDE_PX: i32 = 10;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Entering,
+    Visible,
+    Exiting,
+}
+
+struct CsState {
+    sheet: Sheet,
+    colors: OverviewColors,
+    phase: Phase,
+    anim_start: Instant,
+}
+
+static SHEET: Mutex<Option<CsState>> = Mutex::new(None);
 static CS_HWND: AtomicIsize = AtomicIsize::new(0);
 static FONT_NORMAL: AtomicIsize = AtomicIsize::new(0);
 static FONT_BOLD: AtomicIsize = AtomicIsize::new(0);
+static FONT_KEY: AtomicIsize = AtomicIsize::new(0);
 static FONT_TITLE: AtomicIsize = AtomicIsize::new(0);
 static PREV_FG: AtomicIsize = AtomicIsize::new(0);
 static VISIBLE: AtomicBool = AtomicBool::new(false);
@@ -403,28 +420,93 @@ pub fn available() -> bool {
     CS_HWND.load(Ordering::Relaxed) != 0
 }
 
-unsafe fn make_font(height: i32, weight: i32) -> isize {
-    let mut lf: LOGFONTW = std::mem::zeroed();
-    lf.lfHeight = height;
-    lf.lfWeight = weight;
-    for (i, ch) in "Segoe UI".encode_utf16().enumerate() {
-        lf.lfFaceName[i] = ch;
+unsafe fn finish_close() {
+    let h = hwnd();
+    let _ = KillTimer(Some(h), ANIM_TIMER_ID);
+    let _ = ShowWindow(h, SW_HIDE);
+    if let Ok(mut g) = SHEET.lock() {
+        *g = None;
     }
-    CreateFontIndirectW(&lf).0 as isize
 }
 
 unsafe fn close(restore_focus: bool) {
     if !VISIBLE.swap(false, Ordering::Relaxed) {
         return;
     }
-    let _ = ShowWindow(hwnd(), SW_HIDE);
-    if let Ok(mut g) = SHEET.lock() {
-        *g = None;
-    }
     if restore_focus {
         let prev = HWND(PREV_FG.load(Ordering::Relaxed) as *mut _);
         if !prev.0.is_null() {
             let _ = SetForegroundWindow(prev);
+        }
+    }
+    if animations_enabled() {
+        let start_exit = if let Ok(mut g) = SHEET.lock() {
+            if let Some(st) = g.as_mut() {
+                st.phase = Phase::Exiting;
+                st.anim_start = Instant::now();
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if start_exit {
+            let _ = SetTimer(Some(hwnd()), ANIM_TIMER_ID, ANIM_TICK_MS, None);
+            return;
+        }
+    }
+    finish_close();
+}
+
+unsafe fn tick_anim(hwnd: HWND) {
+    let mut step: Option<(u8, i32, i32, bool, bool)> = None;
+    if let Ok(mut g) = SHEET.lock() {
+        if let Some(st) = g.as_mut() {
+            let elapsed = st.anim_start.elapsed().as_secs_f32() * 1000.0;
+            let p = st.sheet.panel;
+            match st.phase {
+                Phase::Entering => {
+                    let t = (elapsed / FADE_IN_MS).min(1.0);
+                    let e = theme::ease_fluent_out(t);
+                    let alpha = (MAX_ALPHA as f32 * e).round() as u8;
+                    let y = p.y + ((SLIDE_PX as f32) * (1.0 - e)).round() as i32;
+                    let done = t >= 1.0;
+                    if done {
+                        st.phase = Phase::Visible;
+                    }
+                    step = Some((alpha, p.x, y, done, false));
+                }
+                Phase::Exiting => {
+                    let t = (elapsed / FADE_OUT_MS).min(1.0);
+                    let e = theme::ease_fluent_in(t);
+                    let alpha = (MAX_ALPHA as f32 * (1.0 - e)).round() as u8;
+                    let y = p.y + ((SLIDE_PX as f32 * 0.6) * e).round() as i32;
+                    let done = t >= 1.0;
+                    step = Some((alpha, p.x, y, done, done));
+                }
+                Phase::Visible => {
+                    let _ = KillTimer(Some(hwnd), ANIM_TIMER_ID);
+                }
+            }
+        }
+    }
+    if let Some((alpha, x, y, stop, hide_win)) = step {
+        let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_ALPHA);
+        let _ = SetWindowPos(
+            hwnd,
+            Some(HWND_TOPMOST),
+            x,
+            y,
+            0,
+            0,
+            SWP_NOACTIVATE | SWP_NOSIZE,
+        );
+        if stop {
+            let _ = KillTimer(Some(hwnd), ANIM_TIMER_ID);
+        }
+        if hide_win {
+            finish_close();
         }
     }
 }
@@ -436,58 +518,100 @@ unsafe fn paint(hwnd: HWND) {
     let _ = GetClientRect(hwnd, &mut client);
 
     if let Ok(guard) = SHEET.lock() {
-        if let Some((sheet, colors)) = guard.as_ref() {
-            let bg = CreateSolidBrush(COLORREF(colors.background));
-            let rule = CreateSolidBrush(COLORREF(colors.box_fill));
-            FillRect(hdc, &client, bg);
-            SetBkMode(hdc, TRANSPARENT);
+        if let Some(st) = guard.as_ref() {
+            let pal = Palette::resolve(st.colors);
+            let mut canvas = Canvas::new(hdc, client);
+            canvas.fill_rect(client, pal.surface, 255);
 
-            let dark_bg = luminance(colors.background) <= 150;
-            let text = if dark_bg {
-                rgb(232, 235, 243)
-            } else {
-                rgb(25, 28, 36)
-            };
-            let dim = if dark_bg {
-                rgb(140, 148, 166)
-            } else {
-                rgb(100, 106, 120)
-            };
-            let font = |a: &AtomicIsize| HGDIOBJ(a.load(Ordering::Relaxed) as *mut _);
+            let font = |a: &AtomicIsize| HFONT(a.load(Ordering::Relaxed) as *mut _);
+            let f_title = font(&FONT_TITLE);
+            let f_bold = font(&FONT_BOLD);
+            let f_key = font(&FONT_KEY);
+            let f_normal = font(&FONT_NORMAL);
 
-            for cell in &sheet.cells {
-                if cell.kind == CellKind::Rule {
-                    FillRect(hdc, &cell.rect, rule);
-                    continue;
+            for cell in &st.sheet.cells {
+                match cell.kind {
+                    CellKind::Rule => {
+                        let line = RECT {
+                            left: cell.rect.left,
+                            top: cell.rect.top,
+                            right: cell.rect.right,
+                            bottom: cell.rect.top + 1,
+                        };
+                        canvas.fill_rect(line, pal.divider, 255);
+                    }
+                    CellKind::Keys => {
+                        // Lencana keycap membulat khas Windows 11 Settings / PowerToys
+                        let wide: Vec<u16> = cell.text.encode_utf16().collect();
+                        SelectObject(canvas.hdc(), HGDIOBJ(f_key.0));
+                        let mut sz = SIZE::default();
+                        let _ = GetTextExtentPoint32W(canvas.hdc(), &wide, &mut sz);
+                        let max_w = (cell.rect.right - cell.rect.left).max(1);
+                        let pill_w = (sz.cx + 16).min(max_w);
+                        let ch = cell.rect.bottom - cell.rect.top;
+                        let pill_h = (ch - 6).clamp(18, 26);
+                        let top = cell.rect.top + (ch - pill_h) / 2;
+                        let pill = RECT {
+                            left: cell.rect.left,
+                            top,
+                            right: cell.rect.left + pill_w,
+                            bottom: top + pill_h,
+                        };
+                        canvas.fill_round_rect(pill, 5.0, pal.control, 255);
+                        canvas.stroke_round_rect(pill, 5.0, pal.stroke_strong, 210, 1.0);
+                        let text_r = RECT {
+                            left: pill.left + 8,
+                            top: pill.top,
+                            right: (pill.right - 8).max(pill.left + 9),
+                            bottom: pill.bottom,
+                        };
+                        canvas.draw_text(
+                            &cell.text,
+                            text_r,
+                            f_key,
+                            pal.text,
+                            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+                        );
+                    }
+                    CellKind::Title => {
+                        canvas.draw_text(
+                            &cell.text,
+                            cell.rect,
+                            f_title,
+                            pal.text,
+                            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+                        );
+                    }
+                    CellKind::Header => {
+                        canvas.draw_text(
+                            &cell.text,
+                            cell.rect,
+                            f_bold,
+                            pal.accent,
+                            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+                        );
+                    }
+                    CellKind::Desc => {
+                        canvas.draw_text(
+                            &cell.text,
+                            cell.rect,
+                            f_normal,
+                            pal.text_secondary,
+                            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
+                        );
+                    }
+                    CellKind::Footer => {
+                        canvas.draw_text(
+                            &cell.text,
+                            cell.rect,
+                            f_normal,
+                            pal.text_muted,
+                            DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+                        );
+                    }
                 }
-                let (f, color, flags) = match cell.kind {
-                    CellKind::Title => (&FONT_TITLE, text, DT_LEFT | DT_VCENTER | DT_SINGLELINE),
-                    CellKind::Header => (
-                        &FONT_BOLD,
-                        colors.view,
-                        DT_LEFT | DT_VCENTER | DT_SINGLELINE,
-                    ),
-                    CellKind::Keys => (
-                        &FONT_BOLD,
-                        colors.active,
-                        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
-                    ),
-                    CellKind::Desc => (
-                        &FONT_NORMAL,
-                        text,
-                        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS,
-                    ),
-                    _ => (&FONT_NORMAL, dim, DT_LEFT | DT_VCENTER | DT_SINGLELINE),
-                };
-                SelectObject(hdc, font(f));
-                SetTextColor(hdc, COLORREF(color));
-                let mut t: Vec<u16> = cell.text.encode_utf16().collect();
-                let mut r = cell.rect;
-                DrawTextW(hdc, &mut t, &mut r, flags | DT_NOPREFIX);
             }
-            for b in [bg, rule] {
-                let _ = DeleteObject(HGDIOBJ(b.0));
-            }
+            canvas.present();
         }
     }
     let _ = EndPaint(hwnd, &ps);
@@ -500,6 +624,10 @@ unsafe extern "system" fn cs_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             LRESULT(0)
         }
         WM_ERASEBKGND => LRESULT(1),
+        WM_TIMER if wparam.0 == ANIM_TIMER_ID => {
+            tick_anim(hwnd);
+            LRESULT(0)
+        }
         WM_KEYDOWN | WM_SYSKEYDOWN => {
             let vk = wparam.0 as u16;
             let modifier = vk == VK_SHIFT.0
@@ -545,7 +673,7 @@ pub unsafe fn init() -> bool {
         return false;
     }
     let Ok(hwnd) = CreateWindowExW(
-        WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
         class,
         w!("vscroll-wm cheatsheet"),
         WS_POPUP,
@@ -562,16 +690,12 @@ pub unsafe fn init() -> bool {
     };
     CS_HWND.store(hwnd.0 as isize, Ordering::Relaxed);
 
-    let round: u32 = 2; // DWMWCP_ROUND (Windows 11)
-    let _ = DwmSetWindowAttribute(
-        hwnd,
-        DWMWA_WINDOW_CORNER_PREFERENCE,
-        &round as *const u32 as *const c_void,
-        4,
-    );
-    FONT_NORMAL.store(make_font(-20, 400), Ordering::Relaxed);
-    FONT_BOLD.store(make_font(-20, 700), Ordering::Relaxed);
-    FONT_TITLE.store(make_font(-30, 700), Ordering::Relaxed);
+    let pal = Palette::resolve(OverviewColors::default());
+    theme::apply_window_chrome(hwnd, &pal, false);
+    FONT_NORMAL.store(theme::create_font(-17, 400).0 as isize, Ordering::Relaxed);
+    FONT_BOLD.store(theme::create_font(-18, 600).0 as isize, Ordering::Relaxed);
+    FONT_KEY.store(theme::create_font(-15, 600).0 as isize, Ordering::Relaxed);
+    FONT_TITLE.store(theme::create_font(-26, 600).0 as isize, Ordering::Relaxed);
     true
 }
 
@@ -586,20 +710,41 @@ pub unsafe fn toggle(work: Rect, cfg: &Config) {
     }
     let sheet = compute(&groups(cfg), work);
     let p = sheet.panel;
+    let h = hwnd();
+    let pal = Palette::resolve(cfg.overview_colors);
+    theme::apply_window_chrome(h, &pal, false);
     PREV_FG.store(GetForegroundWindow().0 as isize, Ordering::Relaxed);
+
+    let anim = animations_enabled();
+    let (init_alpha, init_y) = if anim {
+        (0u8, p.y + SLIDE_PX)
+    } else {
+        (MAX_ALPHA, p.y)
+    };
     if let Ok(mut g) = SHEET.lock() {
-        *g = Some((sheet, cfg.overview_colors));
+        *g = Some(CsState {
+            sheet,
+            colors: cfg.overview_colors,
+            phase: if anim { Phase::Entering } else { Phase::Visible },
+            anim_start: Instant::now(),
+        });
     }
     VISIBLE.store(true, Ordering::Relaxed);
-    let h = hwnd();
-    let _ = SetWindowPos(h, Some(HWND_TOPMOST), p.x, p.y, p.w, p.h, SWP_SHOWWINDOW);
+    let _ = SetLayeredWindowAttributes(h, COLORREF(0), init_alpha, LWA_ALPHA);
+    let _ = SetWindowPos(h, Some(HWND_TOPMOST), p.x, init_y, p.w, p.h, SWP_SHOWWINDOW);
     let _ = SetForegroundWindow(h);
     let _ = InvalidateRect(Some(h), None, false);
+    if anim {
+        let _ = SetTimer(Some(h), ANIM_TIMER_ID, ANIM_TICK_MS, None);
+    } else {
+        let _ = KillTimer(Some(h), ANIM_TIMER_ID);
+    }
 }
 
 /// Tutup tanpa mengembalikan fokus (mis. saat dijeda).
 pub unsafe fn hide() {
-    close(false);
+    VISIBLE.store(false, Ordering::Relaxed);
+    finish_close();
 }
 
 #[cfg(test)]

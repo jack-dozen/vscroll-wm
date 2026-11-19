@@ -9,25 +9,23 @@
 //! (`layout_menu`, `hit`, `inside`) murni hitungan dan dipakai bersama oleh penggambar
 //! dan pencocok klik, jadi yang tampak selalu sama dengan yang dikenai.
 
-use std::ffi::c_void;
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::Mutex;
+use std::time::Instant;
 
 use layout::{Rect, SnapPreset};
 use windows::core::w;
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateFontIndirectW, CreateSolidBrush, DeleteObject, DrawTextW, EndPaint, FillRect,
-    InvalidateRect, SelectObject, SetBkMode, SetTextColor, DT_CENTER, DT_END_ELLIPSIS,
-    DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, HBRUSH, HDC, HGDIOBJ, LOGFONTW, PAINTSTRUCT,
-    TRANSPARENT,
+    BeginPaint, EndPaint, InvalidateRect, DT_CENTER, DT_END_ELLIPSIS, DT_NOPREFIX, DT_SINGLELINE,
+    DT_VCENTER, HFONT, PAINTSTRUCT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::config::{rgb, OverviewColors};
-use crate::overview::luminance;
+use crate::config::OverviewColors;
+use crate::theme::{self, Canvas, Palette};
+use crate::winutil::animations_enabled;
 
 /// Ukuran dasar (piksel pada 96 dpi); dikalikan skala dpi layar.
 const THUMB_W: i32 = 128;
@@ -160,28 +158,33 @@ pub fn inside(l: &MenuLayout, x: i32, y: i32, margin: i32) -> bool {
     x >= p.x - margin && x < p.x + p.w + margin && y >= p.y - margin && y < p.y + p.h + margin
 }
 
+const ANIM_TIMER_ID: usize = 1;
+const ANIM_TICK_MS: u32 = 16;
+const FADE_IN_MS: f32 = 150.0;
+const FADE_OUT_MS: f32 = 110.0;
+const MAX_ALPHA: u8 = 246;
+const SLIDE_PX: i32 = 16;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Entering,
+    Visible,
+    Exiting,
+}
+
 struct State {
     layout: MenuLayout,
     names: Vec<String>,
     hover: Option<(usize, usize)>,
     colors: OverviewColors,
+    phase: Phase,
+    anim_start: Instant,
+    start_alpha: u8,
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
 static MENU_HWND: AtomicIsize = AtomicIsize::new(0);
 static FONT: AtomicIsize = AtomicIsize::new(0);
-
-fn channels(c: u32) -> (u32, u32, u32) {
-    (c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF)
-}
-
-/// Campur warna `c` ke arah `toward` sebesar `pct` persen.
-pub(crate) fn mix(c: u32, toward: u32, pct: u32) -> u32 {
-    let (r, g, b) = channels(c);
-    let (tr, tg, tb) = channels(toward);
-    let f = |a: u32, t: u32| (a * (100 - pct) + t * pct) / 100;
-    rgb(f(r, tr), f(g, tg), f(b, tb))
-}
 
 fn local(r: Rect, origin: Rect) -> RECT {
     RECT {
@@ -189,18 +192,6 @@ fn local(r: Rect, origin: Rect) -> RECT {
         top: r.y - origin.y,
         right: r.x - origin.x + r.w,
         bottom: r.y - origin.y + r.h,
-    }
-}
-
-/// Bingkai persegi (garis tebal `t`) di sekeliling `r`.
-unsafe fn frame(hdc: HDC, r: &RECT, brush: HBRUSH, t: i32) {
-    for e in [
-        RECT { left: r.left, top: r.top, right: r.right, bottom: r.top + t },
-        RECT { left: r.left, top: r.bottom - t, right: r.right, bottom: r.bottom },
-        RECT { left: r.left, top: r.top, right: r.left + t, bottom: r.bottom },
-        RECT { left: r.right - t, top: r.top, right: r.right, bottom: r.bottom },
-    ] {
-        FillRect(hdc, &e, brush);
     }
 }
 
@@ -212,54 +203,114 @@ unsafe fn paint(hwnd: HWND) {
 
     if let Ok(g) = STATE.lock() {
         if let Some(st) = g.as_ref() {
-            let c = st.colors;
-            let text = if luminance(c.background) <= 150 {
-                rgb(232, 235, 243)
-            } else {
-                rgb(25, 28, 36)
-            };
-            let bg = CreateSolidBrush(COLORREF(c.background));
-            let boxb = CreateSolidBrush(COLORREF(c.box_fill));
-            let zone = CreateSolidBrush(COLORREF(mix(c.box_fill, text, 30)));
-            let hot = CreateSolidBrush(COLORREF(c.active));
-            let sel = CreateSolidBrush(COLORREF(c.selected));
-            FillRect(hdc, &client, bg);
-            SetBkMode(hdc, TRANSPARENT);
-            SelectObject(hdc, HGDIOBJ(FONT.load(Ordering::Relaxed) as *mut _));
-            SetTextColor(hdc, COLORREF(text));
+            let pal = Palette::resolve(st.colors);
+            let mut canvas = Canvas::new(hdc, client);
+            canvas.fill_rect(client, pal.surface, 255);
+            let font = HFONT(FONT.load(Ordering::Relaxed) as *mut _);
 
             let origin = st.layout.panel;
             for (pi, t) in st.layout.thumbs.iter().enumerate() {
                 let r = local(t.rect, origin);
-                FillRect(hdc, &r, boxb);
-                if st.hover.map_or(false, |(hp, _)| hp == pi) {
-                    frame(hdc, &r, sel, 2);
-                }
+                let hovered_group = st.hover.map_or(false, |(hp, _)| hp == pi);
+                canvas.fill_round_rect(
+                    r,
+                    8.0,
+                    if hovered_group { pal.card_hover } else { pal.layer },
+                    255,
+                );
+                canvas.stroke_round_rect(
+                    r,
+                    8.0,
+                    if hovered_group { pal.accent } else { pal.stroke },
+                    if hovered_group { 210 } else { 255 },
+                    if hovered_group { 1.5 } else { 1.0 },
+                );
+
                 for (zi, z) in t.zones.iter().enumerate() {
                     let zr = local(z.draw, origin);
                     let on = st.hover == Some((pi, zi));
-                    FillRect(hdc, &zr, if on { hot } else { zone });
+                    if on {
+                        canvas.fill_round_rect(zr, 4.0, pal.accent, 255);
+                    } else {
+                        canvas.fill_round_rect(zr, 4.0, pal.control, 255);
+                        canvas.stroke_round_rect(zr, 4.0, pal.stroke_strong, 180, 1.0);
+                    }
                 }
-                let mut label: Vec<u16> = st
-                    .names
-                    .get(pi)
-                    .map_or("", |n| n.as_str())
-                    .encode_utf16()
-                    .collect();
-                let mut lr = local(t.label, origin);
-                DrawTextW(
-                    hdc,
-                    &mut label,
-                    &mut lr,
+                let name = st.names.get(pi).map_or("", |n| n.as_str());
+                let lr = local(t.label, origin);
+                canvas.draw_text(
+                    name,
+                    lr,
+                    font,
+                    if hovered_group {
+                        pal.text
+                    } else {
+                        pal.text_secondary
+                    },
                     DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX,
                 );
             }
-            for b in [bg, boxb, zone, hot, sel] {
-                let _ = DeleteObject(HGDIOBJ(b.0));
-            }
+            canvas.present();
         }
     }
     let _ = EndPaint(hwnd, &ps);
+}
+
+unsafe fn tick_anim(hwnd: HWND) {
+    let mut action: Option<(u8, i32, i32, bool, bool)> = None;
+    if let Ok(mut g) = STATE.lock() {
+        if let Some(st) = g.as_mut() {
+            let elapsed = st.anim_start.elapsed().as_secs_f32() * 1000.0;
+            let p = st.layout.panel;
+            match st.phase {
+                Phase::Entering => {
+                    let t = (elapsed / FADE_IN_MS).min(1.0);
+                    let e = theme::ease_fluent_out(t);
+                    let alpha = (st.start_alpha as f32
+                        + (MAX_ALPHA as f32 - st.start_alpha as f32) * e)
+                        .round() as u8;
+                    let y = p.y - ((SLIDE_PX as f32) * (1.0 - e)).round() as i32;
+                    let done = t >= 1.0;
+                    if done {
+                        st.phase = Phase::Visible;
+                    }
+                    action = Some((alpha, p.x, y, done, false));
+                }
+                Phase::Exiting => {
+                    let t = (elapsed / FADE_OUT_MS).min(1.0);
+                    let e = theme::ease_fluent_in(t);
+                    let alpha = ((st.start_alpha as f32) * (1.0 - e)).round() as u8;
+                    let y = p.y - ((SLIDE_PX as f32 * 0.75) * e).round() as i32;
+                    let done = t >= 1.0;
+                    action = Some((alpha, p.x, y, done, done));
+                }
+                Phase::Visible => {
+                    let _ = KillTimer(Some(hwnd), ANIM_TIMER_ID);
+                }
+            }
+        }
+        if let Some((_, _, _, _, true)) = action {
+            *g = None;
+        }
+    }
+    if let Some((alpha, x, y, stop, hide_win)) = action {
+        let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_ALPHA);
+        let _ = SetWindowPos(
+            hwnd,
+            Some(HWND_TOPMOST),
+            x,
+            y,
+            0,
+            0,
+            SWP_NOACTIVATE | SWP_NOSIZE,
+        );
+        if stop {
+            let _ = KillTimer(Some(hwnd), ANIM_TIMER_ID);
+        }
+        if hide_win {
+            let _ = ShowWindow(hwnd, SW_HIDE);
+        }
+    }
 }
 
 unsafe extern "system" fn menu_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
@@ -269,6 +320,10 @@ unsafe extern "system" fn menu_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
             LRESULT(0)
         }
         WM_ERASEBKGND => LRESULT(1),
+        WM_TIMER if wparam.0 == ANIM_TIMER_ID => {
+            tick_anim(hwnd);
+            LRESULT(0)
+        }
         WM_NCHITTEST => LRESULT(-1), // HTTRANSPARENT: klik menembus panel
         WM_MOUSEACTIVATE => LRESULT(3), // MA_NOACTIVATE
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
@@ -292,7 +347,7 @@ pub unsafe fn init(scale: f32) -> bool {
         return false;
     }
     let Ok(hwnd) = CreateWindowExW(
-        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+        WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
         class,
         w!("vscroll-wm snap layouts"),
         WS_POPUP,
@@ -309,20 +364,10 @@ pub unsafe fn init(scale: f32) -> bool {
     };
     MENU_HWND.store(hwnd.0 as isize, Ordering::Relaxed);
 
-    let round: u32 = 2; // DWMWCP_ROUND (Windows 11)
-    let _ = DwmSetWindowAttribute(
-        hwnd,
-        DWMWA_WINDOW_CORNER_PREFERENCE,
-        &round as *const u32 as *const c_void,
-        4,
-    );
-    let mut lf: LOGFONTW = std::mem::zeroed();
-    lf.lfHeight = -((15.0 * scale).round() as i32);
-    lf.lfWeight = 400;
-    for (i, ch) in "Segoe UI".encode_utf16().enumerate() {
-        lf.lfFaceName[i] = ch;
-    }
-    FONT.store(CreateFontIndirectW(&lf).0 as isize, Ordering::Relaxed);
+    let pal = Palette::resolve(OverviewColors::default());
+    theme::apply_window_chrome(hwnd, &pal, false);
+    let fh = -((13.0 * scale).round() as i32);
+    FONT.store(theme::create_font(fh, 500).0 as isize, Ordering::Relaxed);
     true
 }
 
@@ -335,26 +380,44 @@ pub unsafe fn show(layout: MenuLayout, names: Vec<String>, colors: OverviewColor
     if MENU_HWND.load(Ordering::Relaxed) == 0 {
         return;
     }
+    let h = hwnd();
     let p = layout.panel;
+    let pal = Palette::resolve(colors);
+    theme::apply_window_chrome(h, &pal, false);
+
+    let anim = animations_enabled();
+    let (init_alpha, init_y, start_timer) = if anim {
+        (0u8, p.y - SLIDE_PX, true)
+    } else {
+        (MAX_ALPHA, p.y, false)
+    };
     if let Ok(mut g) = STATE.lock() {
         *g = Some(State {
             layout,
             names,
             hover: None,
             colors,
+            phase: if anim { Phase::Entering } else { Phase::Visible },
+            anim_start: Instant::now(),
+            start_alpha: init_alpha,
         });
     }
-    let h = hwnd();
+    let _ = SetLayeredWindowAttributes(h, COLORREF(0), init_alpha, LWA_ALPHA);
     let _ = SetWindowPos(
         h,
         Some(HWND_TOPMOST),
         p.x,
-        p.y,
+        init_y,
         p.w,
         p.h,
         SWP_SHOWWINDOW | SWP_NOACTIVATE,
     );
     let _ = InvalidateRect(Some(h), None, false);
+    if start_timer {
+        let _ = SetTimer(Some(h), ANIM_TIMER_ID, ANIM_TICK_MS, None);
+    } else {
+        let _ = KillTimer(Some(h), ANIM_TIMER_ID);
+    }
 }
 
 /// Sorot zona (nomor preset, nomor zona) di bawah kursor; None = tidak ada.
@@ -373,9 +436,34 @@ pub unsafe fn set_hover(hover: Option<(usize, usize)>) {
 }
 
 pub unsafe fn hide() {
-    if MENU_HWND.load(Ordering::Relaxed) != 0 {
-        let _ = ShowWindow(hwnd(), SW_HIDE);
+    if MENU_HWND.load(Ordering::Relaxed) == 0 {
+        return;
     }
+    let h = hwnd();
+    if animations_enabled() {
+        let start_exit = if let Ok(mut g) = STATE.lock() {
+            if let Some(st) = g.as_mut() {
+                if st.phase != Phase::Exiting {
+                    st.phase = Phase::Exiting;
+                    st.anim_start = Instant::now();
+                    st.start_alpha = MAX_ALPHA;
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if start_exit {
+            let _ = SetTimer(Some(h), ANIM_TIMER_ID, ANIM_TICK_MS, None);
+            return;
+        }
+    }
+    let _ = KillTimer(Some(h), ANIM_TIMER_ID);
+    let _ = ShowWindow(h, SW_HIDE);
     if let Ok(mut g) = STATE.lock() {
         *g = None;
     }

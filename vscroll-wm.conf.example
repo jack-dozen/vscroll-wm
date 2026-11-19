@@ -140,10 +140,11 @@ remember_layout = on
 
 # --- Workspace indicator ---
 # on (default): a small panel appears near the bottom of the screen for about a second
-# whenever the workspace changes ("Workspace 2" plus one box per workspace, the current
-# one highlighted). It never takes focus and ignores clicks. Colors follow the overview
-# colors below. off: no panel.
+# whenever the workspace changes ("Workspace 2"). It never takes focus and ignores clicks.
+# Colors follow the Windows theme (or overview colors above). off: no panel.
 workspace_osd = on
+# Show pill/dot indicators for each workspace below the label: on / off (default: off).
+workspace_osd_dots = off
 
 # --- Overview: wrap-around arrow navigation ---
 # on (default): arrow keys in the overview wrap around. Up on the top row goes to the

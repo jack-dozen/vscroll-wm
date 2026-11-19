@@ -6,27 +6,29 @@
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::Mutex;
+use std::time::Instant;
 
 use layout::{Dir, InsertPosition, Overview, Rect, WindowId};
 use windows::core::w;
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
-use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_WINDOW_CORNER_PREFERENCE};
-use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CreateSolidBrush, DeleteObject, EndPaint, FillRect, FrameRect, InvalidateRect,
-    HGDIOBJ, PAINTSTRUCT,
-};
+use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, InvalidateRect, PAINTSTRUCT};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::config::rgb;
-use crate::overview::luminance;
+use crate::config::OverviewColors;
+use crate::theme::{self, Canvas, Palette};
+use crate::winutil::animations_enabled;
 
 /// Tinggi pita horizontal untuk slot `FullBefore` / `FullAfter` (di antara window).
 const BAR_H: i32 = 30;
 /// Toleransi piksel untuk menyamakan tepi / lebar kolom.
 const SLACK: i32 = 4;
-/// Opasitas overlay (0..=255).
-const ALPHA: u8 = 165;
+/// Opasitas overlay (0..=255), menyerupai pratinjau Aero Snap Windows 11.
+const ALPHA: u8 = 195;
+const ANIM_TIMER_ID: usize = 1;
+const ANIM_TICK_MS: u32 = 16;
+const GLIDE_MS: f32 = 130.0;
+const FADE_MS: f32 = 120.0;
 
 /// Jenis tempat mendarat yang bisa dipilih di mode `pick`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -307,9 +309,21 @@ pub fn step_slot(slots: &[PickSlot], cur: usize, dir: Dir) -> Option<usize> {
 
 // ------------------------------------------------------------------ Win32 overlay
 
+struct OverlayState {
+    accent: u32,
+    icon: isize,
+    visible: bool,
+    from: Rect,
+    to: Rect,
+    cur: Rect,
+    start_alpha: u8,
+    cur_alpha: u8,
+    anim_start: Instant,
+    animating: bool,
+}
+
 static OVERLAY_HWND: AtomicIsize = AtomicIsize::new(0);
-/// (warna COLORREF, HICON sebagai isize; 0 = tidak ada ikon)
-static DRAW_STATE: Mutex<(u32, isize)> = Mutex::new((0x00F5_A84F, 0));
+static DRAW_STATE: Mutex<Option<OverlayState>> = Mutex::new(None);
 
 /// Ambil ikon window (milik window / kelas, tidak perlu `DestroyIcon`).
 /// Memakai `SendMessageTimeoutW` supaya tidak pernah macet kalau app sedang sibuk.
@@ -338,42 +352,64 @@ pub unsafe fn window_icon(hwnd: HWND) -> isize {
     0
 }
 
+fn lerp_rect(a: Rect, b: Rect, e: f32) -> Rect {
+    let f = |u: i32, v: i32| (u as f32 + (v - u) as f32 * e).round() as i32;
+    Rect {
+        x: f(a.x, b.x),
+        y: f(a.y, b.y),
+        w: f(a.w, b.w).max(1),
+        h: f(a.h, b.h).max(1),
+    }
+}
+
 unsafe fn paint(hwnd: HWND) {
     let mut ps = PAINTSTRUCT::default();
     let hdc = BeginPaint(hwnd, &mut ps);
     let mut client = RECT::default();
     let _ = GetClientRect(hwnd, &mut client);
 
-    if let Ok(g) = DRAW_STATE.lock() {
-        let (color, icon_raw) = *g;
-        let fill = CreateSolidBrush(COLORREF(color));
-        FillRect(hdc, &client, fill);
+    let snap = DRAW_STATE
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(|s| (s.accent, s.icon)));
+    if let Some((accent, icon_raw)) = snap {
+        let pal = Palette::resolve(OverviewColors::default());
+        let mut canvas = Canvas::new(hdc, client);
 
-        let dark = luminance(color) <= 150;
-        let edge_rgb = if dark {
-            rgb(245, 248, 255)
-        } else {
-            rgb(20, 24, 34)
+        // Permukaan kaca halus bernuansa aksen (gaya pratinjau Snap Windows 11)
+        let tint = theme::mix(pal.surface, accent, if pal.dark { 28 } else { 20 });
+        canvas.fill_rect(client, tint, 255);
+        let border_r = RECT {
+            left: client.left + 1,
+            top: client.top + 1,
+            right: (client.right - 1).max(client.left + 2),
+            bottom: (client.bottom - 1).max(client.top + 2),
         };
-        let frame = CreateSolidBrush(COLORREF(edge_rgb));
-        for inset in 0..3 {
-            let r = RECT {
-                left: client.left + inset,
-                top: client.top + inset,
-                right: client.right - inset,
-                bottom: client.bottom - inset,
-            };
-            FrameRect(hdc, &r, frame);
-        }
+        canvas.stroke_round_rect(border_r, 8.0, accent, 255, 2.0);
 
         if icon_raw != 0 {
             let cw = client.right - client.left;
             let ch = client.bottom - client.top;
-            let size = (cw.min(ch) - 6).clamp(16, 48);
+            let size = (cw.min(ch) - 16).clamp(16, 44);
+            if cw >= size + 16 && ch >= size + 16 {
+                let pad = 10;
+                let bw = size + pad * 2;
+                let bh = size + pad * 2;
+                let bx = (cw - bw) / 2;
+                let by = (ch - bh) / 2;
+                let badge = RECT {
+                    left: bx,
+                    top: by,
+                    right: bx + bw,
+                    bottom: by + bh,
+                };
+                canvas.fill_round_rect(badge, 10.0, pal.surface, 230);
+                canvas.stroke_round_rect(badge, 10.0, pal.stroke_strong, 200, 1.0);
+            }
             let x = (cw - size) / 2;
             let y = (ch - size) / 2;
             let _ = DrawIconEx(
-                hdc,
+                canvas.hdc(),
                 x,
                 y,
                 HICON(icon_raw as *mut c_void),
@@ -384,11 +420,53 @@ unsafe fn paint(hwnd: HWND) {
                 DI_NORMAL,
             );
         }
-
-        let _ = DeleteObject(HGDIOBJ(fill.0));
-        let _ = DeleteObject(HGDIOBJ(frame.0));
+        canvas.present();
     }
     let _ = EndPaint(hwnd, &ps);
+}
+
+unsafe fn tick_anim(hwnd: HWND) {
+    let mut step: Option<(Rect, u8, bool)> = None;
+    if let Ok(mut g) = DRAW_STATE.lock() {
+        if let Some(st) = g.as_mut() {
+            if !st.animating {
+                let _ = KillTimer(Some(hwnd), ANIM_TIMER_ID);
+                return;
+            }
+            let elapsed = st.anim_start.elapsed().as_secs_f32() * 1000.0;
+            let tg = (elapsed / GLIDE_MS).min(1.0);
+            let tf = (elapsed / FADE_MS).min(1.0);
+            let eg = theme::ease_fluent_out(tg);
+            let ef = theme::ease_fluent_out(tf);
+            st.cur = lerp_rect(st.from, st.to, eg);
+            st.cur_alpha = (st.start_alpha as f32
+                + (ALPHA as f32 - st.start_alpha as f32) * ef)
+                .round() as u8;
+            let done = tg >= 1.0 && tf >= 1.0;
+            if done {
+                st.animating = false;
+                st.cur = st.to;
+                st.cur_alpha = ALPHA;
+            }
+            step = Some((st.cur, st.cur_alpha, done));
+        }
+    }
+    if let Some((r, alpha, done)) = step {
+        let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_ALPHA);
+        let _ = SetWindowPos(
+            hwnd,
+            Some(HWND_TOPMOST),
+            r.x,
+            r.y,
+            r.w.max(1),
+            r.h.max(1),
+            SWP_NOACTIVATE,
+        );
+        let _ = InvalidateRect(Some(hwnd), None, false);
+        if done {
+            let _ = KillTimer(Some(hwnd), ANIM_TIMER_ID);
+        }
+    }
 }
 
 unsafe extern "system" fn overlay_proc(
@@ -403,6 +481,10 @@ unsafe extern "system" fn overlay_proc(
             LRESULT(0)
         }
         WM_ERASEBKGND => LRESULT(1),
+        WM_TIMER if wparam.0 == ANIM_TIMER_ID => {
+            tick_anim(hwnd);
+            LRESULT(0)
+        }
         _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
 }
@@ -439,13 +521,8 @@ pub unsafe fn init() -> bool {
         return false;
     };
     let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), ALPHA, LWA_ALPHA);
-    let round: u32 = 2; // DWMWCP_ROUND
-    let _ = DwmSetWindowAttribute(
-        hwnd,
-        DWMWA_WINDOW_CORNER_PREFERENCE,
-        &round as *const _ as *const c_void,
-        std::mem::size_of::<u32>() as u32,
-    );
+    let pal = Palette::resolve(OverviewColors::default());
+    theme::apply_window_chrome(hwnd, &pal, false);
     OVERLAY_HWND.store(hwnd.0 as isize, Ordering::Relaxed);
     true
 }
@@ -458,20 +535,57 @@ pub unsafe fn show(rect: Rect, color: u32, icon: isize) {
         return;
     }
     let hwnd = HWND(raw as *mut c_void);
-    if let Ok(mut g) = DRAW_STATE.lock() {
-        g.0 = color;
-        g.1 = icon;
-    }
+    let pal = Palette::resolve(OverviewColors::default());
+    // Kalau warna sama dengan default lama, gunakan aksen Windows aktif
+    let accent = if color == OverviewColors::default().active {
+        pal.accent
+    } else {
+        color
+    };
+    theme::apply_window_chrome(hwnd, &pal, false);
+
+    let anim = animations_enabled();
+    let (init_r, init_alpha, start_timer) = if let Ok(mut g) = DRAW_STATE.lock() {
+        let prev = g.as_ref().filter(|s| s.visible);
+        let (from, start_alpha) = match prev {
+            Some(p) if anim => (p.cur, p.cur_alpha),
+            _ if anim => (rect, 0),
+            _ => (rect, ALPHA),
+        };
+        let need_anim = anim && (from != rect || start_alpha != ALPHA);
+        *g = Some(OverlayState {
+            accent,
+            icon,
+            visible: true,
+            from,
+            to: rect,
+            cur: from,
+            start_alpha,
+            cur_alpha: start_alpha,
+            anim_start: Instant::now(),
+            animating: need_anim,
+        });
+        (from, start_alpha, need_anim)
+    } else {
+        (rect, ALPHA, false)
+    };
+
+    let _ = SetLayeredWindowAttributes(hwnd, COLORREF(0), init_alpha, LWA_ALPHA);
     let _ = SetWindowPos(
         hwnd,
         Some(HWND_TOPMOST),
-        rect.x,
-        rect.y,
-        rect.w.max(1),
-        rect.h.max(1),
+        init_r.x,
+        init_r.y,
+        init_r.w.max(1),
+        init_r.h.max(1),
         SWP_NOACTIVATE | SWP_SHOWWINDOW,
     );
     let _ = InvalidateRect(Some(hwnd), None, false);
+    if start_timer {
+        let _ = SetTimer(Some(hwnd), ANIM_TIMER_ID, ANIM_TICK_MS, None);
+    } else {
+        let _ = KillTimer(Some(hwnd), ANIM_TIMER_ID);
+    }
 }
 
 /// Sembunyikan marker overlay.
@@ -480,7 +594,15 @@ pub unsafe fn hide() {
     if raw == 0 {
         return;
     }
-    let _ = ShowWindow(HWND(raw as *mut c_void), SW_HIDE);
+    let hwnd = HWND(raw as *mut c_void);
+    let _ = KillTimer(Some(hwnd), ANIM_TIMER_ID);
+    if let Ok(mut g) = DRAW_STATE.lock() {
+        if let Some(st) = g.as_mut() {
+            st.visible = false;
+            st.animating = false;
+        }
+    }
+    let _ = ShowWindow(hwnd, SW_HIDE);
 }
 
 #[cfg(test)]

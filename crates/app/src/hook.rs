@@ -91,12 +91,10 @@ pub(crate) fn overview_hook_action(
     if vk == VK_ESCAPE.0 {
         return Some((overview::WM_OV_CANCEL, 0, false));
     }
-    if overview_vk != 0 && vk == overview_vk && !alt && !ctrl {
-        return Some((overview::WM_OV_CYCLE, if shift { 0 } else { 1 }, true));
-    }
     if bound == Some(HOTKEY_OVERVIEW) {
-        return Some((WM_ACTION, HOTKEY_OVERVIEW as usize, false)); // tutup
+        return Some((WM_ACTION, HOTKEY_OVERVIEW as usize, false)); // toggle tutup
     }
+    let _ = (shift, alt, overview_vk);
     None
 }
 
@@ -282,18 +280,6 @@ pub(crate) unsafe extern "system" fn kb_hook(code: i32, wparam: WPARAM, lparam: 
                 if !down {
                     HELD_VK.store(0, Ordering::Relaxed);
                 }
-                // Gaya Alt+Tab: Win dilepas setelah pilihan digeser = loncat ke window itu
-                if !down
-                    && OV_OPEN.load(Ordering::Relaxed)
-                    && OV_MOVED.swap(false, Ordering::Relaxed)
-                {
-                    let _ = PostThreadMessageW(
-                        MAIN_THREAD.load(Ordering::Relaxed),
-                        overview::WM_OV_ACCEPT,
-                        WPARAM(0),
-                        LPARAM(0),
-                    );
-                }
             } else if WIN_DOWN.load(Ordering::Relaxed)
                 && (GetAsyncKeyState(VK_LWIN.0 as i32) < 0
                     || GetAsyncKeyState(VK_RWIN.0 as i32) < 0)
@@ -439,16 +425,14 @@ mod tests {
     }
 
     #[test]
-    fn tab_cycles_forward_and_shift_tab_backward() {
+    fn overview_key_toggles_close_instead_of_cycling_while_holding_win() {
         assert_eq!(
             act(TAB, false, false, false),
-            Some((overview::WM_OV_CYCLE, 1, true))
+            Some((WM_ACTION, HOTKEY_OVERVIEW as usize, false))
         );
-        assert_eq!(
-            act(TAB, true, false, false),
-            Some((overview::WM_OV_CYCLE, 0, true))
-        );
-        // overview_key off: tidak ada tombol putar
+        // Win+Shift+Tab bukan shortcut toggle overview
+        assert_eq!(act(TAB, true, false, false), None);
+        // overview_key off: tidak ada aksi Win+Tab
         assert_eq!(overview_hook_action(TAB, false, false, false, 0, None), None);
     }
 

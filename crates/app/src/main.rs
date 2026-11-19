@@ -43,6 +43,7 @@ mod safety;
 mod snap_menu;
 mod snap_slots;
 mod taskbar;
+mod theme;
 mod tray;
 mod winutil;
 
@@ -132,6 +133,7 @@ fn main() {
         }
         MAIN_THREAD.store(GetCurrentThreadId(), Ordering::Relaxed);
         safety::install(GetCurrentThreadId());
+        theme::init();
         taskbar::init();
         if !overview::init(GetCurrentThreadId()) {
             eprintln!("gagal membuat jendela overview");
@@ -230,6 +232,7 @@ fn main() {
                 overview::WM_OV_CANCEL => app.close_overview(false),
                 overview::WM_OV_PICK => app.overview_pick(msg.wParam.0 as u64),
                 overview::WM_OV_DROP => app.overview_drop(),
+                overview::WM_OV_ZOOM => app.overview_zoom(),
                 WM_SNAP_PICK => app.snap_assist_pick(msg.wParam.0 as u64, msg.lParam.0 as u64),
                 WM_SNAP_CANCEL => app.snap_assist_end(true),
                 WM_JOIN_COMMIT => app.join_commit(),
@@ -292,6 +295,7 @@ fn main() {
         tray::remove();
         safety::restore_all();
         taskbar::shutdown();
+        theme::shutdown();
         safety::EXIT_DONE.store(true, Ordering::Relaxed);
         println!("semua window dikembalikan. sampai jumpa.");
     }
