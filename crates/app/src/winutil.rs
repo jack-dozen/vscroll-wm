@@ -26,6 +26,11 @@ pub(crate) fn wid(h: HWND) -> WindowId {
     WindowId(h.0 as usize as u64)
 }
 
+/// True kalau proses pemilik window ini sedang tidak merespons (hang).
+pub(crate) unsafe fn is_hung(hwnd: HWND) -> bool {
+    IsHungAppWindow(hwnd).as_bool()
+}
+
 /// Why this window is NOT tiled (None = it can be tiled).
 pub(crate) unsafe fn unmanaged_reason(hwnd: HWND) -> Option<&'static str> {
     if !IsWindowVisible(hwnd).as_bool() {

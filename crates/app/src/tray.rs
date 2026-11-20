@@ -1,13 +1,15 @@
 //! Tray icon (right-click menu: Pause / Run at login / Quit) and
 //! autostart settings via the HKCU\...\Run registry key.
 
-use std::os::windows::process::CommandExt;
-use std::process::Command;
+use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, Ordering};
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::System::Registry::{
+    RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ,
+};
 use windows::Win32::UI::Shell::{
     Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NIM_MODIFY,
     NOTIFYICONDATAW,
@@ -22,6 +24,8 @@ pub const WM_TRAY_PAUSE: u32 = WM_APP + 5;
 pub const WM_TRAY_RELOAD: u32 = WM_APP + 6;
 /// Sent to the main thread: open / close the cheatsheet.
 pub const WM_TRAY_HELP: u32 = WM_APP + 12;
+/// Sent to the main thread on logoff / shutdown (`wParam`: 0 = query, 1 = ending, 2 = cancelled).
+pub const WM_TRAY_SESSION_END: u32 = WM_APP + 27;
 
 /// True = the app is paused: windows are restored to their original positions
 /// and all hotkeys are passed through to Windows as usual.
@@ -31,6 +35,7 @@ static MAIN_THREAD: AtomicU32 = AtomicU32::new(0);
 static TRAY_HWND: AtomicIsize = AtomicIsize::new(0);
 static ICON: AtomicIsize = AtomicIsize::new(0);
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
+static SESSION_WAS_PAUSED: AtomicBool = AtomicBool::new(false);
 
 const ID_PAUSE: usize = 1;
 const ID_AUTOSTART: usize = 2;
@@ -38,9 +43,8 @@ const ID_QUIT: usize = 3;
 const ID_RELOAD: usize = 4;
 const ID_HELP: usize = 5;
 
-const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
-const RUN_VALUE: &str = "vscroll-wm";
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+const RUN_SUBKEY: PCWSTR = w!(r"Software\Microsoft\Windows\CurrentVersion\Run");
+const RUN_VALUE: PCWSTR = w!("vscroll-wm");
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
@@ -48,36 +52,41 @@ fn wide(s: &str) -> Vec<u16> {
 
 // ---------------------------------------------------------------- autostart
 
-fn reg() -> Command {
-    let mut c = Command::new("reg");
-    c.creation_flags(CREATE_NO_WINDOW);
-    c
-}
-
 pub fn autostart_enabled() -> bool {
-    reg()
-        .args(["query", RUN_KEY, "/v", RUN_VALUE])
-        .output()
-        .map_or(false, |o| o.status.success())
+    unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            RUN_SUBKEY,
+            RUN_VALUE,
+            RRF_RT_REG_SZ,
+            None,
+            None,
+            None,
+        )
+        .is_ok()
+    }
 }
 
 pub fn set_autostart(on: bool) -> bool {
-    let out = if on {
-        let Ok(exe) = std::env::current_exe() else {
-            return false;
-        };
-        let value = format!("\"{}\"", exe.display());
-        reg()
-            .args([
-                "add", RUN_KEY, "/v", RUN_VALUE, "/t", "REG_SZ", "/d", &value, "/f",
-            ])
-            .output()
-    } else {
-        reg()
-            .args(["delete", RUN_KEY, "/v", RUN_VALUE, "/f"])
-            .output()
-    };
-    out.map_or(false, |o| o.status.success())
+    unsafe {
+        if on {
+            let Ok(exe) = std::env::current_exe() else {
+                return false;
+            };
+            let data = wide(&format!("\"{}\"", exe.display()));
+            RegSetKeyValueW(
+                HKEY_CURRENT_USER,
+                RUN_SUBKEY,
+                RUN_VALUE,
+                REG_SZ.0,
+                Some(data.as_ptr() as *const c_void),
+                (data.len() * std::mem::size_of::<u16>()) as u32,
+            )
+            .is_ok()
+        } else {
+            RegDeleteKeyValueW(HKEY_CURRENT_USER, RUN_SUBKEY, RUN_VALUE).is_ok()
+        }
+    }
 }
 
 // --------------------------------------------------------------------- icons
@@ -252,6 +261,42 @@ unsafe extern "system" fn tray_proc(
     let tb = TASKBAR_CREATED.load(Ordering::Relaxed);
     if tb != 0 && msg == tb {
         add_icon(hwnd); // Explorer restarted: add the icon again.
+        return LRESULT(0);
+    }
+    if msg == WM_QUERYENDSESSION {
+        // Pulihkan semua window secara sinkron sebelum app lain menyimpan posisinya.
+        let was_paused = PAUSED.swap(true, Ordering::Relaxed);
+        SESSION_WAS_PAUSED.store(was_paused, Ordering::Relaxed);
+        crate::safety::restore_all();
+        crate::taskbar::show_all();
+        let _ = PostThreadMessageW(
+            MAIN_THREAD.load(Ordering::Relaxed),
+            WM_TRAY_SESSION_END,
+            WPARAM(0),
+            LPARAM(0),
+        );
+        return LRESULT(1); // TRUE: izinkan logoff / shutdown
+    }
+    if msg == WM_ENDSESSION {
+        if wparam.0 != 0 {
+            crate::safety::restore_all();
+            crate::taskbar::shutdown();
+            let _ = PostThreadMessageW(
+                MAIN_THREAD.load(Ordering::Relaxed),
+                WM_TRAY_SESSION_END,
+                WPARAM(1),
+                LPARAM(0),
+            );
+        } else if !SESSION_WAS_PAUSED.load(Ordering::Relaxed) {
+            // Shutdown dibatalkan: aktifkan kembali tiling.
+            PAUSED.store(false, Ordering::Relaxed);
+            let _ = PostThreadMessageW(
+                MAIN_THREAD.load(Ordering::Relaxed),
+                WM_TRAY_SESSION_END,
+                WPARAM(2),
+                LPARAM(0),
+            );
+        }
         return LRESULT(0);
     }
     DefWindowProcW(hwnd, msg, wparam, lparam)

@@ -12,7 +12,7 @@ mod workspace;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::Ordering;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use layout::{WindowId, Workspaces};
 
@@ -27,11 +27,11 @@ pub(crate) use self::actions::show_config_problems;
 use self::anim::Anim;
 use self::pick::PickSession;
 use self::snap::{SnapAssist, SnapDrag};
-use crate::consts::DEFAULT_ANIM_MS;
+use crate::consts::{DEFAULT_ANIM_MS, EVENT_DEBOUNCE_MS};
 use crate::hook::OVERVIEW_VK;
 use crate::winutil::{
-    animations_enabled, bounds, collect, ext_bounds, place, set_border, title, wid, work_area,
-    Bounds,
+    animations_enabled, bounds, collect, ext_bounds, is_hung, place, set_border, title, wid,
+    work_area, Bounds,
 };
 use crate::{bindings, config, overview, rules, safety, taskbar};
 use workspace::{slide_dir, Slide};
@@ -349,6 +349,9 @@ impl App {
                 let Some(&h) = self.map.get(&p.id) else {
                     continue;
                 };
+                if is_hung(h) {
+                    continue; // jangan biarkan app yang hang membekukan seluruh WM
+                }
                 let t = p.rect;
                 // Just unparked: start off-screen on the entering side, then slide in
                 // (do not animate from -32768). If it is already sliding out (switching
@@ -376,23 +379,21 @@ impl App {
                 }
                 // Size changed -> go directly to the final size, without animation.
                 self.anim.remove(&p.id);
-                let (mut a, denied) = place(h, t);
+                let (a, denied) = place(h, t);
                 if denied {
                     self.mark_blocked(p.id, h);
                     grew = true; // Recalculate the layout without this window.
                     continue;
                 }
-                let mut got = a.bottom - a.top;
-                let mut got_w = a.right - a.left;
-                if got > t.h + 2 || got_w > t.w + 2 {
-                    // Some apps (Electron/UWP) apply sizes after a delay;
-                    // measure again before concluding there is a minimum height.
-                    std::thread::sleep(Duration::from_millis(40));
-                    a = ext_bounds(h);
-                    got = a.bottom - a.top;
-                    got_w = a.right - a.left;
-                }
+                let got = a.bottom - a.top;
+                let got_w = a.right - a.left;
                 self.actual.insert(p.id, bounds(a));
+                if got > t.h + 2 || got_w > t.w + 2 {
+                    // Sebagian app (Electron/UWP) menerapkan ukuran dengan jeda: jadwalkan
+                    // ukur ulang lewat timer tanpa memblokir thread utama dengan sleep.
+                    self.recheck = true;
+                    self.schedule_sync(EVENT_DEBOUNCE_MS);
+                }
                 if got > t.h + 2 && self.ws.cur_mut().set_min_height(p.id, got) {
                     eprintln!(
                         "[min-height] \"{}\" menolak lebih pendek dari {} px (diminta {})",

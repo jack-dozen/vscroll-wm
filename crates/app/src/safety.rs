@@ -106,7 +106,7 @@ pub unsafe fn restore_all() {
     let touched = BORDER_TOUCHED.load(Ordering::Relaxed);
     for s in list {
         let h = hwnd_of(s.hwnd);
-        if !alive(h) {
+        if !alive(h) || IsHungAppWindow(h).as_bool() {
             continue;
         }
         if touched {

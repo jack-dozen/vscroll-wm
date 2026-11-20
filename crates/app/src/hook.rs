@@ -1,8 +1,10 @@
 //! Low-level keyboard and Windows event hooks, with their key-action table.
 
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU8, Ordering};
+use std::sync::mpsc;
 
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Accessibility::HWINEVENTHOOK;
 
 #[allow(unused_imports)]
@@ -341,6 +343,67 @@ pub(crate) unsafe extern "system" fn kb_hook(code: i32, wparam: WPARAM, lparam: 
         }
     }
     CallNextHookEx(None, code, wparam, lparam)
+}
+
+/// Thread khusus yang memasang `WH_KEYBOARD_LL` dan memompa pesannya sendiri, supaya
+/// pekerjaan thread utama (sync / apply / animasi / menu tray) tidak pernah menahan
+/// callback keyboard hook melewati `LowLevelHooksTimeout`.
+pub(crate) struct KeyboardHookThread {
+    thread_id: u32,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl KeyboardHookThread {
+    pub(crate) fn spawn() -> Result<Self, String> {
+        let (tx, rx) = mpsc::sync_channel::<Result<u32, String>>(1);
+        let handle = std::thread::Builder::new()
+            .name("vscroll-kb-hook".into())
+            .spawn(move || unsafe {
+                let tid = GetCurrentThreadId();
+                // Pastikan antrean pesan thread ini sudah terbuat sebelum hook / WM_QUIT.
+                let mut msg = MSG::default();
+                let _ = PeekMessageW(&mut msg, None, 0, 0, PM_NOREMOVE);
+                let hook = match SetWindowsHookExW(WH_KEYBOARD_LL, Some(kb_hook), None, 0) {
+                    Ok(h) => {
+                        let _ = tx.send(Ok(tid));
+                        h
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Err(e.to_string()));
+                        return;
+                    }
+                };
+                while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                    let _ = TranslateMessage(&msg);
+                    DispatchMessageW(&msg);
+                }
+                let _ = UnhookWindowsHookEx(hook);
+            })
+            .map_err(|e| e.to_string())?;
+        match rx.recv() {
+            Ok(Ok(thread_id)) => Ok(Self {
+                thread_id,
+                handle: Some(handle),
+            }),
+            Ok(Err(e)) => {
+                let _ = handle.join();
+                Err(e)
+            }
+            Err(e) => {
+                let _ = handle.join();
+                Err(e.to_string())
+            }
+        }
+    }
+
+    pub(crate) fn stop(mut self) {
+        unsafe {
+            let _ = PostThreadMessageW(self.thread_id, WM_QUIT, WPARAM(0), LPARAM(0));
+        }
+        if let Some(h) = self.handle.take() {
+            let _ = h.join();
+        }
+    }
 }
 
 /// Windows event callback. Called on the main thread through the message loop;

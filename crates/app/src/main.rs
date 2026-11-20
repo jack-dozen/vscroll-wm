@@ -68,7 +68,7 @@ use crate::consts::{
     WM_ACTION, WM_JOIN_CANCEL, WM_JOIN_COMMIT, WM_PICK_ACCEPT, WM_PICK_CANCEL, WM_PICK_MOVE,
     WM_SNAP_CANCEL, WM_SNAP_PICK, WM_WINEVENT,
 };
-use crate::hook::{kb_hook, win_event_proc, MAIN_THREAD};
+use crate::hook::{win_event_proc, KeyboardHookThread, MAIN_THREAD};
 use crate::winutil::{single_instance, work_area};
 
 fn main() {
@@ -167,7 +167,7 @@ fn main() {
         if !tray::create(GetCurrentThreadId()) {
             eprintln!("gagal membuat ikon tray");
         }
-        let hook = match SetWindowsHookExW(WH_KEYBOARD_LL, Some(kb_hook), None, 0) {
+        let hook = match KeyboardHookThread::spawn() {
             Ok(h) => Some(h),
             Err(e) => {
                 eprintln!("gagal pasang keyboard hook (Win+Arrow tidak aktif): {e}");
@@ -225,6 +225,25 @@ fn main() {
                 tray::WM_TRAY_PAUSE => app.toggle_pause(),
                 tray::WM_TRAY_RELOAD => app.reload_config(),
                 tray::WM_TRAY_HELP => cheatsheet::toggle(work_area(), &app.cfg),
+                tray::WM_TRAY_SESSION_END => match msg.wParam.0 {
+                    0 => {
+                        app.save_layout();
+                        app.unstick_all();
+                        app.parked.clear();
+                        app.leaving.clear();
+                        app.border_applied = None;
+                    }
+                    1 => {
+                        app.save_layout();
+                        app.unstick_all();
+                    }
+                    2 => {
+                        if app.sync() {
+                            app.apply();
+                        }
+                    }
+                    _ => {}
+                },
                 overview::WM_OV_MOVE => app.overview_move(msg.wParam.0),
                 overview::WM_OV_CYCLE => app.overview_cycle(msg.wParam.0 != 0),
                 overview::WM_OV_WS => app.overview_workspace(msg.wParam.0),
@@ -290,7 +309,7 @@ fn main() {
             let _ = UnhookWinEvent(h);
         }
         if let Some(h) = hook {
-            let _ = UnhookWindowsHookEx(h);
+            h.stop();
         }
         tray::remove();
         app.unstick_all();

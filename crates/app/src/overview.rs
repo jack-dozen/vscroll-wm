@@ -9,6 +9,7 @@
 //!    Click to switch, or drag a window onto a workspace card to move it there.
 
 use std::collections::HashMap;
+use std::ffi::c_void;
 use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
@@ -22,8 +23,9 @@ use windows::Win32::Graphics::Dwm::{
     DWM_TNP_RECTDESTINATION, DWM_TNP_RECTSOURCE, DWM_TNP_VISIBLE,
 };
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, EndPaint, InvalidateRect, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX,
-    DT_SINGLELINE, DT_VCENTER, HFONT, PAINTSTRUCT,
+    BeginPaint, DrawTextW, EndPaint, InvalidateRect, SelectObject, DT_CALCRECT, DT_CENTER,
+    DT_END_ELLIPSIS, DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, HDC, HFONT, HGDIOBJ,
+    PAINTSTRUCT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -67,6 +69,8 @@ pub struct DrawItem {
     pub title: String,
     /// Original window HWND (0 = no thumbnail).
     pub source: isize,
+    /// App icon (`HICON` as `isize`; 0 = none), populated in `show()`.
+    pub icon: isize,
     /// If there is a thumbnail: band below the box where the label is drawn (content coordinates).
     pub label_band: Option<RECT>,
     /// Window width in the strip: full, or left / right column (for drop targets).
@@ -103,6 +107,8 @@ pub struct MinimapItem {
     pub id: u64,
     pub rect: RECT,
     pub title: String,
+    pub source: isize,
+    pub icon: isize,
 }
 
 /// Full map of the entire strip on the right side of the stage (VS Code minimap style).
@@ -1014,6 +1020,7 @@ pub fn build(
                 },
                 title: titles.get(&it.id.0).cloned().unwrap_or_default(),
                 source: sources.get(&it.id.0).copied().unwrap_or(0),
+                icon: 0,
                 label_band: None,
                 span: if it.rect.w * 100 >= ov.width * 90 {
                     Span::Full
@@ -1083,6 +1090,8 @@ pub fn build(
                             bottom: b.max(t + 3),
                         },
                         title: titles.get(&it.id.0).cloned().unwrap_or_default(),
+                        source: sources.get(&it.id.0).copied().unwrap_or(0),
+                        icon: 0,
                     }
                 })
                 .collect();
@@ -1507,7 +1516,7 @@ unsafe fn paint(hwnd: HWND) {
                     canvas.stroke_round_rect(r, 8.0, pal.stroke, 220, 1.0);
                 }
 
-                if !it.title.is_empty() {
+                if !it.title.is_empty() || it.icon != 0 {
                     let inner = RECT {
                         left: r.left + 4,
                         top: r.top + 4,
@@ -1517,42 +1526,122 @@ unsafe fn paint(hwnd: HWND) {
                     match it.label_band {
                         Some(band) => {
                             let b = shift_y(band, -d.scroll_y);
-                            let tr = RECT {
-                                left: b.left + 8,
-                                top: b.top,
-                                right: (b.right - 8).max(b.left + 9),
-                                bottom: b.bottom,
-                            };
-                            canvas.draw_text(
-                                &it.title,
-                                tr,
-                                font,
-                                pal.text,
-                                DT_LEFT
-                                    | DT_VCENTER
-                                    | DT_SINGLELINE
-                                    | DT_END_ELLIPSIS
-                                    | DT_NOPREFIX,
-                            );
+                            let bw = b.right - b.left;
+                            let bh = b.bottom - b.top;
+                            if it.icon != 0 {
+                                let isz = (bh - 8).clamp(12, 16);
+                                let text_w = measure_text_w(canvas.hdc(), font, &it.title);
+                                if !it.title.is_empty() && bw >= isz + 36 {
+                                    let ix = b.left + 8;
+                                    let iy = b.top + (bh - isz) / 2;
+                                    draw_icon(canvas.hdc(), it.icon, ix, iy, isz);
+                                    let tr = RECT {
+                                        left: ix + isz + 6,
+                                        top: b.top,
+                                        right: (b.right - 8).max(ix + isz + 7),
+                                        bottom: b.bottom,
+                                    };
+                                    let _ = text_w;
+                                    canvas.draw_text(
+                                        &it.title,
+                                        tr,
+                                        font,
+                                        pal.text,
+                                        DT_LEFT
+                                            | DT_VCENTER
+                                            | DT_SINGLELINE
+                                            | DT_END_ELLIPSIS
+                                            | DT_NOPREFIX,
+                                    );
+                                } else {
+                                    draw_icon(
+                                        canvas.hdc(),
+                                        it.icon,
+                                        b.left + (bw - isz) / 2,
+                                        b.top + (bh - isz) / 2,
+                                        isz,
+                                    );
+                                }
+                            } else {
+                                let tr = RECT {
+                                    left: b.left + 8,
+                                    top: b.top,
+                                    right: (b.right - 8).max(b.left + 9),
+                                    bottom: b.bottom,
+                                };
+                                canvas.draw_text(
+                                    &it.title,
+                                    tr,
+                                    font,
+                                    pal.text,
+                                    DT_LEFT
+                                        | DT_VCENTER
+                                        | DT_SINGLELINE
+                                        | DT_END_ELLIPSIS
+                                        | DT_NOPREFIX,
+                                );
+                            }
                         }
                         None => {
-                            let tr = RECT {
-                                left: inner.left + 8,
-                                top: inner.top,
-                                right: (inner.right - 8).max(inner.left + 9),
-                                bottom: inner.bottom,
-                            };
-                            canvas.draw_text(
-                                &it.title,
-                                tr,
-                                font,
-                                pal.text,
-                                DT_CENTER
-                                    | DT_VCENTER
-                                    | DT_SINGLELINE
-                                    | DT_END_ELLIPSIS
-                                    | DT_NOPREFIX,
-                            );
+                            let iw = inner.right - inner.left;
+                            let ih = inner.bottom - inner.top;
+                            if it.icon != 0 {
+                                let isz = (ih - 10).clamp(16, 24);
+                                let text_w = measure_text_w(canvas.hdc(), font, &it.title);
+                                let gap = 6;
+                                if !it.title.is_empty() && isz + gap + text_w <= iw - 12 {
+                                    let total = isz + gap + text_w;
+                                    let x0 = inner.left + (iw - total) / 2;
+                                    draw_icon(
+                                        canvas.hdc(),
+                                        it.icon,
+                                        x0,
+                                        inner.top + (ih - isz) / 2,
+                                        isz,
+                                    );
+                                    let tr = RECT {
+                                        left: x0 + isz + gap,
+                                        top: inner.top,
+                                        right: (inner.right - 6).max(x0 + isz + gap + 1),
+                                        bottom: inner.bottom,
+                                    };
+                                    canvas.draw_text(
+                                        &it.title,
+                                        tr,
+                                        font,
+                                        pal.text,
+                                        DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+                                    );
+                                } else {
+                                    // Judul tidak muat tanpa terpotong -> tampilkan ikon saja di tengah.
+                                    let big = (iw.min(ih) - 12).clamp(16, 36);
+                                    draw_icon(
+                                        canvas.hdc(),
+                                        it.icon,
+                                        inner.left + (iw - big) / 2,
+                                        inner.top + (ih - big) / 2,
+                                        big,
+                                    );
+                                }
+                            } else {
+                                let tr = RECT {
+                                    left: inner.left + 8,
+                                    top: inner.top,
+                                    right: (inner.right - 8).max(inner.left + 9),
+                                    bottom: inner.bottom,
+                                };
+                                canvas.draw_text(
+                                    &it.title,
+                                    tr,
+                                    font,
+                                    pal.text,
+                                    DT_CENTER
+                                        | DT_VCENTER
+                                        | DT_SINGLELINE
+                                        | DT_END_ELLIPSIS
+                                        | DT_NOPREFIX,
+                                );
+                            }
                         }
                     }
                 }
@@ -1682,7 +1771,44 @@ unsafe fn paint(hwnd: HWND) {
                     }
                     let ih = it.rect.bottom - it.rect.top;
                     let iw = it.rect.right - it.rect.left;
-                    if !it.title.is_empty() && ih >= 15 && iw >= 30 {
+                    if it.icon != 0 && ih >= 14 && iw >= 16 {
+                        let isz = (ih - 6).clamp(12, 18).min((iw - 6).max(12));
+                        let text_w = measure_text_w(canvas.hdc(), font_mini, &it.title);
+                        let gap = 4;
+                        if !it.title.is_empty() && isz + gap + text_w <= iw - 8 {
+                            let total = isz + gap + text_w;
+                            let x0 = it.rect.left + (iw - total) / 2;
+                            draw_icon(
+                                canvas.hdc(),
+                                it.icon,
+                                x0,
+                                it.rect.top + (ih - isz) / 2,
+                                isz,
+                            );
+                            let tr = RECT {
+                                left: x0 + isz + gap,
+                                top: it.rect.top,
+                                right: (it.rect.right - 4).max(x0 + isz + gap + 1),
+                                bottom: it.rect.bottom,
+                            };
+                            canvas.draw_text(
+                                &it.title,
+                                tr,
+                                font_mini,
+                                if sel { pal.text } else { pal.text_secondary },
+                                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+                            );
+                        } else {
+                            // Terlalu sempit untuk nama utuh -> tampilkan ikon saja di tengah.
+                            draw_icon(
+                                canvas.hdc(),
+                                it.icon,
+                                it.rect.left + (iw - isz) / 2,
+                                it.rect.top + (ih - isz) / 2,
+                                isz,
+                            );
+                        }
+                    } else if !it.title.is_empty() && ih >= 15 && iw >= 30 {
                         let tr = RECT {
                             left: it.rect.left + 4,
                             top: it.rect.top,
@@ -2382,10 +2508,53 @@ fn hwnd() -> HWND {
     HWND(OV_HWND.load(Ordering::Relaxed) as *mut _)
 }
 
+/// Ukur lebar teks satu baris (piksel) dengan font tertentu.
+unsafe fn measure_text_w(hdc: HDC, font: HFONT, text: &str) -> i32 {
+    if text.is_empty() {
+        return 0;
+    }
+    let old = SelectObject(hdc, HGDIOBJ(font.0));
+    let mut wide: Vec<u16> = text.encode_utf16().collect();
+    let mut r = RECT::default();
+    DrawTextW(hdc, &mut wide, &mut r, DT_CALCRECT | DT_SINGLELINE | DT_NOPREFIX);
+    SelectObject(hdc, old);
+    (r.right - r.left).max(0)
+}
+
+unsafe fn draw_icon(hdc: HDC, icon: isize, x: i32, y: i32, size: i32) {
+    if icon == 0 || size <= 0 {
+        return;
+    }
+    let _ = DrawIconEx(
+        hdc,
+        x,
+        y,
+        HICON(icon as *mut c_void),
+        size,
+        size,
+        0,
+        None,
+        DI_NORMAL,
+    );
+}
+
 /// Show the panel in position and take keyboard focus.
 pub unsafe fn show(mut draw: Draw, thumbnails: bool) {
     if OV_HWND.load(Ordering::Relaxed) == 0 {
         return;
+    }
+    // Ambil ikon app sekali per tampilan overview (dipakai di kartu stage & minimap).
+    for it in &mut draw.items {
+        if it.source != 0 {
+            it.icon = crate::pick_overlay::window_icon(HWND(it.source as *mut c_void));
+        }
+    }
+    if let Some(ref mut mm) = draw.minimap {
+        for it in &mut mm.items {
+            if it.source != 0 {
+                it.icon = crate::pick_overlay::window_icon(HWND(it.source as *mut c_void));
+            }
+        }
     }
     let h = hwnd();
     let was_visible = VISIBLE.load(Ordering::Relaxed);
@@ -2735,6 +2904,7 @@ mod tests {
             rect: RECT { left: l, top: t, right: r, bottom: b },
             title: String::new(),
             source: 0,
+            icon: 0,
             label_band: None,
             span,
         }

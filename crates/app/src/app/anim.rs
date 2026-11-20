@@ -12,7 +12,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use super::App;
-use crate::winutil::{bounds, ext_bounds, hits, insets};
+use crate::winutil::{bounds, ext_bounds, hits, insets, is_hung};
 
 /// Initial offset for the swap cue: one fifth of the work area.
 const CUE_FRACTION: i32 = 5;
@@ -96,15 +96,17 @@ impl App {
             );
         } else {
             self.anim.remove(&id);
-            let _ = SetWindowPos(
-                hwnd,
-                None,
-                to.0 - inset.0,
-                to.1 - inset.1,
-                0,
-                0,
-                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
-            );
+            if !is_hung(hwnd) {
+                let _ = SetWindowPos(
+                    hwnd,
+                    None,
+                    to.0 - inset.0,
+                    to.1 - inset.1,
+                    0,
+                    0,
+                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS,
+                );
+            }
         }
     }
 
@@ -127,7 +129,7 @@ impl App {
         now: Instant,
     ) {
         let start = (t.x + off.0, t.y + off.1);
-        if self.anim_ms > 0.0 {
+        if self.anim_ms > 0.0 && !is_hung(hwnd) {
             let inset = insets(hwnd);
             let _ = SetWindowPos(
                 hwnd,
@@ -136,7 +138,7 @@ impl App {
                 start.1 - inset.1,
                 0,
                 0,
-                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS,
             );
             self.anim.remove(&id); // Start from `start`, not the old animation.
         }
@@ -201,6 +203,10 @@ impl App {
         let mut done = Vec::new();
         let mut ok = true;
         for (id, a) in &self.anim {
+            if is_hung(a.hwnd) {
+                done.push(*id);
+                continue;
+            }
             let ((x, y), finished) = a.pos_at(now);
             match DeferWindowPos(
                 hdwp,
@@ -210,6 +216,8 @@ impl App {
                 y - a.inset.1,
                 0,
                 0,
+                // Catatan: SWP_ASYNCWINDOWPOS tidak didukung DeferWindowPos (selalu gagal);
+                // window hang sudah dilewati oleh `is_hung(a.hwnd)` di atas.
                 SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
             ) {
                 Ok(next) => hdwp = next,
@@ -243,16 +251,18 @@ impl App {
     /// Jump all animations to their final positions (emergency path).
     pub(crate) unsafe fn finish_all_anims(&mut self) {
         for (id, a) in std::mem::take(&mut self.anim) {
-            let _ = SetWindowPos(
-                a.hwnd,
-                None,
-                a.to.0 - a.inset.0,
-                a.to.1 - a.inset.1,
-                0,
-                0,
-                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
-            );
-            self.actual.insert(id, bounds(ext_bounds(a.hwnd)));
+            if !is_hung(a.hwnd) {
+                let _ = SetWindowPos(
+                    a.hwnd,
+                    None,
+                    a.to.0 - a.inset.0,
+                    a.to.1 - a.inset.1,
+                    0,
+                    0,
+                    SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS,
+                );
+                self.actual.insert(id, bounds(ext_bounds(a.hwnd)));
+            }
         }
         for id in std::mem::take(&mut self.leaving) {
             self.finish_park(id);

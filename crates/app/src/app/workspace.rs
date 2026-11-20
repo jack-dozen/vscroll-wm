@@ -14,11 +14,16 @@ use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 use layout::{Rect, WindowId};
-use windows::Win32::UI::WindowsAndMessaging::{GetShellWindow, SetForegroundWindow};
+use windows::Win32::Foundation::ERROR_ACCESS_DENIED;
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetShellWindow, SetForegroundWindow, SetWindowPos, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE,
+    SWP_NOSIZE, SWP_NOZORDER,
+};
+use windows::core::HRESULT;
 
 use super::App;
 use crate::consts::PARK_X;
-use crate::winutil::{bounds, ext_bounds, place, wid, work_area};
+use crate::winutil::{bounds, ext_bounds, insets, is_hung, wid, work_area};
 use crate::{osd, safety, taskbar, tray};
 
 /// Workspace-switch slide direction: `enter_from` = starting side for incoming
@@ -188,21 +193,25 @@ impl App {
         let Some(&h) = self.map.get(&id) else {
             return;
         };
-        if !safety::alive(h) {
+        if !safety::alive(h) || is_hung(h) {
             return;
         }
         let cur = ext_bounds(h);
-        let target = Rect {
-            x: PARK_X,
-            y: cur.top,
-            w: cur.right - cur.left,
-            h: cur.bottom - cur.top,
-        };
-        let (actual, denied) = place(h, target);
-        if denied {
+        let inset = insets(h);
+        let res = SetWindowPos(
+            h,
+            None,
+            PARK_X - inset.0,
+            cur.top - inset.1,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_ASYNCWINDOWPOS,
+        );
+        if res.is_err_and(|e| e.code() == HRESULT::from_win32(ERROR_ACCESS_DENIED.0)) {
             self.mark_blocked(id, h); // Higher privileges: cannot park it.
             return;
         }
+        let actual = ext_bounds(h);
         // Record the actual position (USER32 may clamp it), to avoid "drift".
         self.actual.insert(id, bounds(actual));
     }
