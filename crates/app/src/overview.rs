@@ -34,7 +34,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use crate::config::OverviewColors;
+use crate::config::{MinimapSide, OverviewColors};
 use crate::theme::{self, Canvas, Palette};
 use crate::winutil::animations_enabled;
 
@@ -57,6 +57,8 @@ pub const WM_OV_ZOOM: u32 = WM_APP + 15;
 pub struct Options {
     /// Show key hints at the bottom.
     pub hint: bool,
+    /// Strip minimap position: right, left, or off.
+    pub minimap: MinimapSide,
     /// Maximum panel size, percentage of the work area (30-100).
     pub size_pct: i32,
     pub colors: OverviewColors,
@@ -958,19 +960,23 @@ pub fn build(
     };
 
     let content_w = (panel_w - 2 * PAD).max(80);
-    let show_minimap = content_w >= 480;
+    let show_minimap = opts.minimap != MinimapSide::Off && content_w >= 480;
+    let minimap_left = opts.minimap == MinimapSide::Left;
     let minimap_w = if show_minimap {
         (content_w * 20 / 100).clamp(156, 220)
     } else {
         0
     };
-    let stage_right = if show_minimap {
-        (panel_w - PAD - minimap_w - MINIMAP_GAP).max(PAD + 80)
+    let (stage_left, stage_right) = if !show_minimap {
+        (PAD, (panel_w - PAD).max(PAD + 80))
+    } else if minimap_left {
+        let sl = (PAD + minimap_w + MINIMAP_GAP).min(panel_w - PAD - 80);
+        (sl, (panel_w - PAD).max(sl + 80))
     } else {
-        (panel_w - PAD).max(PAD + 80)
+        (PAD, (panel_w - PAD - minimap_w - MINIMAP_GAP).max(PAD + 80))
     };
     let stage = RECT {
-        left: PAD,
+        left: stage_left,
         top: PAD,
         right: stage_right,
         bottom: (panel_h - PAD - hint_h - dock_h).max(PAD + 80),
@@ -1056,12 +1062,17 @@ pub fn build(
             init_scroll
         };
 
-        // Build a full 100% strip minimap on the right side of the stage.
+        // Build a full 100% strip minimap on the right or left side of the stage.
         if show_minimap {
+            let (m_left, m_right) = if minimap_left {
+                (PAD, PAD + minimap_w)
+            } else {
+                (stage.right + MINIMAP_GAP, panel_w - PAD)
+            };
             let mrect = RECT {
-                left: stage.right + MINIMAP_GAP,
+                left: m_left,
                 top: stage.top,
-                right: panel_w - PAD,
+                right: m_right,
                 bottom: stage.bottom,
             };
             let mw_avail = (mrect.right - mrect.left - 2 * MINIMAP_PAD).max(1) as f32;
@@ -2434,7 +2445,21 @@ unsafe extern "system" fn ov_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
             }
             match item_id {
                 Some(id) => post(WM_OV_PICK, id as usize),
-                None => post(WM_OV_CANCEL, 0),
+                None => {
+                    let empty_hit = DRAW.lock().ok().map_or(false, |g| {
+                        g.as_ref().map_or(false, |d| {
+                            d.items.is_empty()
+                                && d.columns
+                                    .first()
+                                    .map_or(false, |c| point_in(&shift_y(c.view, -d.scroll_y), x, y))
+                        })
+                    });
+                    if empty_hit {
+                        post(WM_OV_ACCEPT, 0);
+                    } else {
+                        post(WM_OV_CANCEL, 0);
+                    }
+                }
             }
             LRESULT(0)
         }
@@ -2673,6 +2698,7 @@ mod tests {
     fn opts(hint: bool, size_pct: i32) -> Options {
         Options {
             hint,
+            minimap: MinimapSide::Right,
             size_pct,
             colors: OverviewColors::default(),
         }
@@ -2749,11 +2775,40 @@ mod tests {
         // Keep the stage column wide (do not shrink it because the total height is 5400px).
         let col_w = d.columns[0].rect.right - d.columns[0].rect.left;
         assert!(col_w > 500, "col_w = {col_w}");
-        // The side minimap shows 100% of the strip inside its box.
+        // The side minimap shows 100% of the strip inside its box (right by default).
         let mm = d.minimap.as_ref().expect("minimap must exist");
         assert!(mm.rect.left > d.stage.right);
         assert!(mm.strip_rect.top >= mm.rect.top && mm.strip_rect.bottom <= mm.rect.bottom);
         assert_eq!(mm.items.len(), 3);
+
+        // Minimap on the left side.
+        let mut left_opts = opts(true, 70);
+        left_opts.minimap = MinimapSide::Left;
+        let dl = build(
+            &single(&o),
+            &HashMap::new(),
+            &HashMap::new(),
+            1,
+            1,
+            WORK,
+            &left_opts,
+        );
+        let mml = dl.minimap.as_ref().expect("left minimap must exist");
+        assert!(mml.rect.right < dl.stage.left);
+
+        // Minimap disabled.
+        let mut off_opts = opts(true, 70);
+        off_opts.minimap = MinimapSide::Off;
+        let doff = build(
+            &single(&o),
+            &HashMap::new(),
+            &HashMap::new(),
+            1,
+            1,
+            WORK,
+            &off_opts,
+        );
+        assert!(doff.minimap.is_none());
     }
 
     #[test]

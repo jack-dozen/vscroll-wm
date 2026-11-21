@@ -53,6 +53,9 @@ overview_size = 70
 # Petunjuk tombol di bagian bawah panel: on / off.
 overview_hint = on
 
+# Posisi minimap peta strip di samping overview: right (bawaan), left, atau off.
+overview_minimap = right
+
 # Tampilan mini tiap window: on / off. Matikan kalau ada window yang tampil kosong.
 overview_thumbnails = on
 

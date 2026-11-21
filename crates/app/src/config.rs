@@ -9,6 +9,7 @@
 //!   focus_border = #4FA8F5   border color for the focused window (Windows 11).
 //!                     Empty / off = unchanged.
 //!   overview_hint = on        key hints at the bottom of the overview
+//!   overview_minimap = right  overview strip minimap position: right, left, or off
 //!   overview_thumbnails = on  thumbnail of each window in the overview
 //!   overview_label = title    box label: title (full title), app (app name only),
 //!                     reverse ("title - Vivaldi" becomes "Vivaldi - title")
@@ -82,6 +83,14 @@ impl Default for OverviewColors {
     }
 }
 
+/// Position of the overview strip minimap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MinimapSide {
+    Right,
+    Left,
+    Off,
+}
+
 /// Content of an overview box label.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LabelMode {
@@ -112,6 +121,7 @@ pub struct Config {
     /// Target border color while aiming in `join` mode (COLORREF). None = use `focus_border`.
     pub join_border: Option<u32>,
     pub overview_hint: bool,
+    pub overview_minimap: MinimapSide,
     pub overview_thumbnails: bool,
     pub overview_label: LabelMode,
     /// Display name for `app` mode: (lowercase executable name without .exe) -> name.
@@ -161,6 +171,7 @@ impl Default for Config {
             focus_border: None,
             join_border: None,
             overview_hint: true,
+            overview_minimap: MinimapSide::Right,
             overview_thumbnails: true,
             overview_label: LabelMode::Title,
             aliases: Vec::new(),
@@ -240,6 +251,14 @@ impl Config {
                 "overview_hint" => match parse_bool(value) {
                     Some(b) => cfg.overview_hint = b,
                     None => warnings.push(format!("line {n}: overview_hint must be on/off")),
+                },
+                "overview_minimap" => match value.to_lowercase().as_str() {
+                    "right" => cfg.overview_minimap = MinimapSide::Right,
+                    "left" => cfg.overview_minimap = MinimapSide::Left,
+                    "off" | "none" => cfg.overview_minimap = MinimapSide::Off,
+                    _ => warnings.push(format!(
+                        "line {n}: overview_minimap must be right, left or off"
+                    )),
                 },
                 "overview_thumbnails" => match parse_bool(value) {
                     Some(b) => cfg.overview_thumbnails = b,
@@ -702,10 +721,11 @@ mod tests {
     #[test]
     fn parses_overview_options_and_aliases() {
         let (cfg, w) = Config::parse(
-            "overview_hint = off\noverview_thumbnails = no\noverview_label = Reverse\nalias.code = Kode\nalias.Foo.exe = Fu\n",
+            "overview_hint = off\noverview_minimap = left\noverview_thumbnails = no\noverview_label = Reverse\nalias.code = Kode\nalias.Foo.exe = Fu\n",
         );
         assert!(w.is_empty(), "{w:?}");
         assert!(!cfg.overview_hint);
+        assert_eq!(cfg.overview_minimap, MinimapSide::Left);
         assert!(!cfg.overview_thumbnails);
         assert_eq!(cfg.overview_label, LabelMode::Reverse);
         assert_eq!(
@@ -714,6 +734,10 @@ mod tests {
                 ("code".to_string(), "Kode".to_string()),
                 ("foo".to_string(), "Fu".to_string())
             ]
+        );
+        assert_eq!(
+            Config::parse("overview_minimap = off").0.overview_minimap,
+            MinimapSide::Off
         );
     }
 

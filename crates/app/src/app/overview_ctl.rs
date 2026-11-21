@@ -39,15 +39,19 @@ impl App {
     /// window can always be dragged to a new workspace, even when only one is occupied).
     fn overview_maps(&self) -> Vec<(usize, layout::Overview)> {
         let mut maps = self.ws.overviews();
-        if maps.is_empty() {
-            return maps;
+        let active = self.ws.active();
+        if !maps.iter().any(|(n, _)| *n == active) {
+            if let Some(st) = self.ws.strip(active) {
+                maps.push((active, st.overview()));
+            }
         }
         let last = self.ws.count().saturating_sub(1);
-        if maps.last().map_or(true, |(n, _)| *n != last) {
+        if !maps.iter().any(|(n, _)| *n == last) {
             if let Some(st) = self.ws.strip(last) {
                 maps.push((last, st.overview()));
             }
         }
+        maps.sort_by_key(|(n, _)| *n);
         maps
     }
 
@@ -82,17 +86,13 @@ impl App {
         if maps.is_empty() {
             return false;
         }
-        // Center column = active workspace (or the nearest one with windows).
+        // Center column = active workspace (even if empty).
         let active = self.ws.active();
         let center = maps
             .iter()
-            .enumerate()
-            .filter(|(_, (_, o))| !o.items.is_empty())
-            .min_by_key(|(_, (n, _))| (n.abs_diff(active), *n))
-            .map_or(0, |(i, _)| i);
-        let Some(selected) = self.ws.representative(maps[center].0) else {
-            return false;
-        };
+            .position(|(n, _)| *n == active)
+            .unwrap_or(0);
+        let selected = self.ws.representative(maps[center].0);
         let mode = self.cfg.overview_label;
         let all = || maps.iter().flat_map(|(_, o)| o.items.iter());
         let titles: HashMap<u64, String> = all()
@@ -128,7 +128,7 @@ impl App {
             &model,
             &titles,
             &sources,
-            selected.0,
+            selected.map_or(0, |w| w.0),
             focused,
             work_area(),
             &self.overview_options(),
@@ -151,6 +151,7 @@ impl App {
     fn overview_options(&self) -> overview::Options {
         overview::Options {
             hint: self.cfg.overview_hint,
+            minimap: self.cfg.overview_minimap,
             size_pct: self.cfg.overview_size,
             colors: self.cfg.overview_colors,
         }
@@ -164,7 +165,7 @@ impl App {
         let Some(s) = self.overview.as_mut() else {
             return;
         };
-        s.selected = n;
+        s.selected = Some(n);
         let col = s
             .model
             .maps
@@ -198,7 +199,7 @@ impl App {
     /// Tab in the overview: move the cursor to the next / previous window, only
     /// within the workspace of the currently selected window (reading order).
     pub(crate) unsafe fn overview_cycle(&mut self, forward: bool) {
-        let Some(sel) = self.overview.as_ref().map(|s| s.selected) else {
+        let Some(sel) = self.overview.as_ref().and_then(|s| s.selected) else {
             return;
         };
         let next = self
@@ -221,51 +222,107 @@ impl App {
         let Some(dir) = DIRS.get(dir_index).map(|d| d.1) else {
             return;
         };
-        let Some(sel) = self.overview.as_ref().map(|s| s.selected) else {
+        let Some((sel_opt, cur_big, map_len)) = self
+            .overview
+            .as_ref()
+            .map(|s| (s.selected, s.model.big, s.model.maps.len()))
+        else {
             return;
         };
+
+        // Sedang di workspace kosong: Kiri/Kanan langsung pindah ke kolom sebelah.
+        let Some(sel) = sel_opt else {
+            if matches!(dir, Dir::Left | Dir::Right) && map_len > 1 {
+                let forward = dir == Dir::Right;
+                let next_col = if forward {
+                    if cur_big + 1 < map_len {
+                        Some(cur_big + 1)
+                    } else if self.cfg.overview_wrap {
+                        Some(0)
+                    } else {
+                        None
+                    }
+                } else if cur_big > 0 {
+                    Some(cur_big - 1)
+                } else if self.cfg.overview_wrap {
+                    Some(map_len - 1)
+                } else {
+                    None
+                };
+                if let Some(col) = next_col {
+                    if let Some((ws_num, _)) = self
+                        .overview
+                        .as_ref()
+                        .and_then(|s| s.model.maps.get(col))
+                    {
+                        self.overview_workspace(2 + *ws_num);
+                    }
+                }
+            }
+            return;
+        };
+
         let Some(from) = self.ws.workspace_of(sel) else {
             return;
         };
-        let mut next = self
-            .ws
-            .strip(from)
-            .and_then(|st| st.neighbor_of(sel, dir))
-            .or_else(|| self.overview_cross(from, sel, dir, false));
-        if next.is_none() && self.cfg.overview_wrap {
-            next = self.overview_cross(from, sel, dir, true).or_else(|| {
-                self.ws
-                    .strip(from)
-                    .and_then(|st| st.wrap_neighbor_of(sel, dir))
-            });
-        }
-        if let Some(n) = next {
+        if let Some(n) = self.ws.strip(from).and_then(|st| st.neighbor_of(sel, dir)) {
             self.overview_select(n);
+            return;
         }
-    }
-
-    /// Left/Right cross a workspace edge: choose the target window in the neighboring
-    /// workspace (`wrap` = wrap to the workspace at the opposite end), nearest the
-    /// cursor's height. None for Up/Down.
-    fn overview_cross(&self, from: usize, sel: WindowId, dir: Dir, wrap: bool) -> Option<WindowId> {
-        if !matches!(dir, Dir::Left | Dir::Right) {
-            return None;
+        // Di tepi kiri/kanan: seberangi ke kolom sebelah di overview (termasuk workspace kosong).
+        if matches!(dir, Dir::Left | Dir::Right) && map_len > 1 {
+            let forward = dir == Dir::Right;
+            let next_col = if forward {
+                if cur_big + 1 < map_len {
+                    Some(cur_big + 1)
+                } else if self.cfg.overview_wrap {
+                    Some(0)
+                } else {
+                    None
+                }
+            } else if cur_big > 0 {
+                Some(cur_big - 1)
+            } else if self.cfg.overview_wrap {
+                Some(map_len - 1)
+            } else {
+                None
+            };
+            if let Some(col) = next_col {
+                let target_ws = self
+                    .overview
+                    .as_ref()
+                    .and_then(|s| s.model.maps.get(col))
+                    .map(|(n, _)| *n);
+                if let Some(ws_num) = target_ws {
+                    let y = self
+                        .ws
+                        .strip(from)
+                        .and_then(|st| {
+                            st.overview()
+                                .items
+                                .into_iter()
+                                .find(|it| it.id == sel)
+                                .map(|it| it.rect.y + it.rect.h / 2)
+                        })
+                        .unwrap_or(0);
+                    if let Some(w) = self.ws.entry_window(ws_num, forward, y) {
+                        self.overview_select(w);
+                    } else {
+                        self.overview_workspace(2 + ws_num); // workspace kosong!
+                    }
+                    return;
+                }
+            }
         }
-        let forward = dir == Dir::Right;
-        let target = if wrap {
-            self.ws.wrapped_workspace(from, forward)?
-        } else {
-            self.ws.adjacent_workspace(from, forward)?
-        };
-        let y = self
-            .ws
-            .strip(from)?
-            .overview()
-            .items
-            .iter()
-            .find(|it| it.id == sel)
-            .map(|it| it.rect.y + it.rect.h / 2)?;
-        self.ws.entry_window(target, forward, y)
+        if self.cfg.overview_wrap {
+            if let Some(n) = self
+                .ws
+                .strip(from)
+                .and_then(|st| st.wrap_neighbor_of(sel, dir))
+            {
+                self.overview_select(n);
+            }
+        }
     }
 
     /// Win+Ctrl+Left/Right, number keys, dock click, or dock hover during a drag:
@@ -298,20 +355,21 @@ impl App {
         if let Some(w) = self.ws.representative(ws_num) {
             self.overview_select(w);
         } else {
-            // Empty workspace at the end: show its empty stage as a drop target.
+            // Empty workspace: show its empty stage (can be entered with Enter / click or used as drop target).
             let opts = self.overview_options();
             let thumbs = self.cfg.overview_thumbnails;
             let floating = self.overview_floating_list();
             let Some(s) = self.overview.as_mut() else {
                 return;
             };
+            s.selected = None;
             s.model.big = col;
             s.model.first = overview::scroll(s.model.first, s.model.visible, col);
             let mut draw = overview::build(
                 &s.model,
                 &s.titles,
                 &s.sources,
-                s.selected.0,
+                0,
                 s.focused,
                 work_area(),
                 &opts,
@@ -335,7 +393,7 @@ impl App {
             &s.model,
             &s.titles,
             &s.sources,
-            s.selected.0,
+            s.selected.map_or(0, |w| w.0),
             s.focused,
             work_area(),
             &opts,
@@ -413,7 +471,7 @@ impl App {
         let Some(s) = self.overview.as_mut() else {
             return;
         };
-        s.selected = selected;
+        s.selected = Some(selected);
         s.model = overview::Model {
             maps,
             first,
@@ -436,13 +494,13 @@ impl App {
 
     pub(crate) unsafe fn overview_pick(&mut self, id: u64) {
         if let Some(s) = self.overview.as_mut() {
-            s.selected = WindowId(id);
+            s.selected = Some(WindowId(id));
         }
         self.close_overview(true);
     }
 
-    /// Close the overview. `accept` = jump to the selected window; otherwise,
-    /// restore focus to the previous window.
+    /// Close the overview. `accept` = jump to the selected window (or empty workspace);
+    /// otherwise, restore focus to the previous window.
     pub(crate) unsafe fn close_overview(&mut self, accept: bool) {
         OV_OPEN.store(false, Ordering::Relaxed);
         OV_MOVED.store(false, Ordering::Relaxed);
@@ -451,7 +509,14 @@ impl App {
         };
         overview::hide();
         if accept {
-            if let Some(&h) = self.floating.get(&s.selected) {
+            let Some(sel) = s.selected else {
+                // Workspace kosong terpilih: langsung pindah ke workspace itu.
+                if let Some(&(ws_num, _)) = s.model.maps.get(s.model.big) {
+                    self.switch_workspace(ws_num);
+                }
+                return;
+            };
+            if let Some(&h) = self.floating.get(&sel) {
                 if IsIconic(h).as_bool() {
                     let _ = ShowWindow(h, SW_RESTORE);
                 }
@@ -461,13 +526,13 @@ impl App {
                 return;
             }
             let old = self.ws.active();
-            if self.ws.focus_window(s.selected) {
+            if self.ws.focus_window(sel) {
                 // The window is in another workspace: switch with a slide animation.
                 self.slide = Some(Slide::switching(slide_dir(old, self.ws.active())));
                 self.update_workspace_tip();
             }
             self.apply();
-            if let Some(&h) = self.map.get(&s.selected) {
+            if let Some(&h) = self.map.get(&sel) {
                 let _ = SetForegroundWindow(h);
                 self.last_fg = Some(wid(h));
             }

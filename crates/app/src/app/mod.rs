@@ -46,8 +46,8 @@ pub(crate) struct JoinAim {
 
 /// Currently open overview.
 pub(crate) struct OverviewSession {
-    /// Overview cursor (not necessarily the focused window).
-    pub(crate) selected: WindowId,
+    /// Overview cursor (`None` when viewing an empty workspace).
+    pub(crate) selected: Option<WindowId>,
     /// Foreground window before the overview opened, to restore on cancel.
     pub(crate) prev_fg: HWND,
     /// Data for rebuilding the panel when the center column shifts.
