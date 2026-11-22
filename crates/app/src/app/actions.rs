@@ -13,7 +13,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use super::App;
-use crate::winutil::{ext_bounds, place, title, unmanaged_reason, wid, work_area};
+use crate::winutil::{ext_bounds, place, unmanaged_reason, wid, work_area};
 use crate::{bindings, cheatsheet, osd, rules, safety, taskbar, tray};
 
 /// Show config issues in a message box (release builds have no console).
@@ -139,6 +139,7 @@ impl App {
         let text = format!(
             "title : {title}\nclass : {class}\nexe   : {exe}\nstatus: {status}\n\nLines for vscroll-wm.ignore:\n  class:{class}\n  exe:{exe}\n  title:{title}"
         );
+        #[cfg(debug_assertions)]
         println!("---------- window aktif ----------\n{text}\n----------------------------------");
         if !cfg!(debug_assertions) {
             // Release builds have no console: show a message box on a separate
@@ -169,9 +170,9 @@ impl App {
         self.leaving.remove(&id);
         taskbar::show(h);
         self.blocked.insert(id, h);
-        eprintln!(
-            "[akses ditolak] \"{}\" tidak bisa dikendalikan (kemungkinan berjalan sebagai administrator)",
-            title(h)
+        crate::log_warn!(
+            "[access denied] {} cannot be managed (likely running as administrator)",
+            super::persist::identity(h)
         );
     }
 
@@ -192,7 +193,7 @@ impl App {
                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
                 );
             }
-            println!("tile: {}", title(fg)); // It rejoins the strip on the next sync.
+            crate::log_info!("tile: {}", super::persist::identity(fg)); // It rejoins the strip on the next sync.
             return;
         }
         self.detach_to_float(id);
@@ -223,7 +224,7 @@ impl App {
         );
         safety::forget(h); // Do not move it when the app exits.
         self.floating.insert(id, h);
-        println!("float: {}", title(h));
+        crate::log_info!("float: {}", super::persist::identity(h));
         Some(h)
     }
 
@@ -242,7 +243,7 @@ impl App {
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
             );
             self.floating.remove(&id); // kembali ke tile pada sync berikutnya
-            println!("unstick: {}", title(h));
+            crate::log_info!("unstick: {}", super::persist::identity(h));
             return;
         }
         let h = if let Some(&h) = self.floating.get(&id) {
@@ -262,7 +263,7 @@ impl App {
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
         );
         self.sticky.insert(id, h);
-        println!("sticky: {}", title(h));
+        crate::log_info!("sticky: {}", super::persist::identity(h));
     }
 
     /// Lepas flag always-on-top dari semua window sticky (dipanggil saat pause / keluar).

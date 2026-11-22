@@ -163,10 +163,11 @@ unsafe extern "system" fn console_handler(_ctrl: u32) -> BOOL {
 pub unsafe fn install(main_thread: u32) {
     MAIN_THREAD.store(main_thread, Ordering::Relaxed);
     if let Err(e) = SetConsoleCtrlHandler(Some(console_handler), true) {
-        eprintln!("gagal pasang handler Ctrl+C: {e}");
+        crate::log_warn!("failed to install Ctrl+C handler: {e}");
     }
     let default = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
+        crate::log::write_crash_report(info);
         unsafe {
             restore_all();
             crate::taskbar::shutdown(); // Restore the taskbar buttons we hid.

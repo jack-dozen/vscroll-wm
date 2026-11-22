@@ -99,8 +99,8 @@ fn load_ignore_from_disk() -> Rules {
     match std::fs::read_to_string(&path) {
         Ok(text) => {
             let r = Rules::parse(&text);
-            println!(
-                "aturan abaikan dimuat dari {path}: {} class, {} exe, {} title",
+            crate::log_info!(
+                "loaded ignore rules from {path}: {} class, {} exe, {} title",
                 r.classes.len(),
                 r.exes.len(),
                 r.titles.len()

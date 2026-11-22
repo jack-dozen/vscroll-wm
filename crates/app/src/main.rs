@@ -35,6 +35,7 @@ mod config;
 mod consts;
 mod hook;
 mod layout_state;
+mod log;
 mod osd;
 mod overview;
 mod pick_overlay;
@@ -74,21 +75,28 @@ use crate::winutil::{single_instance, work_area};
 fn main() {
     unsafe {
         if !single_instance() {
-            eprintln!("vscroll-wm sudah berjalan.");
+            #[cfg(debug_assertions)]
+            eprintln!("vscroll-wm is already running.");
             return;
         }
+        log::init();
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let mut app = App::new();
         let report = config::load();
         app.apply_config(&report.cfg);
 
+        let mut failed_hotkeys: Vec<String> = Vec::new();
         for (i, (vk, _)) in DIRS.iter().enumerate() {
             let base = MOD_CONTROL | MOD_ALT | MOD_NOREPEAT;
             if RegisterHotKey(None, i as i32 + 1, base, vk.0 as u32).is_err() {
-                eprintln!("gagal daftar Ctrl+Alt+{:?} (dipakai app lain?)", vk);
+                let name = format!("Ctrl+Alt+{vk:?}");
+                log_warn!("failed to register {name} (in use by another app?)");
+                failed_hotkeys.push(name);
             }
             if RegisterHotKey(None, i as i32 + 5, base | MOD_SHIFT, vk.0 as u32).is_err() {
-                eprintln!("gagal daftar Ctrl+Alt+Shift+{:?} (dipakai app lain?)", vk);
+                let name = format!("Ctrl+Alt+Shift+{vk:?}");
+                log_warn!("failed to register {name} (in use by another app?)");
+                failed_hotkeys.push(name);
             }
         }
         if RegisterHotKey(
@@ -99,7 +107,8 @@ fn main() {
         )
         .is_err()
         {
-            eprintln!("gagal daftar Ctrl+Alt+Enter (dipakai app lain?)");
+            log_warn!("failed to register Ctrl+Alt+Enter (in use by another app?)");
+            failed_hotkeys.push("Ctrl+Alt+Enter".into());
         }
         if RegisterHotKey(
             None,
@@ -109,7 +118,8 @@ fn main() {
         )
         .is_err()
         {
-            eprintln!("gagal daftar Ctrl+Alt+Shift+Q (dipakai app lain?)");
+            log_warn!("failed to register Ctrl+Alt+Shift+Q (in use by another app?)");
+            failed_hotkeys.push("Ctrl+Alt+Shift+Q".into());
         }
         if RegisterHotKey(
             None,
@@ -119,7 +129,8 @@ fn main() {
         )
         .is_err()
         {
-            eprintln!("gagal daftar Ctrl+Alt+F (dipakai app lain?)");
+            log_warn!("failed to register Ctrl+Alt+F (in use by another app?)");
+            failed_hotkeys.push("Ctrl+Alt+F".into());
         }
         if RegisterHotKey(
             None,
@@ -129,30 +140,31 @@ fn main() {
         )
         .is_err()
         {
-            eprintln!("gagal daftar Ctrl+Alt+I (dipakai app lain?)");
+            log_warn!("failed to register Ctrl+Alt+I (in use by another app?)");
+            failed_hotkeys.push("Ctrl+Alt+I".into());
         }
         MAIN_THREAD.store(GetCurrentThreadId(), Ordering::Relaxed);
         safety::install(GetCurrentThreadId());
         theme::init();
         taskbar::init();
         if !overview::init(GetCurrentThreadId()) {
-            eprintln!("gagal membuat jendela overview");
+            log_warn!("failed to create overview window");
         }
         if !cheatsheet::init() {
-            eprintln!("gagal membuat jendela cheatsheet");
+            log_warn!("failed to create cheatsheet window");
         }
         if !osd::init() {
-            eprintln!("gagal membuat jendela osd workspace");
+            log_warn!("failed to create workspace OSD window");
         }
         if !pick_overlay::init() {
-            eprintln!("gagal membuat jendela overlay pick");
+            log_warn!("failed to create pick overlay window");
         }
         let dpi_scale = GetDpiForSystem() as f32 / 96.0;
         if !snap_menu::init(dpi_scale) {
-            eprintln!("gagal membuat jendela menu snap layouts");
+            log_warn!("failed to create snap layouts menu window");
         }
         if !snap_slots::init(GetCurrentThreadId(), dpi_scale) {
-            eprintln!("gagal membuat jendela daftar window snap layouts");
+            log_warn!("failed to create snap layouts window list");
         }
         if RegisterHotKey(
             None,
@@ -162,15 +174,18 @@ fn main() {
         )
         .is_err()
         {
-            eprintln!("gagal daftar Ctrl+Alt+Space (dipakai app lain?)");
+            log_warn!("failed to register Ctrl+Alt+Space (in use by another app?)");
+            failed_hotkeys.push("Ctrl+Alt+Space".into());
         }
         if !tray::create(GetCurrentThreadId()) {
-            eprintln!("gagal membuat ikon tray");
+            log_warn!("failed to create tray icon");
         }
+        let mut kb_hook_status = String::from("ok");
         let hook = match KeyboardHookThread::spawn() {
             Ok(h) => Some(h),
             Err(e) => {
-                eprintln!("gagal pasang keyboard hook (Win+Arrow tidak aktif): {e}");
+                log_warn!("failed to install keyboard hook (Win+Arrow inactive): {e}");
+                kb_hook_status = format!("failed ({e})");
                 None
             }
         };
@@ -192,7 +207,7 @@ fn main() {
                 WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
             );
             if h.is_invalid() {
-                eprintln!("gagal pasang event hook {lo:#x}..{hi:#x}");
+                log_warn!("failed to install event hook {lo:#x}..{hi:#x}");
             } else {
                 event_hooks.push(h);
             }
@@ -202,7 +217,31 @@ fn main() {
         let poll_ms = if event_hooks.is_empty() { 300 } else { 1000 };
         SetTimer(None, 1, poll_ms, None);
 
-        println!("vscroll-wm jalan. Win+Arrow = snap, +Shift = fokus, Win+Enter = penuh, Win+Alt = tukar posisi, Win+Alt+F = float/tile, Win+Alt+I = info window, Win+Q = tutup, Win+M = minimize, Win+<overview_key> / Win+Alt+Space = overview, Win+<cheatsheet_key> = daftar pintasan (cadangan: Ctrl+Alt+...). Win+Ctrl+Esc atau Ctrl+C = keluar dan pulihkan semua window.");
+        let cfg_str = report
+            .path
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "<default>".into());
+        let state_str = layout_state::path()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "<none>".into());
+        let hk_str = if failed_hotkeys.is_empty() {
+            "none".into()
+        } else {
+            failed_hotkeys.join(", ")
+        };
+        log_info!(
+            "startup vscroll-wm v{} | elevated={} | config={} | state={} | log={} | kb_hook={} | event_hooks={}/5 (poll {}ms) | failed_hotkeys={}",
+            env!("CARGO_PKG_VERSION"),
+            log::is_elevated(),
+            cfg_str,
+            state_str,
+            log::log_path().display(),
+            kb_hook_status,
+            event_hooks.len(),
+            poll_ms,
+            hk_str
+        );
         app.restore_layout(); // Layout from the previous session, for windows that are still open.
         let changed = app.sync();
         app.restore_all_tabs(); // Taskbar buttons left behind by a force-killed previous process.
@@ -317,6 +356,6 @@ fn main() {
         taskbar::shutdown();
         theme::shutdown();
         safety::EXIT_DONE.store(true, Ordering::Relaxed);
-        println!("semua window dikembalikan. sampai jumpa.");
+        log_info!("all windows restored; exiting");
     }
 }

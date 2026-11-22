@@ -15,7 +15,7 @@ use crate::winutil::{collect, wid};
 use crate::{layout_state, rules};
 
 /// Window identity for matching saved entries: `exe|class` (lowercase).
-unsafe fn identity(h: HWND) -> String {
+pub(crate) unsafe fn identity(h: HWND) -> String {
     format!(
         "{}|{}",
         rules::exe_name(h).unwrap_or_default().to_lowercase(),
@@ -37,7 +37,7 @@ impl App {
             return;
         };
         let Some((saved, idents)) = layout_state::decode(&text) else {
-            eprintln!("layout.state tidak dikenali, diabaikan");
+            crate::log_warn!("unrecognized layout.state, ignoring");
             return;
         };
         let mut list: Vec<HWND> = Vec::new();

@@ -30,7 +30,7 @@ use self::snap::{SnapAssist, SnapDrag};
 use crate::consts::{DEFAULT_ANIM_MS, EVENT_DEBOUNCE_MS};
 use crate::hook::OVERVIEW_VK;
 use crate::winutil::{
-    animations_enabled, bounds, collect, ext_bounds, is_hung, place, set_border, title, wid,
+    animations_enabled, bounds, collect, ext_bounds, is_hung, place, set_border, wid,
     work_area, Bounds,
 };
 use crate::{bindings, config, overview, rules, safety, taskbar};
@@ -395,19 +395,23 @@ impl App {
                     self.schedule_sync(EVENT_DEBOUNCE_MS);
                 }
                 if got > t.h + 2 && self.ws.cur_mut().set_min_height(p.id, got) {
-                    eprintln!(
-                        "[min-height] \"{}\" menolak lebih pendek dari {} px (diminta {})",
-                        title(h),
-                        got,
+                    let ident = self
+                        .idents
+                        .entry(p.id)
+                        .or_insert_with(|| persist::identity(h));
+                    crate::log_warn!(
+                        "[min-height] {ident} refused height below {got} px (requested {})",
                         t.h
                     );
                     grew = true;
                 }
                 if got_w > t.w + 2 && self.ws.cur_mut().set_min_width(p.id, got_w) {
-                    eprintln!(
-                        "[min-width] \"{}\" menolak lebih sempit dari {} px (diminta {})",
-                        title(h),
-                        got_w,
+                    let ident = self
+                        .idents
+                        .entry(p.id)
+                        .or_insert_with(|| persist::identity(h));
+                    crate::log_warn!(
+                        "[min-width] {ident} refused width below {got_w} px (requested {})",
                         t.w
                     );
                     grew = true;

@@ -42,6 +42,7 @@ const ID_AUTOSTART: usize = 2;
 const ID_QUIT: usize = 3;
 const ID_RELOAD: usize = 4;
 const ID_HELP: usize = 5;
+const ID_LOGS: usize = 6;
 
 const RUN_SUBKEY: PCWSTR = w!(r"Software\Microsoft\Windows\CurrentVersion\Run");
 const RUN_VALUE: PCWSTR = w!("vscroll-wm");
@@ -202,12 +203,14 @@ unsafe fn show_menu(hwnd: HWND) {
     let pause_txt = wide(if paused { "Resume" } else { "Pause" });
     let reload_txt = wide("Reload configuration");
     let help_txt = wide("Keyboard shortcuts");
+    let logs_txt = wide("Open log folder");
     let auto_txt = wide("Run at login");
     let quit_txt = wide("Quit (restore windows)");
 
     let _ = AppendMenuW(menu, MF_STRING, ID_PAUSE, PCWSTR(pause_txt.as_ptr()));
     let _ = AppendMenuW(menu, MF_STRING, ID_RELOAD, PCWSTR(reload_txt.as_ptr()));
     let _ = AppendMenuW(menu, MF_STRING, ID_HELP, PCWSTR(help_txt.as_ptr()));
+    let _ = AppendMenuW(menu, MF_STRING, ID_LOGS, PCWSTR(logs_txt.as_ptr()));
     let auto_flags = if autostart_enabled() {
         MF_STRING | MF_CHECKED
     } else {
@@ -237,6 +240,7 @@ unsafe fn show_menu(hwnd: HWND) {
         ID_PAUSE => post_main(WM_TRAY_PAUSE),
         ID_RELOAD => post_main(WM_TRAY_RELOAD),
         ID_HELP => post_main(WM_TRAY_HELP),
+        ID_LOGS => crate::log::open_log_folder(),
         ID_AUTOSTART => {
             let _ = set_autostart(!autostart_enabled());
         }

@@ -610,14 +610,14 @@ pub fn load() -> LoadReport {
             Ok(text) => {
                 let (c, warnings) = Config::parse(&text);
                 cfg = c;
-                println!("konfigurasi dimuat dari {}", path.display());
+                crate::log_info!("loaded config from {}", path.display());
                 for w in &warnings {
-                    eprintln!("konfigurasi: {w}");
+                    crate::log_warn!("config: {w}");
                 }
                 problems = warnings;
             }
             Err(e) => {
-                eprintln!("gagal membaca {}: {e}", path.display());
+                crate::log_warn!("failed to read {}: {e}", path.display());
                 problems.push(format!("could not read the file: {e}"));
             }
         }

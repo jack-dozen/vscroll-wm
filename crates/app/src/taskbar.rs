@@ -55,7 +55,7 @@ pub fn init() {
                 *g = Some(Worker { tx, thread });
             }
         }
-        Err(e) => eprintln!("gagal membuat thread taskbar: {e}"),
+        Err(e) => crate::log_warn!("failed to spawn taskbar thread: {e}"),
     }
 }
 
@@ -113,13 +113,13 @@ fn run(rx: Receiver<Cmd>) {
         let list: ITaskbarList = match CoCreateInstance(&TaskbarList, None, CLSCTX_ALL) {
             Ok(l) => l,
             Err(e) => {
-                eprintln!("CoCreateInstance(TaskbarList) gagal: {e}");
+                crate::log_warn!("CoCreateInstance(TaskbarList) failed: {e}");
                 CoUninitialize();
                 return;
             }
         };
         if let Err(e) = list.HrInit() {
-            eprintln!("ITaskbarList::HrInit gagal: {e}");
+            crate::log_warn!("ITaskbarList::HrInit failed: {e}");
             CoUninitialize();
             return;
         }
