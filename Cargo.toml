@@ -1,6 +1,9 @@
-[workspace]
-resolver = "2"
-members = ["crates/layout", "crates/app"]
-
-[workspace.package]
+[package]
+name = "vscroll-layout"
+version = "0.1.0"
+edition = "2021"
 license = "GPL-3.0"
+description = "Vertical scrolling tiling layout engine (pure Rust, zero dependencies)"
+repository = "https://github.com/jack-dozen/vscroll-wm"
+
+[dependencies]
