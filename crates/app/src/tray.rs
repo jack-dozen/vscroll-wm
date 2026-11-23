@@ -26,6 +26,8 @@ pub const WM_TRAY_RELOAD: u32 = WM_APP + 6;
 pub const WM_TRAY_HELP: u32 = WM_APP + 12;
 /// Sent to the main thread on logoff / shutdown (`wParam`: 0 = query, 1 = ending, 2 = cancelled).
 pub const WM_TRAY_SESSION_END: u32 = WM_APP + 27;
+/// Sent to the main thread: exit cleanly and relaunch elevated via UAC (`runas`).
+pub const WM_TRAY_ELEVATE: u32 = WM_APP + 28;
 
 /// True = the app is paused: windows are restored to their original positions
 /// and all hotkeys are passed through to Windows as usual.
@@ -43,6 +45,7 @@ const ID_QUIT: usize = 3;
 const ID_RELOAD: usize = 4;
 const ID_HELP: usize = 5;
 const ID_LOGS: usize = 6;
+const ID_ELEVATE: usize = 7;
 
 const RUN_SUBKEY: PCWSTR = w!(r"Software\Microsoft\Windows\CurrentVersion\Run");
 const RUN_VALUE: PCWSTR = w!("vscroll-wm");
@@ -204,6 +207,7 @@ unsafe fn show_menu(hwnd: HWND) {
     let reload_txt = wide("Reload configuration");
     let help_txt = wide("Keyboard shortcuts");
     let logs_txt = wide("Open log folder");
+    let elevate_txt = wide("Restart as administrator");
     let auto_txt = wide("Run at login");
     let quit_txt = wide("Quit (restore windows)");
 
@@ -211,6 +215,9 @@ unsafe fn show_menu(hwnd: HWND) {
     let _ = AppendMenuW(menu, MF_STRING, ID_RELOAD, PCWSTR(reload_txt.as_ptr()));
     let _ = AppendMenuW(menu, MF_STRING, ID_HELP, PCWSTR(help_txt.as_ptr()));
     let _ = AppendMenuW(menu, MF_STRING, ID_LOGS, PCWSTR(logs_txt.as_ptr()));
+    if !crate::log::is_elevated() {
+        let _ = AppendMenuW(menu, MF_STRING, ID_ELEVATE, PCWSTR(elevate_txt.as_ptr()));
+    }
     let auto_flags = if autostart_enabled() {
         MF_STRING | MF_CHECKED
     } else {
@@ -241,6 +248,7 @@ unsafe fn show_menu(hwnd: HWND) {
         ID_RELOAD => post_main(WM_TRAY_RELOAD),
         ID_HELP => post_main(WM_TRAY_HELP),
         ID_LOGS => crate::log::open_log_folder(),
+        ID_ELEVATE => post_main(WM_TRAY_ELEVATE),
         ID_AUTOSTART => {
             let _ = set_autostart(!autostart_enabled());
         }

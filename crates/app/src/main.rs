@@ -51,12 +51,14 @@ mod winutil;
 use std::ffi::c_void;
 use std::sync::atomic::Ordering;
 
+use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows::Win32::UI::HiDpi::{
     GetDpiForSystem, SetProcessDpiAwarenessContext, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
 };
+use windows::Win32::UI::Shell::ShellExecuteW;
 
 #[allow(unused_imports)]
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
@@ -70,7 +72,7 @@ use crate::consts::{
     WM_SNAP_CANCEL, WM_SNAP_PICK, WM_WINEVENT,
 };
 use crate::hook::{win_event_proc, KeyboardHookThread, MAIN_THREAD};
-use crate::winutil::{single_instance, work_area};
+use crate::winutil::{release_single_instance, single_instance, work_area};
 
 fn main() {
     unsafe {
@@ -250,6 +252,7 @@ fn main() {
         }
 
         app::show_config_problems(&report); // Show config typos immediately.
+        let mut restart_elevated = false;
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
             match msg.message {
@@ -264,6 +267,10 @@ fn main() {
                 tray::WM_TRAY_PAUSE => app.toggle_pause(),
                 tray::WM_TRAY_RELOAD => app.reload_config(),
                 tray::WM_TRAY_HELP => cheatsheet::toggle(work_area(), &app.cfg),
+                tray::WM_TRAY_ELEVATE => {
+                    restart_elevated = true;
+                    break;
+                }
                 tray::WM_TRAY_SESSION_END => match msg.wParam.0 {
                     0 => {
                         app.save_layout();
@@ -356,6 +363,35 @@ fn main() {
         taskbar::shutdown();
         theme::shutdown();
         safety::EXIT_DONE.store(true, Ordering::Relaxed);
+        release_single_instance();
+        if restart_elevated {
+            if let Ok(exe) = std::env::current_exe() {
+                let exe_w: Vec<u16> = exe
+                    .as_os_str()
+                    .to_string_lossy()
+                    .encode_utf16()
+                    .chain(Some(0))
+                    .collect();
+                let cwd_w: Option<Vec<u16>> = std::env::current_dir().ok().map(|d| {
+                    d.as_os_str()
+                        .to_string_lossy()
+                        .encode_utf16()
+                        .chain(Some(0))
+                        .collect()
+                });
+                log_info!("relaunching elevated via UAC");
+                let _ = ShellExecuteW(
+                    None,
+                    w!("runas"),
+                    PCWSTR(exe_w.as_ptr()),
+                    PCWSTR::null(),
+                    cwd_w
+                        .as_ref()
+                        .map_or(PCWSTR::null(), |v| PCWSTR(v.as_ptr())),
+                    SW_SHOWNORMAL,
+                );
+            }
+        }
         log_info!("all windows restored; exiting");
     }
 }

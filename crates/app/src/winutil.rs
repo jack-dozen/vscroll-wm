@@ -1,13 +1,14 @@
 //! Win32 helpers: window position and size, title, and "eligible for tiling" filter.
 
 use std::ffi::c_void;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicIsize, Ordering};
 
 use layout::{Rect, WindowId};
 
 use windows::core::{w, BOOL, HRESULT};
 use windows::Win32::Foundation::{
-    GetLastError, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, HWND, LPARAM, RECT,
+    CloseHandle, GetLastError, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, HANDLE, HWND, LPARAM,
+    RECT,
 };
 use windows::Win32::Graphics::Dwm::{
     DwmGetWindowAttribute, DwmSetWindowAttribute, DWMWA_BORDER_COLOR, DWMWA_CLOAKED,
@@ -185,11 +186,29 @@ pub(crate) unsafe fn animations_enabled() -> bool {
     r.is_err() || on.as_bool()
 }
 
+static INSTANCE_MUTEX: AtomicIsize = AtomicIsize::new(0);
+
 /// Prevent two instances from running at once (e.g. autostart + manual launch):
 /// two keyboard hooks and two window arrangers would interfere with each other.
 pub(crate) unsafe fn single_instance() -> bool {
     match CreateMutexW(None, true, w!("Local\\vscroll-wm-single-instance")) {
-        Ok(_handle) => GetLastError() != ERROR_ALREADY_EXISTS, // Deliberately keep the handle open.
+        Ok(handle) => {
+            if GetLastError() == ERROR_ALREADY_EXISTS {
+                let _ = CloseHandle(handle);
+                false
+            } else {
+                INSTANCE_MUTEX.store(handle.0 as isize, Ordering::Relaxed);
+                true
+            }
+        }
         Err(_) => true,
+    }
+}
+
+/// Release the single-instance mutex (used right before spawning an elevated replacement).
+pub(crate) unsafe fn release_single_instance() {
+    let raw = INSTANCE_MUTEX.swap(0, Ordering::Relaxed);
+    if raw != 0 {
+        let _ = CloseHandle(HANDLE(raw as *mut c_void));
     }
 }

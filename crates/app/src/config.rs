@@ -589,7 +589,16 @@ fn find_file() -> Option<PathBuf> {
         }
     }
     let p = PathBuf::from("vscroll-wm.conf");
-    p.exists().then_some(p)
+    if p.exists() {
+        return Some(p);
+    }
+    if let Some(dir) = std::env::var_os("LOCALAPPDATA") {
+        let p = PathBuf::from(dir).join("vscroll-wm").join("vscroll-wm.conf");
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    None
 }
 
 /// Result of loading configuration: its contents, any issues found (to display

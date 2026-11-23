@@ -89,6 +89,17 @@ fn ignore_path() -> String {
             }
         }
     }
+    if std::path::Path::new("vscroll-wm.ignore").exists() {
+        return "vscroll-wm.ignore".into();
+    }
+    if let Some(dir) = std::env::var_os("LOCALAPPDATA") {
+        let p = std::path::PathBuf::from(dir)
+            .join("vscroll-wm")
+            .join("vscroll-wm.ignore");
+        if p.exists() {
+            return p.to_string_lossy().into_owned();
+        }
+    }
     "vscroll-wm.ignore".into()
 }
 
