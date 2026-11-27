@@ -1,11 +1,12 @@
-//! Position calculations: window flow by block, scrolling, and read-only queries.
+//! Position calculations: Space-based layout, scrolling, and read-only queries.
 
 use crate::types::*;
 
-/// Window position in strip coordinates (before subtracting the scroll offset).
+/// Window position in strip coordinates (before subtracting `scroll_y`).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Flow {
     pub(crate) id: WindowId,
+    pub(crate) space: usize,
     pub(crate) span: Span,
     /// Horizontal position and width in the content area.
     pub(crate) x: i32,
@@ -24,8 +25,11 @@ impl Flow {
 }
 
 impl Strip {
-    /// Effective area: the work area minus half the gap on each side. Each window
-    /// is then inset by another half-gap, so the spacing between windows equals one full gap.
+    /// Effective Space content area: work area minus half the gap on each side.
+    /// Each window is inset by another half-gap, so:
+    /// - outer margin around every Space = `gap`
+    /// - gap between adjacent windows inside a Space = `gap`
+    /// - adjacent Spaces are spaced by `content().h`, so off-screen Spaces never peek.
     pub(crate) fn content(&self) -> Rect {
         let g = self.gap / 2;
         Rect {
@@ -36,227 +40,150 @@ impl Strip {
         }
     }
 
-    /// Block (run) bounds containing position `i`: from the first index after the
-    /// previous full-width window up to the next full-width window.
-    pub(crate) fn run_bounds(&self, i: usize) -> (usize, usize) {
-        let lo = self.items[..i]
-            .iter()
-            .rposition(|it| it.span == Span::Full)
-            .map_or(0, |p| p + 1);
-        let hi = self.items[i + 1..]
-            .iter()
-            .position(|it| it.span == Span::Full)
-            .map_or(self.items.len(), |p| i + 1 + p);
-        (lo, hi)
+    /// Find `(space_idx, item_idx)` for window `id`.
+    pub(crate) fn find_item(&self, id: WindowId) -> Option<(usize, usize)> {
+        for (si, sp) in self.spaces.iter().enumerate() {
+            if let Some(ii) = sp.items.iter().position(|it| it.id == id) {
+                return Some((si, ii));
+            }
+        }
+        None
     }
 
-    /// Split ratio (thousandths) for a block: the value of its first lane item.
-    pub(crate) fn run_split(&self, left: &[usize], right: &[usize]) -> i32 {
-        let first = match (left.first(), right.first()) {
-            (Some(&a), Some(&b)) => Some(a.min(b)),
-            (Some(&a), None) => Some(a),
-            (None, Some(&b)) => Some(b),
-            (None, None) => None,
-        };
-        first.map_or(500, |k| self.items[k].split)
-    }
-
-    /// Left lane width (content pixels) for one block. Clamped to 15%-85%, then constrained
+    /// Left lane width (content pixels) for one Space. Clamped to 15%-85%, then constrained
     /// by the minimum window width in each non-empty lane.
-    pub(crate) fn left_width(&self, cw: i32, split: i32, left: &[usize], right: &[usize]) -> i32 {
+    pub(crate) fn space_left_width(&self, space: &Space, cw: i32) -> i32 {
         let gap = 2 * (self.gap / 2);
-        let lane_min = |idxs: &[usize]| {
-            idxs.iter()
-                .filter_map(|&k| self.min_widths.get(&self.items[k].id))
+        let lane_min = |target: Span| {
+            space
+                .items
+                .iter()
+                .filter(|it| it.span == target)
+                .filter_map(|it| self.min_widths.get(&it.id))
                 .max()
                 .map_or(0, |m| m + gap)
         };
-        let mut lw = (cw as i64 * split as i64 / 1000) as i32;
+        let has_left = space.items.iter().any(|it| it.span == Span::Left);
+        let has_right = space.items.iter().any(|it| it.span == Span::Right);
+        let mut lw = (cw as i64 * space.split as i64 / 1000) as i32;
         lw = lw.clamp(cw * 15 / 100, cw * 85 / 100);
-        if !left.is_empty() {
-            lw = lw.max(lane_min(left));
+        if has_left {
+            lw = lw.max(lane_min(Span::Left));
         }
-        if !right.is_empty() {
-            lw = lw.min(cw - lane_min(right));
+        if has_right {
+            lw = lw.min(cw - lane_min(Span::Right));
         }
         lw.clamp(0, cw)
     }
 
-    /// Lane items (left/right, not hidden) in one block.
-    pub(crate) fn lanes_in(&self, lo: usize, hi: usize) -> (Vec<usize>, Vec<usize>) {
-        let left = (lo..hi)
-            .filter(|&k| self.items[k].span == Span::Left)
-            .collect();
-        let right = (lo..hi)
-            .filter(|&k| self.items[k].span == Span::Right)
-            .collect();
-        (left, right)
-    }
-
-    pub(crate) fn index_of(&self, id: WindowId) -> Option<usize> {
-        self.items.iter().position(|it| it.id == id)
-    }
-
-    /// Window height: whichever is greater, the target or its original minimum.
-    fn item_px(&self, it: &Item) -> i32 {
-        // The minimum height is the window height; add the gap to the slot.
-        let min = self
-            .min_heights
-            .get(&it.id)
-            .map_or(0, |m| m + 2 * (self.gap / 2));
-        it.height.pixels(self.content().h).max(min)
-    }
-
-    /// Arrange all windows in strip coordinates.
-    ///
-    /// Full-width windows divide the strip into "runs" (blocks containing two lanes).
-    /// In each run, compare the NOMINAL boundaries (target heights, excluding minimum
-    /// heights) in both lanes: if boundaries that should align become uneven because
-    /// an app's minimum height forces one lane to be taller, stretch windows in the
-    /// shorter lane to align those boundaries. This keeps layouts such as a 2x2 grid
-    /// aligned row by row, with uniform gaps.
+    /// Arrange all visible Spaces in strip coordinates.
+    /// Spaces containing only hidden windows take no vertical space until a window reappears.
     pub(crate) fn flow(&self) -> Vec<Flow> {
-        let content_h = self.content().h;
-        let content_w = self.content().w;
-        let dummy = Flow {
-            id: WindowId(0),
-            span: Span::Full,
-            x: 0,
-            w: 0,
-            top: 0,
-            h: 0,
-        };
-        let mut out = vec![dummy; self.items.len()];
-        let mut base = 0i32;
-        let (mut left, mut right): (Vec<usize>, Vec<usize>) = (Vec::new(), Vec::new());
-        for (i, it) in self.items.iter().enumerate() {
-            match it.span {
-                Span::Left => left.push(i),
-                Span::Right => right.push(i),
-                Span::Hidden => {
-                    out[i] = Flow {
+        let c = self.content();
+        let ch = c.h;
+        let cw = c.w;
+        let mut out = Vec::new();
+        let mut vis_space_idx = 0i32;
+
+        for (si, space) in self.spaces.iter().enumerate() {
+            let has_visible = space.items.iter().any(|it| it.span != Span::Hidden);
+            let space_top = vis_space_idx * ch;
+            if has_visible {
+                vis_space_idx += 1;
+            }
+            let lw = self.space_left_width(space, cw);
+
+            for it in &space.items {
+                if it.span == Span::Hidden {
+                    out.push(Flow {
                         id: it.id,
+                        space: si,
                         span: Span::Hidden,
                         x: 0,
                         w: 0,
-                        top: base,
+                        top: space_top,
                         h: 0,
-                    };
+                    });
+                    continue;
                 }
-                Span::Full => {
-                    let top = self.place_run(&mut out, base, &left, &right, content_h, content_w);
-                    left.clear();
-                    right.clear();
-                    let h = self.item_px(it);
-                    out[i] = Flow {
-                        id: it.id,
-                        span: Span::Full,
-                        x: 0,
-                        w: content_w,
-                        top,
-                        h,
-                    };
-                    base = top + h;
+                let (x, w) = match it.span {
+                    Span::Full => (0, cw),
+                    Span::Left => (0, lw),
+                    Span::Right => (lw, cw - lw),
+                    Span::Hidden => unreachable!(),
+                };
+                let (vy0, vy1) = it.v_range();
+                let y0 = (ch as i64 * vy0 as i64 / 1000) as i32;
+                let y1 = if vy1 >= 1000 {
+                    ch
+                } else {
+                    (ch as i64 * vy1 as i64 / 1000) as i32
+                };
+                let mut h = (y1 - y0).max(1);
+                let mut top_in_space = y0;
+
+                // Respect measured minimum height while staying inside the Space bounds.
+                if let Some(&min_h) = self.min_heights.get(&it.id) {
+                    let min_slot = (min_h + 2 * (self.gap / 2)).min(ch);
+                    if h < min_slot {
+                        h = min_slot;
+                        if top_in_space + h > ch {
+                            top_in_space = (ch - h).max(0);
+                        }
+                    }
                 }
+
+                out.push(Flow {
+                    id: it.id,
+                    space: si,
+                    span: it.span,
+                    x,
+                    w: w.max(1),
+                    top: space_top + top_in_space,
+                    h,
+                });
             }
         }
-        self.place_run(&mut out, base, &left, &right, content_h, content_w);
         out
     }
 
-    /// Arrange one run starting at `base`. Returns the bottom of the run.
-    fn place_run(
-        &self,
-        out: &mut [Flow],
-        base: i32,
-        left: &[usize],
-        right: &[usize],
-        content_h: i32,
-        content_w: i32,
-    ) -> i32 {
-        let mut hl: Vec<i32> = left.iter().map(|&k| self.item_px(&self.items[k])).collect();
-        let mut hr: Vec<i32> = right
+    /// Number of visible Spaces (spaces with at least one non-hidden window).
+    pub(crate) fn visible_space_count(&self) -> usize {
+        self.spaces
             .iter()
-            .map(|&k| self.item_px(&self.items[k]))
-            .collect();
-
-        let nominal = |k: usize| self.items[k].height.pixels(content_h);
-        let cum = |idxs: &[usize]| -> Vec<i32> {
-            let mut c = 0;
-            idxs.iter()
-                .map(|&k| {
-                    c += nominal(k);
-                    c
-                })
-                .collect()
-        };
-        let (cl, cr) = (cum(left), cum(right));
-
-        let (mut i, mut j) = (0, 0);
-        while i < cl.len() && j < cr.len() {
-            let d = cl[i] - cr[j];
-            if d.abs() <= 3 {
-                let al: i32 = hl[..=i].iter().sum();
-                let ar: i32 = hr[..=j].iter().sum();
-                if al < ar {
-                    hl[i] += ar - al;
-                } else if ar < al {
-                    hr[j] += al - ar;
-                }
-                i += 1;
-                j += 1;
-            } else if d < 0 {
-                i += 1;
-            } else {
-                j += 1;
-            }
-        }
-
-        let lw = self.left_width(content_w, self.run_split(left, right), left, right);
-        let mut yl = base;
-        for (n, &k) in left.iter().enumerate() {
-            out[k] = Flow {
-                id: self.items[k].id,
-                span: Span::Left,
-                x: 0,
-                w: lw,
-                top: yl,
-                h: hl[n],
-            };
-            yl += hl[n];
-        }
-        let mut yr = base;
-        for (n, &k) in right.iter().enumerate() {
-            out[k] = Flow {
-                id: self.items[k].id,
-                span: Span::Right,
-                x: lw,
-                w: content_w - lw,
-                top: yr,
-                h: hr[n],
-            };
-            yr += hr[n];
-        }
-        yl.max(yr)
+            .filter(|sp| sp.items.iter().any(|it| it.span != Span::Hidden))
+            .count()
     }
 
+    /// Snap `scroll_y` cleanly to the Space containing the focused window.
     pub(crate) fn ensure_visible(&mut self) {
-        let flow = self.flow();
-        let vh = self.content().h;
-        let content = flow.iter().map(|f| f.bottom()).max().unwrap_or(0);
-        self.scroll_y = self.scroll_y.min((content - vh).max(0));
-
-        let Some(f) = self.focused.and_then(|id| flow.iter().find(|f| f.id == id)) else {
+        let ch = self.content().h;
+        let vis_count = self.visible_space_count();
+        if vis_count == 0 {
             self.scroll_y = 0;
             return;
-        };
-        let (top, bottom) = (f.top, f.bottom());
-        if top < self.scroll_y {
-            self.scroll_y = top;
-        } else if bottom > self.scroll_y + vh {
-            self.scroll_y = bottom - vh;
         }
-        self.scroll_y = self.scroll_y.min(top).max(0);
+        let max_scroll = ((vis_count as i32 - 1) * ch).max(0);
+        let Some(fid) = self.focused else {
+            self.scroll_y = self.scroll_y.clamp(0, max_scroll);
+            return;
+        };
+        let mut vis_idx = 0i32;
+        for sp in &self.spaces {
+            let has_visible = sp.items.iter().any(|it| it.span != Span::Hidden);
+            if sp
+                .items
+                .iter()
+                .any(|it| it.id == fid && it.span != Span::Hidden)
+            {
+                self.scroll_y = (vis_idx * ch).clamp(0, max_scroll);
+                return;
+            }
+            if has_visible {
+                vis_idx += 1;
+            }
+        }
+        self.scroll_y = self.scroll_y.clamp(0, max_scroll);
     }
 
     /// Nearest neighboring window in direction `dir`, based on screen position.
@@ -267,7 +194,7 @@ impl Strip {
     /// Nearest neighbor of `id` in direction `dir`, without changing focus.
     pub fn neighbor_of(&self, id: WindowId, dir: Dir) -> Option<WindowId> {
         let flow = self.flow();
-        let f = flow.iter().find(|c| c.id == id)?;
+        let f = flow.iter().find(|c| c.id == id && c.span != Span::Hidden)?;
         let (fx0, fx1) = f.x_range();
         let (fy0, fy1) = (f.top, f.bottom());
 
@@ -280,8 +207,12 @@ impl Strip {
             let key = match dir {
                 Dir::Up if cy1 <= fy0 => Some((h_ov == 0, fy0 - cy1, -h_ov, c.top)),
                 Dir::Down if cy0 >= fy1 => Some((h_ov == 0, cy0 - fy1, -h_ov, c.top)),
-                Dir::Left if cx1 <= fx0 && v_ov > 0 => Some((false, fx0 - cx1, -v_ov, c.top)),
-                Dir::Right if cx0 >= fx1 && v_ov > 0 => Some((false, cx0 - fx1, -v_ov, c.top)),
+                Dir::Left if c.space == f.space && cx1 <= fx0 => {
+                    Some((v_ov == 0, fx0 - cx1, -v_ov, (cy0 - fy0).abs()))
+                }
+                Dir::Right if c.space == f.space && cx0 >= fx1 => {
+                    Some((v_ov == 0, cx0 - fx1, -v_ov, (cy0 - fy0).abs()))
+                }
                 _ => None,
             };
             if let Some(k) = key {
@@ -293,11 +224,7 @@ impl Strip {
         best.map(|(_, n)| n)
     }
 
-    /// Like `neighbor_of`, but when there are no more windows in direction `dir`:
-    /// jump to the opposite end of the strip (top from the top row -> bottom row, left
-    /// from the left edge -> right edge, etc.), preferably in the same lane / row.
-    /// Used by overview arrows to wrap the selection. Returns None if there is no other
-    /// window at the opposite end, or if `id` is unknown / hidden.
+    /// Wrap-around neighbor for overview arrow navigation.
     pub fn wrap_neighbor_of(&self, id: WindowId, dir: Dir) -> Option<WindowId> {
         let flow = self.flow();
         let f = flow.iter().find(|c| c.id == id && c.span != Span::Hidden)?;
@@ -317,8 +244,6 @@ impl Strip {
             let h_ov = (fx1.min(cx1) - fx0.max(cx0)).max(0);
             let v_ov = (fy1.min(cy1) - fy0.max(cy0)).max(0);
             let dy = ((cy0 + cy1) / 2 - f_mid).abs();
-            // Only windows "behind" `id` are candidates (for Up: those below it,
-            // etc.); the one closest to the opposite edge wins.
             let key = match dir {
                 Dir::Up if cy0 >= fy1 => Some((h_ov == 0, last_bottom - cy1, -h_ov, cy0)),
                 Dir::Down if cy1 <= fy0 => Some((h_ov == 0, cy0 - first_top, -h_ov, cy0)),
@@ -335,9 +260,7 @@ impl Strip {
         best.map(|(_, n)| n)
     }
 
-    /// Next (or previous) window in reading order: top to bottom, left to right, wrapping.
-    /// Used for Tab in the overview. Returns None if there is only one window or `id` is
-    /// unknown / hidden.
+    /// Next (or previous) window in reading order: space by space, top to bottom, left to right.
     pub fn cycle_from(&self, id: WindowId, forward: bool) -> Option<WindowId> {
         let mut order: Vec<(i32, i32, WindowId)> = self
             .flow()
@@ -359,7 +282,7 @@ impl Strip {
         Some(order[next].2)
     }
 
-    /// Map of the entire strip (including off-screen portions) for the overview.
+    /// Map of the entire strip (including off-screen Spaces) for the overview.
     pub fn overview(&self) -> Overview {
         let c = self.content();
         let items: Vec<OverviewItem> = self
@@ -379,18 +302,16 @@ impl Strip {
                 }
             })
             .collect();
-        let height = items
-            .iter()
-            .map(|i| i.rect.y + i.rect.h)
-            .max()
-            .unwrap_or(0)
-            .max(c.h);
+        let space_count = self.visible_space_count();
+        let height = (space_count as i32 * c.h).max(c.h);
         Overview {
             items,
             width: c.w,
             height,
             view_y: self.scroll_y,
             view_h: c.h,
+            space_h: c.h,
+            space_count,
         }
     }
 
@@ -404,15 +325,16 @@ impl Strip {
             .map(|f| {
                 let top = c.y + f.top - self.scroll_y;
                 let (x, w) = (c.x + f.x, f.w);
+                let rect = Rect {
+                    x: x + g,
+                    y: top + g,
+                    w: (w - 2 * g).max(1),
+                    h: (f.h - 2 * g).max(1),
+                };
                 Placement {
                     id: f.id,
-                    rect: Rect {
-                        x: x + g,
-                        y: top + g,
-                        w: (w - 2 * g).max(1),
-                        h: (f.h - 2 * g).max(1),
-                    },
-                    visible: top + f.h > vp.y && top < vp.y + vp.h,
+                    rect,
+                    visible: rect.y + rect.h > vp.y && rect.y < vp.y + vp.h,
                 }
             })
             .collect()
