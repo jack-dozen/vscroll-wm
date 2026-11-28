@@ -1137,4 +1137,93 @@ impl Strip {
     pub fn take_move_cue(&mut self) -> Option<(WindowId, Dir)> {
         self.cue.take()
     }
+
+    /// Candidate windows in this workspace eligible to be stolen into the focused slot:
+    /// all non-slot tiled windows (including hidden/minimized ones) in Spaces OTHER than
+    /// the focused window's Space.
+    pub fn selector_candidates(&self) -> Vec<WindowId> {
+        let Some(fid) = self.focused else {
+            return Vec::new();
+        };
+        let Some((active_si, _)) = self.find_item(fid) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for (si, sp) in self.spaces.iter().enumerate() {
+            if si == active_si {
+                continue;
+            }
+            for it in &sp.items {
+                if !it.id.is_slot() {
+                    out.push(it.id);
+                }
+            }
+        }
+        out
+    }
+
+    /// Steal `target` (from another Space in this workspace) into the focused window's
+    /// exact slot. The displaced focused window moves into a new Full Space:
+    /// - if `target` came from ABOVE (`ti < si`), displaced window goes BELOW (`si + 1`),
+    /// - if `target` came from BELOW (`ti > si`), displaced window goes ABOVE (`si`).
+    /// Any remaining windows in `target`'s old Space stay untouched (leaving `target`'s old
+    /// slot empty). Hidden/minimized `target` windows are automatically unhidden.
+    pub fn steal_into_slot(&mut self, target: WindowId) -> bool {
+        if target.is_slot() {
+            return false;
+        }
+        let Some(old_id) = self.focused else {
+            return false;
+        };
+        if old_id == target {
+            return false;
+        }
+        let (Some((mut si, ii)), Some((ti, tii))) =
+            (self.find_item(old_id), self.find_item(target))
+        else {
+            return false;
+        };
+        if si == ti {
+            return false;
+        }
+
+        let came_from_above = ti < si;
+
+        // 1. Remove `target` from its donor Space `ti` (leaving donor's other windows intact).
+        self.spaces[ti].items.remove(tii);
+        if self.spaces[ti].items.is_empty() {
+            self.spaces.remove(ti);
+            if ti < si {
+                si -= 1;
+            }
+        }
+
+        // 2. Put `target` into `old_id`'s exact slot in Space `si`.
+        let slot = &mut self.spaces[si].items[ii];
+        if slot.span == Span::Hidden {
+            slot.span = if slot.restore == Span::Hidden {
+                Span::Full
+            } else {
+                slot.restore
+            };
+        }
+        slot.id = target;
+        slot.restore = slot.span;
+
+        // 3. Place displaced `old_id` into a new Full Space in the opposite direction of travel.
+        let displaced_space = Space::new_full(old_id);
+        if came_from_above {
+            self.spaces.insert(si + 1, displaced_space);
+        } else {
+            self.spaces.insert(si, displaced_space);
+        }
+
+        self.min_heights.remove(&target);
+        self.min_widths.remove(&target);
+        self.min_heights.remove(&old_id);
+        self.min_widths.remove(&old_id);
+        self.focused = Some(target);
+        self.ensure_visible();
+        true
+    }
 }

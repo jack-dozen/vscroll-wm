@@ -504,3 +504,62 @@ fn vertical_edge_resize_moves_shared_divider_and_resizes_into_empty_space() {
     assert!(s2.adjust_vertical_edge(A, true, -216)); // -20% -> top=300, h=700
     assert_eq!(at(&s2, A), rect(960, 324, 960, 756));
 }
+
+#[test]
+fn slot_steal_replaces_slot_moves_old_opposite_direction_and_leaves_donor_slot_empty() {
+    // Space 0: A(Left, Full), B(Right, Full)
+    // Space 1: C(Left, Full), D(Right, Full)
+    let mut s = strip();
+    s.add_window(A);
+    s.snap(Dir::Left);
+    s.add_window(B);
+    s.snap(Dir::Right);
+    s.add_window(C);
+    s.snap(Dir::Left);
+    s.add_window(D);
+    s.snap(Dir::Right);
+    assert_eq!(s.spaces().len(), 2);
+
+    // Focus B (Space 0, Right). Candidates should exclude A (same Space) and include C, D.
+    s.set_focus(B);
+    assert_eq!(s.selector_candidates(), vec![C, D]);
+
+    // Steal D (from Space 1, BELOW) into B's slot -> B moves to new Full Space ABOVE!
+    // Space 0: B(Full)
+    // Space 1: A(Left), D(Right)  <-- active
+    // Space 2: C(Left)            <-- D's old right slot is empty
+    assert!(s.steal_into_slot(D));
+    assert_eq!(s.spaces().len(), 3);
+    assert_eq!(s.focused(), Some(D));
+    assert_eq!(s.spaces()[0].items[0].id, B);
+    assert!(s.spaces()[0].items[0].is_full_space());
+    assert_eq!(at(&s, A), rect(0, 0, 960, 1080));
+    assert_eq!(at(&s, D), rect(960, 0, 960, 1080));
+    assert_eq!(s.spaces()[2].items.len(), 1);
+    assert_eq!(s.spaces()[2].items[0].id, C);
+    assert_eq!(s.spaces()[2].items[0].span, Span::Left);
+
+    // Now steal B (from Space 0, ABOVE) into D's slot -> D moves to new Full Space BELOW!
+    assert!(s.steal_into_slot(B));
+    assert_eq!(s.focused(), Some(B));
+    assert_eq!(at(&s, A), rect(0, 0, 960, 1080));
+    assert_eq!(at(&s, B), rect(960, 0, 960, 1080));
+    assert_eq!(s.spaces()[1].items[0].id, D);
+    assert!(s.spaces()[1].items[0].is_full_space());
+}
+
+#[test]
+fn slot_steal_includes_minimized_windows_and_works_on_full_space() {
+    let mut s = strip();
+    s.add_window(A);
+    s.add_window(B);
+    assert!(s.set_hidden(B, true)); // B is minimized in Space 1
+    s.set_focus(A);
+    assert_eq!(s.selector_candidates(), vec![B]);
+
+    // Stealing hidden B into Full Space A unhides B and moves A to Space above.
+    assert!(s.steal_into_slot(B));
+    assert_eq!(s.focused(), Some(B));
+    assert_eq!(at(&s, B), rect(0, 0, 1920, 1080));
+    assert_eq!(s.spaces()[0].items[0].id, A);
+}
